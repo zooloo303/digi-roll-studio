@@ -1,0 +1,19 @@
+[package]
+name = "digi_core"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+# `rc` lets serde see through the Arcs that Session hangs Pattern and Track
+# behind. Those Arcs are not an optimisation to add later: PLAN.md §4 has the UI
+# publishing a whole-session snapshot on every edit, which is only cheap if a
+# snapshot is a few pointer bumps rather than a deep copy of 32 tracks of notes.
+serde = { version = "1", features = ["derive", "rc"] }
+serde_json = "1"
+# PLAN.md §2 gives DeviceModel a `sysex: Option<&'static Spec>`, so core needs
+# the type. It is held as an opaque handle meaning "this model can do SysEx" —
+# core never parses a byte, per PLAN.md §3. The dependency is acyclic: protocol
+# knows nothing of core.
+digi_protocol = { path = "../protocol" }

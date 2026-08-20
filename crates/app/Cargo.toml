@@ -1,0 +1,17 @@
+[package]
+name = "digi_roll_studio"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+egui = "0.36"
+eframe = "0.36"
+digi_core = { path = "../core" }
+digi_protocol = { path = "../protocol" }
+digi_generator = { path = "../generator" }
+digi_engine = { path = "../engine" }
+digi_midi = { path = "../midi" }
+serde_json = "1"
+rfd = "0.17.2"

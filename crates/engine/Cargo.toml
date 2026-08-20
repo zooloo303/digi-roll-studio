@@ -1,0 +1,14 @@
+[package]
+name = "digi_engine"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+# PLAN.md §3: engine depends on core + midi, never on protocol. Playing a
+# pattern and writing one to a box are separate concerns and stay that way — so
+# nothing in here may reach for a byte layout, and the absence of a
+# `digi_protocol` line is what enforces it.
+digi_core = { path = "../core" }
+digi_midi = { path = "../midi" }

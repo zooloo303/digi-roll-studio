@@ -1,0 +1,1852 @@
+// SYNC TO BOXES: one button that puts every track of the session onto its box.
+//
+// **This is the riskiest thing in the app, multiplied.** `ui::write` overwrites
+// one track of one slot behind a dialog naming it; this does the same to up to
+// thirty-two tracks across two boxes behind *one* press. Read `ui::write`'s
+// header first — every safety rule this obeys is that file's, reached through
+// the same one function, and nothing here encodes a byte or decides a refusal of
+// its own.
+//
+// ## Six decisions
+//
+//  1. **One dialog, enumerating every destination, with a per-row opt-out.**
+//     Rule 4 says nothing is written without a dialog naming the slot, the
+//     track and the trigs being replaced. Thirty-two of those dialogs is not
+//     consent, it is a mash-through: by the fourth one nobody is reading. So
+//     the whole intent is one modal, one row per track, each row tickable, and
+//     the button names the count it is about to do — `Overwrite 12 tracks on
+//     2 boxes` — and re-counts as rows are unticked.
+//
+//  2. **One backup per *slot*, not per track**, which is why
+//     `protocol::safe_write::safe_write_tracks` exists. Rule 3 scales badly on
+//     purpose: every write takes its own backup, and a backup that cannot be
+//     stored is a write that does not happen. At one backup per track, a
+//     32-track send would put 32 entries into a fifty-entry ring — the feature
+//     destroying the recovery path it depends on, on the run where you most
+//     need it. Grouped by slot it is two backups, and the ring still holds the
+//     last fifty things this app overwrote. Decided with Neil 2026-08-18.
+//
+//  3. **Empty tracks are skipped, and the dialog says which.** A session track
+//     with no notes could mean "clear that track on the box", and as a *default*
+//     that is a press wiping tracks nobody looked at. So a track with no notes
+//     is not sent — and it is listed, greyed, with the reason, because an
+//     omission you can see is a decision and an omission you cannot is a bug.
+//     `ui::write`'s per-track button is still there for a deliberate clear.
+//     Decided with Neil 2026-08-18.
+//
+//  4. **The scene on screen picks the source, and provenance picks the
+//     destination.** Same two rules as the single-track panel — the scene's slot
+//     per box, aimed back where the pattern was imported from, or at the slot of
+//     the same name when it has no provenance (`ui::write` decision 6). This
+//     button has no pickers at all: it is *sync*, and a sync with knobs on it is
+//     the panel three inches up.
+//
+//  5. **There are two fetches per slot, and the second one is the write's.**
+//     The dialog has to say how many trigs each destination track holds, and
+//     only the box knows that — so a read-only survey pass runs first, across
+//     every box, before the one dialog. The write that follows re-fetches, per
+//     rule 2, and builds its payload from *that*: the survey is wording, never a
+//     payload. What the survey buys is worth the second dump, and what it costs
+//     is closed by [`changed_since_survey`] — if the box moved between the two
+//     reads, that slot refuses rather than writing against consent given for
+//     different numbers.
+//
+//  6. **A backup that cannot be stored stops the whole run**, not just its own
+//     box. Rule 3 says such a write does not happen; with a store that has just
+//     failed, neither does the next one, and carrying on to try would be asking
+//     the same question and expecting a different answer while overwriting a
+//     second box unbacked. So the remaining boxes are reported as not attempted,
+//     naming why.
+//
+// **What this deliberately does not do.** It does not stop the transport, for
+// `ui::write`'s reason. It does not touch the session — a mass send claims no
+// provenance, per that file's decision 5. And it never sends to a box that is
+// not the box the row names: `write::wrong_box` refuses a mis-cabled desk here
+// exactly as it does there, which matters more at this scale, because one wrong
+// cable would otherwise take sixteen tracks with it.
+
+use std::collections::HashMap;
+use std::sync::mpsc::{channel, Receiver, Sender};
+
+use digi_core::device::Device;
+use digi_core::session::PatternRef;
+use digi_core::{DeviceId, Session, Source};
+use digi_midi::{ElektronDevice, PortBinding};
+use digi_protocol::backup_stash::Stash;
+use digi_protocol::device::DeviceIdentity;
+use digi_protocol::pattern::{decode_pattern_kit, track_trig_count, PatternKit, Spec};
+use digi_protocol::plocks::{free_lane_count, read_track_plocks, PoolLane};
+use digi_protocol::safe_write::{
+    safe_write_tracks, write_gate, write_impact_lines, write_result_message, ConfirmArgs,
+    ImpactArgs, PatternIo, Timestamp, TrackWrite, WriteError, WriteHooks, BACKUP_LINE,
+};
+use eframe::egui::{self, Ui};
+
+use crate::ui::transfer::binding;
+use crate::ui::write::{aim, blocker, track_kind_label, wrong_box, PortsPresent};
+
+// --- the plan, which needs no box ------------------------------------------------
+
+/// One box's share of a sync: which of its tracks are going, and where.
+#[derive(Debug)]
+pub struct BoxJob {
+    pub device: DeviceId,
+    /// The user's label for this box in the session — "DT2", "Adeel's DN2".
+    pub name: String,
+    pub display: &'static str,
+    /// The slug the identity handshake has to come back with, per decision 3 of
+    /// `ui::write`.
+    pub slug: Option<&'static str>,
+    pub input: PortBinding,
+    pub output: PortBinding,
+    pub spec: &'static Spec,
+    /// The scene's slot on this box — where the notes are coming from.
+    pub from: PatternRef,
+    /// Where they are going, by the provenance rule.
+    pub into: PatternRef,
+    pub pattern_name: String,
+    /// One per track being sent, same order and same length as [`Self::aims`].
+    pub writes: Vec<TrackWrite>,
+    pub aims: Vec<TrackAim>,
+    /// Tracks not being sent, and why — never dropped silently (decision 3).
+    pub skipped: Vec<Skipped>,
+}
+
+/// What is going onto one track, as the dialog says it before the box is asked.
+#[derive(Debug, Clone)]
+pub struct TrackAim {
+    pub track_index: usize,
+    /// The track's name in this session, when it has stopped being "T3".
+    pub name: Option<String>,
+    pub notes: usize,
+    pub lanes: usize,
+    /// What `core::export` could not carry off this track.
+    pub warnings: Vec<String>,
+}
+
+#[derive(Debug, Clone)]
+pub struct Skipped {
+    pub track_index: usize,
+    pub why: String,
+}
+
+/// A box that cannot take part at all, and the sentence saying so.
+#[derive(Debug, Clone)]
+pub struct Blocked {
+    pub device: DeviceId,
+    pub name: String,
+    pub why: String,
+}
+
+#[derive(Debug, Default)]
+pub struct MassPlan {
+    pub jobs: Vec<BoxJob>,
+    pub blocked: Vec<Blocked>,
+}
+
+impl MassPlan {
+    /// How many tracks the whole plan would send.
+    pub fn tracks(&self) -> usize {
+        self.jobs.iter().map(|j| j.writes.len()).sum()
+    }
+
+    /// Whether there is anything at all to press the button for.
+    pub fn is_empty(&self) -> bool {
+        self.tracks() == 0
+    }
+}
+
+/// Everything the press captures, for every box, before a thread exists.
+///
+/// Pure: no ports, no I/O, no clock. The same bargain `ui::write::plan` makes,
+/// and the reason the whole shape of a sync is testable without a box —
+/// including the two things easiest to get wrong at this scale, which tracks are
+/// skipped and where each box's slot is aimed.
+pub fn plan_all(session: &Session, present: PortsPresent<'_>) -> MassPlan {
+    let mut plan = MassPlan::default();
+    for device in &session.devices {
+        let id = device.id;
+        if let Some(why) = blocker(device, present) {
+            plan.blocked.push(Blocked { device: id, name: device.name.clone(), why });
+            continue;
+        }
+        // `blocker` already refused a box without both ports and without a spec,
+        // so these three cannot fail — but they are unwrapped through the same
+        // `continue` rather than `expect`, because a refusal that reaches the
+        // panel is always better than a window that closes.
+        let (Some(input), Some(output), Some(spec)) =
+            (device.io.input.clone(), device.io.output.clone(), device.model.spec())
+        else {
+            plan.blocked.push(Blocked {
+                device: id,
+                name: device.name.clone(),
+                why: "this box has no ports or no pattern format".into(),
+            });
+            continue;
+        };
+
+        let from = session
+            .slot_in_scene(session.current_scene, id)
+            .unwrap_or_else(|| PatternRef::new(0, 0));
+        let pattern = device.pattern(from.slot());
+        let into = aim(pattern, device.model.slug, from);
+
+        let mut job = BoxJob {
+            device: id,
+            name: device.name.clone(),
+            display: device.model.display,
+            slug: device.model.slug,
+            input: binding(&input),
+            output: binding(&output),
+            spec,
+            from,
+            into,
+            pattern_name: pattern.map(|p| p.name.clone()).unwrap_or_default(),
+            writes: Vec::new(),
+            aims: Vec::new(),
+            skipped: Vec::new(),
+        };
+
+        for track_index in 0..device.model.num_tracks {
+            let track = pattern.and_then(|p| p.track(track_index));
+            let notes = track.map(|t| t.notes.len()).unwrap_or(0);
+            if notes == 0 {
+                // Decision 3, and said out loud rather than left out.
+                job.skipped.push(Skipped {
+                    track_index,
+                    why: "nothing here — left as it is on the box".into(),
+                });
+                continue;
+            }
+            match session.track_write(spec, id, from, track_index, into) {
+                Ok(export) => {
+                    job.aims.push(TrackAim {
+                        track_index,
+                        name: track_name(device, from, track_index),
+                        notes,
+                        lanes: track.map(|t| t.plocks.len()).unwrap_or(0),
+                        warnings: export.warnings,
+                    });
+                    job.writes.push(export.write);
+                }
+                // `core` refusing a track is not a reason to refuse the box: the
+                // other fifteen are still describable, and the one that is not
+                // says so in the same list the empty ones do.
+                Err(e) => job.skipped.push(Skipped { track_index, why: e.to_string() }),
+            }
+        }
+
+        if job.writes.is_empty() {
+            plan.blocked.push(Blocked {
+                device: id,
+                name: job.name.clone(),
+                why: format!("{} has no notes in {}", job.pattern_name_or_slot(), from.label()),
+            });
+            continue;
+        }
+        plan.jobs.push(job);
+    }
+    plan
+}
+
+impl BoxJob {
+    fn pattern_name_or_slot(&self) -> String {
+        match self.pattern_name.trim() {
+            "" => self.from.label(),
+            name => format!("“{name}”"),
+        }
+    }
+}
+
+/// A track's name in this session, when the box gave it one.
+fn track_name(device: &Device, from: PatternRef, track_index: usize) -> Option<String> {
+    let default = format!("T{}", track_index + 1);
+    device
+        .pattern(from.slot())
+        .and_then(|p| p.track(track_index))
+        .map(|t| t.name.trim().to_string())
+        .filter(|n| !n.is_empty() && *n != default)
+}
+
+// --- what the box says before the dialog -----------------------------------------
+
+/// One box's destination, read before anyone is asked anything.
+///
+/// Decision 5: this is the *wording's* copy. Nothing here becomes a payload.
+#[derive(Debug, Clone)]
+pub struct Survey {
+    pub kit_name: String,
+    pub box_swing: u8,
+    pub free_lanes: usize,
+    /// Per track being sent, in the job's order: what the destination holds now.
+    pub existing: Vec<TrackSurvey>,
+}
+
+#[derive(Debug, Clone)]
+pub struct TrackSurvey {
+    pub track_index: usize,
+    pub existing_trigs: usize,
+    /// The destination track's name on the box — a sound name, or "MIDI".
+    pub kind: String,
+    /// What that track has locked on the box right now. Kept whole rather than
+    /// counted, because `write_impact_lines` decides which of them a write
+    /// *clears* by comparing parameter ids — a count could only be guessed with.
+    pub box_plocks: Vec<PoolLane>,
+}
+
+impl Survey {
+    fn of(&self, track_index: usize) -> Option<&TrackSurvey> {
+        self.existing.iter().find(|t| t.track_index == track_index)
+    }
+}
+
+/// Read one box's destination slot and describe it. Read-only.
+pub fn survey(device: &mut impl PatternIo, job: &BoxJob) -> Result<Survey, String> {
+    let identity = device
+        .identity()
+        .cloned()
+        .ok_or_else(|| "the box did not answer the identity handshake".to_string())?;
+    // The same refusal as the single-track panel, and it matters more here: one
+    // wrong cable would otherwise take sixteen tracks with it.
+    if let Some(refusal) = wrong_box(job.slug, job.display, &identity) {
+        return Err(refusal);
+    }
+    // **A copy of `safe_write_tracks`' own gate, and it earns its place.**
+    // `ui::write` deliberately does not repeat this, because there the refusal
+    // arrives from inside the flow with the same words and nobody could tell.
+    // Here it changes what the *dialog* says: a box on a firmware the format was
+    // never verified against is listed as refused rather than as sixteen rows
+    // you can tick and consent to.
+    let gate = write_gate(Some(&identity));
+    if !gate.ok {
+        return Err(gate.reason);
+    }
+
+    let index = job
+        .into
+        .wire_index()
+        .ok_or_else(|| format!("{} is not a slot this box has", job.into.label()))?;
+    let bytes = device.fetch_pattern_kit(index)?;
+    let kit = decode_pattern_kit(job.spec, &bytes)?;
+    let existing = job
+        .aims
+        .iter()
+        .map(|aim| TrackSurvey {
+            track_index: aim.track_index,
+            existing_trigs: trigs_on(&kit, aim.track_index),
+            kind: track_kind_label(&kit, aim.track_index, job.spec.track_kind_fallback),
+            box_plocks: read_track_plocks(job.spec, &bytes, aim.track_index).unwrap_or_default(),
+        })
+        .collect();
+    Ok(Survey {
+        kit_name: kit.kit.name.clone(),
+        box_swing: digi_protocol::pattern_settings::read_swing(job.spec, &bytes),
+        free_lanes: free_lane_count(job.spec, &bytes),
+        existing,
+    })
+}
+
+/// How many trigs the destination track holds.
+///
+/// **`protocol`'s own count, not a second one.** A first draft here counted
+/// `trigs.len()`, which is one *higher* on the DT2 fixture: that capture holds
+/// the leftovers of a trig deleted on the box, and `track_trig_count` reads the
+/// enabled bit instead. The survey and `safe_write_tracks` compare their answers
+/// to each other (see [`changed_since_survey`]), so two ways of counting the
+/// same thing did not merely word the dialog differently — it made every write
+/// refuse itself. Lesson 5, found by the guard it broke.
+fn trigs_on(kit: &PatternKit, track_index: usize) -> usize {
+    if track_index >= kit.tracks.len() {
+        return 0;
+    }
+    track_trig_count(kit, track_index)
+}
+
+// --- the dialog's words, as values ------------------------------------------------
+
+/// The whole intent, in the shape the modal draws and a test can read.
+#[derive(Debug, Clone)]
+pub struct AskBox {
+    pub device: DeviceId,
+    /// "DT2 · Digitakt II — A01 “KIT 1”".
+    pub heading: String,
+    /// Everything this box's write touches beyond the named tracks' trigs.
+    pub lines: Vec<String>,
+    pub rows: Vec<AskRow>,
+    /// The tracks not going, and why (decision 3).
+    pub skipped: Vec<String>,
+}
+
+#[derive(Debug, Clone)]
+pub struct AskRow {
+    pub track_index: usize,
+    /// "T1 BD — 4 notes and 2 p-lock lanes, replacing 8 trigs".
+    pub label: String,
+    /// Anything `core::export` could not carry off this track, one per line.
+    pub warnings: Vec<String>,
+}
+
+/// The dialog, and the wire back to the thread waiting on it.
+///
+/// Dropping this without sending is a refusal, exactly as `ui::write::Ask` is:
+/// closing the window mid-question consents to nothing.
+pub struct Ask {
+    pub boxes: Vec<AskBox>,
+    /// Boxes that cannot take part, said in the same modal so the count in the
+    /// button is not silently smaller than the desk.
+    pub blocked: Vec<String>,
+    /// The last line, always: the backup promise (`BACKUP_LINE`).
+    pub backup_line: &'static str,
+    /// `None` is a cancel; otherwise the `(box, track)` pairs still ticked.
+    pub reply: Sender<Option<Vec<(DeviceId, usize)>>>,
+}
+
+/// The button's words, which have to name the count rather than say OK.
+///
+/// Recomputed as rows are untocked, because a button that says twelve while nine
+/// are ticked is the same lie as one that says OK.
+pub fn headline(tracks: usize, boxes: usize) -> String {
+    format!("Overwrite {} on {}", plural(tracks, "track"), plural_2(boxes, "box", "boxes"))
+}
+
+/// One row: what is going onto this track, and what it lands on.
+pub fn row_label(aim: &TrackAim, survey: Option<&TrackSurvey>) -> String {
+    let mut label = format!("T{}", aim.track_index + 1);
+    // The session's name for the track first — it is what the roll is showing —
+    // then the box's, when the two differ and the box has one worth saying.
+    if let Some(name) = &aim.name {
+        label.push(' ');
+        label.push_str(name);
+    }
+    match survey.map(|s| s.kind.trim()) {
+        Some(kind) if !kind.is_empty() && Some(kind) != aim.name.as_deref() => {
+            // `>`, not `→` (U+2192): pre-existing tofu, flagged from a real
+            // window capture 2026-08-20 and fixed in passing while this file
+            // was open for packet E. `ui::tracks::channel_note`'s doc comment
+            // already made this same call for the same reason — `>` is the
+            // house answer, not a third convention.
+            label.push_str(&format!(" > {kind}"));
+        }
+        _ => {}
+    }
+    label.push_str(&format!(" — {}", plural(aim.notes, "note")));
+    if aim.lanes > 0 {
+        label.push_str(&format!(" and {}", plural(aim.lanes, "p-lock lane")));
+    }
+    match survey.map(|s| s.existing_trigs) {
+        Some(0) | None => label.push_str(", onto an empty track"),
+        Some(n) => label.push_str(&format!(", replacing {}", plural(n, "trig"))),
+    }
+    label
+}
+
+/// One box's block of the dialog.
+pub fn ask_box(job: &BoxJob, survey: &Survey, playing: bool) -> AskBox {
+    let kit = match survey.kit_name.trim() {
+        "" => String::new(),
+        name => format!(" “{name}”"),
+    };
+    let heading = format!(
+        "{} · {} — {} tracks into {}{}",
+        job.name,
+        job.display,
+        job.writes.len(),
+        job.into.label(),
+        kit
+    );
+
+    let mut lines = Vec::new();
+    if job.into != job.from {
+        lines.push(format!(
+            "Coming from {} in this session, going to {} on the box.",
+            job.from.label(),
+            job.into.label()
+        ));
+    }
+    // Per track, the lanes it writes and clears and its PROB default — the parts
+    // of the impact that really are per track. Swing is left out here because it
+    // is one byte for the whole slot, and repeating it sixteen times would read
+    // as sixteen changes.
+    const NO_LANES: &[PoolLane] = &[];
+    for (aim, write) in job.aims.iter().zip(&job.writes) {
+        let per_track = write_impact_lines(&ImpactArgs {
+            label: &job.into.label(),
+            track: Some(aim.track_index),
+            lanes: write.plocks.as_deref().unwrap_or(&[]),
+            box_plocks: survey
+                .of(aim.track_index)
+                .map(|t| t.box_plocks.as_slice())
+                .unwrap_or(NO_LANES),
+            // Left to the slot-wide line below: the pool is one budget for all
+            // sixteen tracks, so a per-track "won't fit" would be counted once
+            // per track out of the same eighty.
+            free_lanes: None,
+            track_prob: write.track_prob,
+            swing: None,
+            box_swing: None,
+        });
+        for line in per_track {
+            lines.push(format!("T{}: {line}", aim.track_index + 1));
+        }
+    }
+    // The pool, once, against everything this box is about to spend out of it.
+    let wanted: usize = job
+        .writes
+        .iter()
+        .map(|w| w.plocks.as_ref().map(|l| l.len()).unwrap_or(0))
+        .sum();
+    let freed: usize = job
+        .aims
+        .iter()
+        .map(|a| survey.of(a.track_index).map(|t| t.box_plocks.len()).unwrap_or(0))
+        .sum();
+    if wanted > survey.free_lanes + freed {
+        lines.push(format!(
+            "Careful: these tracks want {} between them and the pattern only has {} — some of \
+             them won't fit, and you'll be told which.",
+            plural(wanted, "p-lock lane"),
+            plural(survey.free_lanes + freed, "spare lane")
+        ));
+    }
+    // Swing, once, because it is the slot's and not a track's.
+    let swing = job.writes.iter().find_map(|w| w.swing).map(|s| s.round() as u8);
+    lines.extend(write_impact_lines(&ImpactArgs {
+        label: &job.into.label(),
+        track: None,
+        lanes: &[],
+        box_plocks: &[],
+        free_lanes: None,
+        track_prob: None,
+        swing,
+        box_swing: Some(survey.box_swing),
+    }));
+    if playing {
+        lines.push(
+            "The transport is running — this app keeps clocking the box while the dumps go \
+             across, and pressing this does not stop it."
+                .to_string(),
+        );
+    }
+
+    AskBox {
+        device: job.device,
+        heading,
+        lines,
+        rows: job
+            .aims
+            .iter()
+            .map(|aim| AskRow {
+                track_index: aim.track_index,
+                label: row_label(aim, survey.of(aim.track_index)),
+                warnings: aim.warnings.clone(),
+            })
+            .collect(),
+        skipped: job
+            .skipped
+            .iter()
+            .map(|s| format!("T{} — {}", s.track_index + 1, s.why))
+            .collect(),
+    }
+}
+
+fn plural(n: usize, word: &str) -> String {
+    format!("{n} {word}{}", if n == 1 { "" } else { "s" })
+}
+
+/// The two-form plural, for the words English does not pluralise with an `s`.
+fn plural_2(n: usize, one: &str, many: &str) -> String {
+    format!("{n} {}", if n == 1 { one } else { many })
+}
+
+// --- the run --------------------------------------------------------------------
+
+/// What the worker says while it works.
+pub enum Event {
+    Status(String),
+    Log(String),
+    Ask(Ask),
+    Done(MassReport),
+}
+
+/// One box's end state, as its row shows it.
+#[derive(Debug, Clone)]
+pub struct BoxOutcome {
+    pub device: DeviceId,
+    pub name: String,
+    pub text: String,
+    pub is_error: bool,
+    /// Whether bytes were actually stored. A refusal, a cancel and a box nobody
+    /// ticked are all `false`, and each says something different in `text`.
+    pub wrote: bool,
+    /// The backup line, so the row can say where the previous contents went.
+    pub log: Option<String>,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct MassReport {
+    pub boxes: Vec<BoxOutcome>,
+    /// The whole run was called off at the dialog: nothing was surveyed further
+    /// and nothing was sent.
+    pub cancelled: bool,
+}
+
+impl MassReport {
+    pub fn tracks_written(&self) -> usize {
+        self.boxes.iter().filter(|b| b.wrote).count()
+    }
+}
+
+/// The whole flow after the plan, with the boxes injected.
+///
+/// Generic over how a job becomes a [`PatternIo`] for the reason `ui::write::run`
+/// is generic over the trait: `app/tests/sync.rs` drives this exact function —
+/// the survey, the one dialog, the per-row opt-out, the per-slot write and the
+/// store failing mid-run — against boxes that are `BTreeMap`s, so the only thing
+/// left untested by the time a cable is involved is the cable.
+pub fn run<D: PatternIo>(
+    plan: &MassPlan,
+    stash: &Stash,
+    mut open: impl FnMut(&BoxJob) -> Result<D, String>,
+    events: &Sender<Event>,
+    now: Timestamp,
+    playing: bool,
+) -> MassReport {
+    let mut report = MassReport::default();
+    for blocked in &plan.blocked {
+        report.boxes.push(BoxOutcome {
+            device: blocked.device,
+            name: blocked.name.clone(),
+            text: blocked.why.clone(),
+            is_error: false,
+            wrote: false,
+            log: None,
+        });
+    }
+
+    // --- the survey pass, read-only ---------------------------------------------
+    let mut ready: Vec<(usize, D, Survey)> = Vec::new();
+    for (position, job) in plan.jobs.iter().enumerate() {
+        let _ = events.send(Event::Status(format!("Reading {} off the {}…", job.into.label(), job.name)));
+        let opened = open(job).and_then(|mut device| {
+            let s = survey(&mut device, job)?;
+            Ok((device, s))
+        });
+        match opened {
+            Ok((device, s)) => ready.push((position, device, s)),
+            Err(why) => report.boxes.push(BoxOutcome {
+                device: job.device,
+                name: job.name.clone(),
+                text: why,
+                is_error: true,
+                wrote: false,
+                log: None,
+            }),
+        }
+    }
+    if ready.is_empty() {
+        let _ = events.send(Event::Done(report.clone()));
+        return report;
+    }
+
+    // --- one dialog, about everything -------------------------------------------
+    let ask_boxes: Vec<AskBox> = ready
+        .iter()
+        .map(|(position, _, s)| ask_box(&plan.jobs[*position], s, playing))
+        .collect();
+    let (reply, answer) = channel();
+    let ask = Ask {
+        boxes: ask_boxes,
+        blocked: plan
+            .blocked
+            .iter()
+            .map(|b| format!("{} — {}", b.name, b.why))
+            .collect(),
+        backup_line: BACKUP_LINE,
+        reply,
+    };
+    if events.send(Event::Ask(ask)).is_err() {
+        report.cancelled = true;
+        return report;
+    }
+    // A dropped channel is a window that has gone, and a window that has gone
+    // consented to nothing.
+    let Some(accepted) = answer.recv().unwrap_or(None) else {
+        report.cancelled = true;
+        for (position, _, _) in &ready {
+            let job = &plan.jobs[*position];
+            report.boxes.push(BoxOutcome {
+                device: job.device,
+                name: job.name.clone(),
+                text: "Sync cancelled".into(),
+                is_error: false,
+                wrote: false,
+                log: None,
+            });
+        }
+        let _ = events.send(Event::Done(report.clone()));
+        return report;
+    };
+
+    // --- the writes, one slot at a time -----------------------------------------
+    let mut store_failed: Option<String> = None;
+    for (position, mut device, survey) in ready {
+        let job = &plan.jobs[position];
+        if let Some(why) = &store_failed {
+            // Decision 6: the store is broken, so this write is one that does not
+            // happen either — said rather than attempted.
+            report.boxes.push(BoxOutcome {
+                device: job.device,
+                name: job.name.clone(),
+                text: format!("Not attempted — {why}"),
+                is_error: true,
+                wrote: false,
+                log: None,
+            });
+            continue;
+        }
+
+        let writes: Vec<TrackWrite> = job
+            .writes
+            .iter()
+            .filter(|w| accepted.contains(&(job.device, w.track_index)))
+            .cloned()
+            .collect();
+        if writes.is_empty() {
+            report.boxes.push(BoxOutcome {
+                device: job.device,
+                name: job.name.clone(),
+                text: "Nothing ticked for this box".into(),
+                is_error: false,
+                wrote: false,
+                log: None,
+            });
+            continue;
+        }
+
+        let mut hooks = SlotHooks { events, survey: &survey, log: None, refusal: None };
+        let outcome = safe_write_tracks(&mut device, stash, &writes, &mut hooks, now);
+        let (text, is_error, wrote) = match outcome {
+            Ok(result) if result.cancelled => (
+                hooks
+                    .refusal
+                    .clone()
+                    .unwrap_or_else(|| "Write cancelled".to_string()),
+                hooks.refusal.is_some(),
+                false,
+            ),
+            Ok(result) => {
+                // What `core::export` could not carry belongs in the result line
+                // too, or a successful send reads as if everything went — the
+                // same rule `ui::write::run` follows.
+                let mut warnings = result.warnings.clone();
+                for aim in &job.aims {
+                    if accepted.contains(&(job.device, aim.track_index)) {
+                        warnings.extend(aim.warnings.iter().cloned());
+                    }
+                }
+                let message = write_result_message(&digi_protocol::safe_write::WriteResult {
+                    warnings,
+                    ..result.clone()
+                });
+                (message.text, message.is_error, result.ok)
+            }
+            Err(e) => {
+                if let WriteError::Stash(_) = &e {
+                    store_failed = Some(format!(
+                        "the backup store failed on the {} ({e}), and a backup that cannot be \
+                         stored is a write that does not happen",
+                        job.name
+                    ));
+                }
+                (e.to_string(), true, false)
+            }
+        };
+        report.boxes.push(BoxOutcome {
+            device: job.device,
+            name: job.name.clone(),
+            text,
+            is_error,
+            wrote,
+            log: hooks.log,
+        });
+    }
+
+    let _ = events.send(Event::Done(report.clone()));
+    report
+}
+
+/// Whether the destination moved between the survey the dialog described and the
+/// re-fetch the write is built from.
+///
+/// Decision 5's other half. Consent was given for "replacing 8 trigs on T1"; if
+/// the box now says 12, the sentence agreed to is not the sentence about to
+/// happen. Returns the line explaining the refusal, or `None`.
+pub fn changed_since_survey(survey: &Survey, args: &ConfirmArgs) -> Option<String> {
+    for track in &args.tracks {
+        let Some(seen) = survey.of(track.track_index) else {
+            return Some(format!(
+                "T{} was not in what this dialog described — nothing was written",
+                track.track_index + 1
+            ));
+        };
+        if seen.existing_trigs != track.existing_trigs {
+            return Some(format!(
+                "the box changed while the dialog was open: T{} had {} when you were asked and \
+                 has {} now — nothing was written",
+                track.track_index + 1,
+                seen.existing_trigs,
+                track.existing_trigs
+            ));
+        }
+    }
+    None
+}
+
+/// The hooks for one slot of a run that has already been consented to.
+struct SlotHooks<'a> {
+    events: &'a Sender<Event>,
+    survey: &'a Survey,
+    log: Option<String>,
+    /// Set when [`changed_since_survey`] turned the consent down.
+    refusal: Option<String>,
+}
+
+impl WriteHooks for SlotHooks<'_> {
+    /// **Consent was given upstairs, once, for the whole desk** — so this does
+    /// not ask again. What it does is check that the thing consented to is still
+    /// the thing about to happen.
+    fn confirm(&mut self, args: &ConfirmArgs) -> bool {
+        match changed_since_survey(self.survey, args) {
+            Some(why) => {
+                self.refusal = Some(why);
+                false
+            }
+            None => true,
+        }
+    }
+
+    fn on_status(&mut self, status: &str) {
+        let _ = self.events.send(Event::Status(status.to_string()));
+    }
+
+    fn on_log(&mut self, line: &str) {
+        self.log = Some(line.to_string());
+        let _ = self.events.send(Event::Log(line.to_string()));
+    }
+}
+
+/// Open the ports, identify, and run the flow. The whole of the thread.
+fn worker(plan: MassPlan, playing: bool, events: Sender<Event>) {
+    // Rule 1's first gate, before anything is even read: the store has to exist,
+    // because it holds the only automatic copy of everything about to be
+    // overwritten — and at this scale that is up to thirty-two tracks.
+    let stash = match Stash::default_stash() {
+        Ok(stash) => stash,
+        Err(e) => {
+            let mut report = MassReport::default();
+            for job in &plan.jobs {
+                report.boxes.push(BoxOutcome {
+                    device: job.device,
+                    name: job.name.clone(),
+                    text: format!(
+                        "nothing was written: there is nowhere to keep the backup ({e}) — a \
+                         backup that cannot be stored is a write that does not happen"
+                    ),
+                    is_error: true,
+                    wrote: false,
+                    log: None,
+                });
+            }
+            let _ = events.send(Event::Done(report));
+            return;
+        }
+    };
+
+    let report = run(
+        &plan,
+        &stash,
+        |job| {
+            let mut device = ElektronDevice::open(&job.input, &job.output).map_err(|e| e.to_string())?;
+            device.identify().map_err(|e| e.to_string())?;
+            Ok(device)
+        },
+        &events,
+        Timestamp::now(),
+        playing,
+    );
+    // `run` already sent this on every path it returns from; the worker resends
+    // nothing. Kept as a binding so a future early return here cannot drop it.
+    let _ = report;
+}
+
+// --- the panel --------------------------------------------------------------------
+
+/// A run in flight.
+struct Pending {
+    rx: Receiver<Event>,
+    status: String,
+}
+
+/// What is on screen instead of the panel, if anything.
+enum Dialog {
+    Confirm {
+        ask: Ask,
+        /// One flag per row, in the ask's own order. Everything starts ticked:
+        /// the plan is what the button offered to do.
+        ticked: Vec<Vec<bool>>,
+    },
+    /// A finished run that must not be scrolled past.
+    Alert { lines: Vec<String> },
+}
+
+#[derive(Default)]
+pub struct SyncPanel {
+    pending: Option<Pending>,
+    dialog: Option<Dialog>,
+    outcomes: HashMap<DeviceId, BoxOutcome>,
+    /// The order the last report listed the boxes in, so the rows do not shuffle.
+    order: Vec<DeviceId>,
+}
+
+impl SyncPanel {
+    pub fn busy(&self) -> bool {
+        self.pending.is_some()
+    }
+
+    /// Take whatever the worker has said, and put up the dialog it is waiting on.
+    ///
+    /// Called from the window rather than from the panel, for `ui::write::tick`'s
+    /// reason: the Setup panel collapses, a collapsed panel's body does not run,
+    /// and a worker blocked on a question nobody can be shown never comes back.
+    pub fn tick(&mut self, ui: &mut Ui) {
+        self.poll();
+        if self.pending.is_some() {
+            ui.ctx().request_repaint_after(std::time::Duration::from_millis(100));
+        }
+        self.dialog_ui(ui);
+    }
+
+    /// Draw the group. Never edits the session.
+    pub fn ui(&mut self, ui: &mut Ui, session: &Session, present: PortsPresent<'_>, blocked: bool, playing: bool) {
+        let plan = plan_all(session, present);
+        let busy = blocked || self.pending.is_some() || self.dialog.is_some();
+
+        if plan.is_empty() {
+            ui.weak(match plan.blocked.first() {
+                Some(first) => format!("Nothing to sync — {}", first.why),
+                None => "Nothing to sync — no boxes in this session.".into(),
+            });
+            return;
+        }
+
+        ui.add_enabled_ui(!busy, |ui| {
+            let label = headline(plan.tracks(), plan.jobs.len());
+            // Full width and left-aligned, per the design spec: this is the one
+            // button in the OUT block that speaks for the whole desk rather than
+            // one box, and the design gives it the row to itself rather than
+            // sizing it to its text like the per-box SEND buttons beside it.
+            ui.scope(|ui| {
+                let widgets = &mut ui.style_mut().visuals.widgets;
+                for state in [&mut widgets.inactive, &mut widgets.active] {
+                    state.weak_bg_fill = super::WARN_AMBER_FILL;
+                    state.bg_fill = super::WARN_AMBER_FILL;
+                    state.fg_stroke = egui::Stroke::new(1.0, super::WARN_AMBER_TEXT);
+                    state.bg_stroke = egui::Stroke::new(1.0, super::WARN_AMBER_BORDER);
+                }
+                widgets.hovered.weak_bg_fill = super::WARN_AMBER_FILL_HOVER;
+                widgets.hovered.bg_fill = super::WARN_AMBER_FILL_HOVER;
+                widgets.hovered.fg_stroke = egui::Stroke::new(1.0, super::WARN_AMBER_TEXT);
+                widgets.hovered.bg_stroke = egui::Stroke::new(1.0, super::WARN_AMBER_FILL_HOVER);
+
+                let clicked = ui
+                    .add_sized(
+                        [ui.available_width(), 0.0],
+                        egui::Button::new(egui::RichText::new(&label).size(10.5))
+                            .wrap_mode(egui::TextWrapMode::Extend),
+                    )
+                    .on_hover_text(
+                        "Put every track that has notes onto its box, in the slot each pattern \
+                         came from. One dialog lists every destination and you can untick any \
+                         of them; each slot is re-read and backed up whole before anything is \
+                         sent, and verified byte for byte afterwards.",
+                    )
+                    .clicked();
+                if clicked {
+                    self.start(plan, playing);
+                }
+            });
+            if self.pending.is_some() || self.dialog.is_some() {
+                return;
+            }
+            // What the button would do, before the press — the same promise
+            // `ui::write` makes with its "n notes on A01 T3" line.
+            for job in &self.summary_of(session, present) {
+                ui.weak(job);
+            }
+        });
+
+        if let Some(pending) = &self.pending {
+            ui.horizontal(|ui| {
+                ui.spinner();
+                ui.label(&pending.status);
+            });
+            return;
+        }
+        self.outcomes_ui(ui);
+    }
+
+    /// One line per box, said before the press.
+    fn summary_of(&self, session: &Session, present: PortsPresent<'_>) -> Vec<String> {
+        let plan = plan_all(session, present);
+        let mut lines: Vec<String> = plan
+            .jobs
+            .iter()
+            .map(|job| {
+                // `>`, not `→`: same pre-existing tofu as `row_label` above,
+                // same fix, same reason.
+                format!(
+                    "{}: {} > {}",
+                    job.name,
+                    plural(job.writes.len(), "track"),
+                    job.into.label()
+                )
+            })
+            .collect();
+        lines.extend(plan.blocked.iter().map(|b| format!("{}: {}", b.name, b.why)));
+        lines
+    }
+
+    fn outcomes_ui(&mut self, ui: &mut Ui) {
+        for id in &self.order {
+            let Some(outcome) = self.outcomes.get(id) else { continue };
+            let colour = if outcome.is_error {
+                egui::Color32::LIGHT_RED
+            } else if outcome.wrote {
+                egui::Color32::LIGHT_GREEN
+            } else {
+                super::CAUTION
+            };
+            ui.colored_label(colour, format!("{}: {}", outcome.name, outcome.text));
+            if let Some(log) = &outcome.log {
+                ui.weak(log);
+            }
+        }
+    }
+
+    fn start(&mut self, plan: MassPlan, playing: bool) {
+        if self.pending.is_some() || self.dialog.is_some() {
+            return;
+        }
+        self.outcomes.clear();
+        self.order.clear();
+        let (tx, rx) = channel();
+        std::thread::spawn(move || worker(plan, playing, tx));
+        self.pending = Some(Pending { rx, status: "Opening the boxes…".into() });
+    }
+
+    fn poll(&mut self) {
+        let Some(pending) = &mut self.pending else { return };
+        loop {
+            let Ok(event) = pending.rx.try_recv() else { return };
+            match event {
+                Event::Status(s) | Event::Log(s) => pending.status = s,
+                Event::Ask(ask) => {
+                    let ticked = ask.boxes.iter().map(|b| vec![true; b.rows.len()]).collect();
+                    self.dialog = Some(Dialog::Confirm { ask, ticked });
+                    return;
+                }
+                Event::Done(report) => {
+                    // Anything that did not go as asked is put in front of the
+                    // person who pressed, per `ui::write` decision 7 — and at
+                    // this scale a failure buried under a green row is worse.
+                    let loud: Vec<String> = report
+                        .boxes
+                        .iter()
+                        .filter(|b| b.is_error)
+                        .map(|b| format!("{}: {}", b.name, b.text))
+                        .collect();
+                    if !loud.is_empty() {
+                        self.dialog = Some(Dialog::Alert { lines: loud });
+                    }
+                    self.order = report.boxes.iter().map(|b| b.device).collect();
+                    self.outcomes =
+                        report.boxes.into_iter().map(|b| (b.device, b)).collect();
+                    self.pending = None;
+                    return;
+                }
+            }
+        }
+    }
+
+    fn dialog_ui(&mut self, ui: &mut Ui) {
+        let Some(dialog) = &mut self.dialog else { return };
+        let mut answer: Option<Option<Vec<(DeviceId, usize)>>> = None;
+        let mut dismiss = false;
+
+        let response = egui::Modal::new(egui::Id::new("sync-dialog")).show(ui.ctx(), |ui| {
+            ui.set_max_width(620.0);
+            match dialog {
+                Dialog::Confirm { ask, ticked } => {
+                    ui.label(egui::RichText::new("Sync every track to the boxes").strong());
+                    ui.separator();
+
+                    egui::ScrollArea::vertical().max_height(420.0).show(ui, |ui| {
+                        for (b, block) in ask.boxes.iter().enumerate() {
+                            ui.label(egui::RichText::new(&block.heading).strong());
+                            for (r, row) in block.rows.iter().enumerate() {
+                                ui.checkbox(&mut ticked[b][r], &row.label);
+                                for warning in &row.warnings {
+                                    ui.indent(("w", b, r), |ui| {
+                                        ui.colored_label(super::CAUTION, format!("Note: {warning}"));
+                                    });
+                                }
+                            }
+                            for line in &block.lines {
+                                ui.weak(line);
+                            }
+                            for line in &block.skipped {
+                                ui.weak(egui::RichText::new(format!("Not sent — {line}")).italics());
+                            }
+                            ui.add_space(8.0);
+                        }
+                        for line in &ask.blocked {
+                            ui.colored_label(super::CAUTION, format!("Left out — {line}"));
+                        }
+                    });
+
+                    ui.separator();
+                    ui.label(ask.backup_line);
+                    ui.separator();
+
+                    let mut picked: Vec<(DeviceId, usize)> = Vec::new();
+                    for (b, block) in ask.boxes.iter().enumerate() {
+                        for (r, row) in block.rows.iter().enumerate() {
+                            if ticked[b][r] {
+                                picked.push((block.device, row.track_index));
+                            }
+                        }
+                    }
+                    let boxes = ask
+                        .boxes
+                        .iter()
+                        .filter(|block| picked.iter().any(|(d, _)| *d == block.device))
+                        .count();
+
+                    ui.horizontal(|ui| {
+                        // Cancel first and on the left, because it is the answer
+                        // a hesitating hand should land on.
+                        if ui.button("Cancel").clicked() {
+                            answer = Some(None);
+                        }
+                        ui.add_enabled_ui(!picked.is_empty(), |ui| {
+                            if ui.button(headline(picked.len(), boxes)).clicked() {
+                                answer = Some(Some(picked.clone()));
+                            }
+                        });
+                    });
+                }
+                Dialog::Alert { lines } => {
+                    ui.label(egui::RichText::new("The sync did not go as asked").strong());
+                    ui.separator();
+                    for line in lines.iter() {
+                        ui.label(line);
+                    }
+                    ui.separator();
+                    if ui.button("OK").clicked() {
+                        dismiss = true;
+                    }
+                }
+            }
+        });
+        // Clicking away or pressing Escape is a cancel, which is only correct
+        // because the destructive answer is never the default one here.
+        if response.should_close() {
+            match dialog {
+                Dialog::Confirm { .. } => answer = Some(None),
+                Dialog::Alert { .. } => dismiss = true,
+            }
+        }
+
+        if dismiss {
+            self.dialog = None;
+            return;
+        }
+        let Some(answer) = answer else { return };
+        if let Some(Dialog::Confirm { ask, .. }) = self.dialog.take() {
+            // A send that fails means the worker has gone, and a worker that has
+            // gone consented to nothing.
+            let _ = ask.reply.send(answer);
+        }
+    }
+}
+
+// --- reading patch names off one box ---------------------------------------------
+//
+// Packet E, stage 2 (2026-08-20). Smaller and safer than everything above it in
+// this file: this asks a box for its current kit and updates `Track.patch` on
+// whichever pattern is already showing for that device — nothing else. No
+// notes, no lengths, no swing, no dialog with an `Overwrite` button: rules 1
+// and 4 are the write path's and do not apply to a read (packet E's own text
+// says so explicitly). What *does* apply is that every ordinary way this can
+// fail has to say so on screen, in its own words, because a read that fails
+// silently and leaves the old patch names in place is the exact bug this
+// feature exists to fix, one level up — see `ui::tracks::patch_line`'s "none"
+// branch.
+//
+// **Which slot to ask for is named, never guessed.** [`patch_read_job`] takes
+// it from one of two places and no third: the pattern's own `source` — the same
+// field `ui::write::aim` consults, and where `aim` falls back to a
+// same-numbered slot this refuses instead (`PatchReadError::UnknownSlot`) — or
+// the `asked` slot its caller's picker is showing. The second was added on
+// 2026-08-20 after Neil read the first one's refusal on a pattern he had built
+// in this app and asked the obvious question back: nothing had been fetched,
+// so the refusal told him to fetch first, when what he wanted was simply the
+// names the box has on its sixteen tracks right now. A picker answers that
+// without either half of the bad trade — the app still guesses nothing, and
+// the person who knows which pattern the box is sitting on gets to say.
+//
+// What it cannot claim is "live": a dump request names a stored slot, and
+// nothing in the Elektron dump protocol as implemented here asks a box what it
+// is currently playing. Reading A01 gets A01's saved kit, which is what is
+// live when the box is on A01 with no unsaved kit edits — so the picker's
+// tooltip says that rather than promising more.
+
+/// Why a patch-names read cannot even be attempted, decided without opening a
+/// port. Covers two of the four ordinary failures packet E's addendum names:
+/// **no box** (no ports assigned at all) and **cable gone** (a port is
+/// assigned but the OS no longer lists it — `PortsPresent::holds` is the same
+/// check `ui::write::blocker` makes for a write, because a macOS connection
+/// object stays alive and goes nowhere once the cable is pulled).
+///
+/// The other two — **handshake refused** and **wrong firmware** — can only be
+/// discovered by actually asking the box, so they belong to [`read_patch_kit`]
+/// instead.
+pub fn patch_read_blocker(device: &Device, present: PortsPresent<'_>) -> Option<String> {
+    if !device.can_sysex() {
+        return Some(format!(
+            "{} plays over MIDI but has no patch names to read",
+            device.model.display
+        ));
+    }
+    match (&device.io.input, &device.io.output) {
+        (Some(input), Some(output)) => {
+            let gone = match (
+                PortsPresent::holds(present.inputs, input),
+                PortsPresent::holds(present.outputs, output),
+            ) {
+                (true, true) => return None,
+                (true, false) => output.name.clone(),
+                _ => input.name.clone(),
+            };
+            Some(format!(
+                "{gone} is no longer plugged in — reconnect the box to read its patch names"
+            ))
+        }
+        (None, None) => Some("No ports set — pick an in and an out for this box above".into()),
+        (None, Some(_)) => Some("No in port — the box's answer comes back on it".into()),
+        (Some(_), None) => Some("No out port — the request goes out on it".into()),
+    }
+}
+
+/// One box's patch-names read, resolved and ready to open a port — everything
+/// [`read_patch_kit`] needs, decided in advance so "ask rather than assume" is
+/// testable without a port in sight.
+#[derive(Debug, Clone)]
+pub struct PatchJob {
+    pub device: DeviceId,
+    pub name: String,
+    pub display: &'static str,
+    pub slug: Option<&'static str>,
+    pub spec: &'static Spec,
+    pub input: PortBinding,
+    pub output: PortBinding,
+    /// The session slot whose tracks get the patch records — the pattern on
+    /// screen for this box right now (the scene's slot, same choice
+    /// `plan_all` makes for a sync's `from`).
+    pub at: PatternRef,
+    /// Which of the box's slots to ask for. Either the slot the pattern says
+    /// it came from, or the one the caller named in the row's picker — never a
+    /// slot this app worked out on its own. See [`patch_read_job`]'s `asked`.
+    pub source: Source,
+}
+
+impl PatchJob {
+    /// The box's own slot to fetch — `source` translated into the wire's
+    /// vocabulary, since a box does not know what a `Source` is.
+    pub fn from(&self) -> PatternRef {
+        PatternRef::new(self.source.bank, self.source.index)
+    }
+}
+
+/// Resolve one box's patch-names read, or say why it cannot be attempted yet.
+///
+/// Pure and box-free: everything it decides — no ports, a cable the OS no
+/// longer lists, a pattern with no provenance to read a slot from — is decided
+/// without a fetch in sight, which is what makes the "ask rather than assume"
+/// rule testable dry.
+///
+/// `asked` is the slot the caller's own picker is showing, when it has one:
+/// with `None` the slot is resolved from the pattern's `source` and a pattern
+/// that has none refuses (`UnknownSlot`), and with `Some` that slot is read
+/// because a person named it. The UI passes `Some` — see
+/// [`digi_core::import::patch_read_source_named`] for why "said out loud" is a
+/// different thing from "guessed", and `ui::devices`' patch-read section for
+/// what the picker defaults to.
+pub fn patch_read_job(
+    session: &Session,
+    device: DeviceId,
+    present: PortsPresent<'_>,
+    asked: Option<PatternRef>,
+) -> Result<PatchJob, String> {
+    let d = session.device(device).ok_or_else(|| "no such box in this session".to_string())?;
+    if let Some(why) = patch_read_blocker(d, present) {
+        return Err(why);
+    }
+    let (Some(input), Some(output), Some(spec)) =
+        (d.io.input.clone(), d.io.output.clone(), d.model.spec())
+    else {
+        return Err("this box has no ports or no pattern format".into());
+    };
+    let at = session.slot_in_scene(session.current_scene, device).unwrap_or_else(|| PatternRef::new(0, 0));
+    let pattern = d.pattern(at.slot());
+    let source = match asked {
+        Some(slot) => {
+            // A box with no slug is a box with no dump format, which is
+            // `patch_wrong_box`'s own wording for the same fact — reused
+            // rather than reworded, since the read is refused for one reason.
+            let slug = d
+                .model
+                .slug
+                .ok_or_else(|| format!("{} has no pattern dumps to read", d.model.display))?;
+            digi_core::import::patch_read_source_named(pattern, slug, slot)
+        }
+        None => digi_core::import::patch_read_source(pattern, d.model.slug),
+    }
+    .map_err(|e| e.to_string())?;
+    Ok(PatchJob {
+        device,
+        name: d.name.clone(),
+        display: d.model.display,
+        slug: d.model.slug,
+        spec,
+        input: binding(&input),
+        output: binding(&output),
+        at,
+        source,
+    })
+}
+
+/// Why the box that answered is not the one `job.source` says the pattern came
+/// from — the read path's twin of `ui::write::wrong_box`, worded for a read
+/// rather than borrowing that function's "refusing to write" sentence, which
+/// would be a lie on this path.
+fn patch_wrong_box(job: &PatchJob, identity: &DeviceIdentity) -> Option<String> {
+    match job.slug {
+        Some(slug) if slug == identity.slug => None,
+        Some(_) => Some(format!(
+            "this row is the {} and the box on those ports says it's a {} — refusing to read its \
+             patch names. The pattern's own record says where it came from, and this is not that \
+             box.",
+            job.display, identity.name
+        )),
+        None => Some(format!("{} has no pattern dumps to read", job.display)),
+    }
+}
+
+/// Ask the box for the kit at `job.source`, read-only: identify, then one
+/// pattern-kit request. The two round trips carry the other two ordinary
+/// failures packet E's addendum names — **handshake refused**
+/// (`device.identity()` answers nothing) and **wrong firmware** (the box
+/// answered, but this build's decoder does not recognise the pattern struct
+/// version it sent back, which `decode_pattern_kit` reports by itself).
+///
+/// Nothing here touches a [`Session`]. A caller applies the result with
+/// [`Session::apply_patch_read`][digi_core::Session::apply_patch_read] only on
+/// `Ok`, so a failure at any point — including the decode — leaves every
+/// existing patch record exactly as it was.
+pub fn read_patch_kit(device: &mut impl PatternIo, job: &PatchJob) -> Result<PatternKit, String> {
+    let identity = device
+        .identity()
+        .cloned()
+        .ok_or_else(|| "the box did not answer the identity handshake".to_string())?;
+    if let Some(refusal) = patch_wrong_box(job, &identity) {
+        return Err(refusal);
+    }
+    let index = job
+        .from()
+        .wire_index()
+        .ok_or_else(|| format!("{} is past the last slot a dump request can name", job.from().label()))?;
+    let bytes = device.fetch_pattern_kit(index)?;
+    decode_pattern_kit(job.spec, &bytes)
+}
+
+#[cfg(test)]
+mod patch_read_tests {
+    use std::cell::RefCell;
+    use std::collections::BTreeMap;
+    use std::rc::Rc;
+
+    use digi_core::device::{model_for_key, Device as CoreDevice, DeviceIo, DT2};
+    use digi_core::import::Fetched;
+    use digi_core::session::PatternRef as Slot;
+    use digi_protocol::device::{identity_from_responses, DeviceResponse};
+    use digi_protocol::protocol::{split_sysex_stream, SysExKind, DUMP_PATTERN_KIT};
+
+    use super::*;
+
+    const DT2_FIXTURE: &str = "digitakt2-A01-conditions-2026-08-02.syx";
+
+    fn payload(name: &str) -> Vec<u8> {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../protocol/tests/fixtures")
+            .join(name);
+        let bytes =
+            std::fs::read(&path).unwrap_or_else(|e| panic!("reading fixture {}: {e}", path.display()));
+        split_sysex_stream(&bytes)
+            .into_iter()
+            .filter(|m| m.kind == SysExKind::Dump)
+            .filter_map(|m| m.dump)
+            .find(|d| d.dump_type == DUMP_PATTERN_KIT)
+            .map(|d| d.payload)
+            .unwrap_or_else(|| panic!("{name}: no pattern-kit dump"))
+    }
+
+    fn identity(product_id: u8, build: &str) -> DeviceIdentity {
+        identity_from_responses(
+            &DeviceResponse { product_id, supported_ids: vec![0x60], reported_name: String::new() },
+            build.into(),
+            "1.15B".into(),
+        )
+    }
+
+    fn dt2_identity() -> DeviceIdentity {
+        identity(42, "0070")
+    }
+
+    fn port(name: &str) -> digi_core::PortRef {
+        digi_core::PortRef { id: name.into(), name: name.into() }
+    }
+
+    /// A fake box holding one slot's raw bytes, answering [`PatternIo`] the
+    /// same way `app/tests/sync.rs`'s `FakeBox` does — no port, no thread,
+    /// just the two round trips the trait names.
+    #[derive(Clone)]
+    struct FakeBox {
+        identity: Option<DeviceIdentity>,
+        slots: Rc<RefCell<BTreeMap<u8, Vec<u8>>>>,
+        fetches: Rc<RefCell<usize>>,
+    }
+
+    impl FakeBox {
+        fn new(identity: DeviceIdentity, index: u8, bytes: Vec<u8>) -> Self {
+            Self {
+                identity: Some(identity),
+                slots: Rc::new(RefCell::new(BTreeMap::from([(index, bytes)]))),
+                fetches: Rc::new(RefCell::new(0)),
+            }
+        }
+
+        fn silent() -> Self {
+            Self { identity: None, slots: Rc::new(RefCell::new(BTreeMap::new())), fetches: Rc::new(RefCell::new(0)) }
+        }
+
+        fn fetches(&self) -> usize {
+            *self.fetches.borrow()
+        }
+    }
+
+    impl PatternIo for FakeBox {
+        fn identity(&self) -> Option<&DeviceIdentity> {
+            self.identity.as_ref()
+        }
+
+        fn fetch_pattern_kit(&mut self, index: u8) -> Result<Vec<u8>, String> {
+            *self.fetches.borrow_mut() += 1;
+            self.slots.borrow().get(&index).cloned().ok_or_else(|| format!("no slot {index}"))
+        }
+
+        fn send_pattern_kit(&mut self, _index: u8, _payload: &[u8]) -> Result<(), String> {
+            unreachable!("a patch-names read never sends")
+        }
+    }
+
+    /// A session with one DT2, the A01 fixture imported into slot A01 — so the
+    /// pattern's own `source` names A01, exactly what a real fetch-then-read
+    /// round trip would leave behind.
+    fn session_with_fixture() -> (Session, DeviceId) {
+        let mut session = Session::default();
+        let id = session.add_device(CoreDevice::new("DT2", &DT2, 16));
+        let spec = model_for_key("DT2").and_then(|m| m.spec()).expect("DT2 has a spec");
+        let bytes = payload(DT2_FIXTURE);
+        let kit = decode_pattern_kit(spec, &bytes).expect("fixture decodes");
+        session
+            .import_pattern(
+                id,
+                Slot::new(0, 0),
+                &Fetched { spec, kit: &kit, payload: &bytes, from: Slot::new(0, 0) },
+            )
+            .expect("a DT2 fixture into a DT2 slot");
+        let device = session.device_mut(id).expect("just added");
+        device.io = DeviceIo {
+            input: Some(port("dt2-in")),
+            output: Some(port("dt2-out")),
+            ..DeviceIo::default()
+        };
+        (session, id)
+    }
+
+    fn present<'a>(inputs: &'a [digi_midi::PortInfo], outputs: &'a [digi_midi::PortInfo]) -> PortsPresent<'a> {
+        PortsPresent { inputs, outputs }
+    }
+
+    // --- the success path -------------------------------------------------------
+
+    #[test]
+    fn a_successful_read_populates_all_sixteen_tracks_including_a_forced_midi_one() {
+        let (mut session, id) = session_with_fixture();
+        let job = patch_read_job(&session, id, PortsPresent::unknown(), None).expect("A01 has a source");
+        assert_eq!(job.from(), PatternRef::new(0, 0));
+
+        // Force track 2 to read as MIDI, and leave track 3's sound name blank,
+        // so one read exercises all three `PatchSound` shapes at once — the
+        // requirement this packet names by name: "including MIDI tracks".
+        let spec = job.spec;
+        let mut kit = decode_pattern_kit(spec, &payload(DT2_FIXTURE)).unwrap();
+        kit.kit.midi_mask |= 1 << 1;
+        kit.kit.sound_names[2] = String::new();
+
+        // The fake answers with the *real, unmodified* fixture bytes, so the
+        // fetch round trip — identity, the wrong-box check, one
+        // `fetch_pattern_kit` call, one real decode — is exercised end to end
+        // against genuine bytes rather than anything hand-built.
+        let mut fake = FakeBox::new(dt2_identity(), 0, payload(DT2_FIXTURE));
+        let fetched_kit = read_patch_kit(&mut fake, &job).expect("the fake answers");
+        assert_eq!(fake.fetches(), 1);
+        // Real fixture kits have no MIDI-masked or unnamed tracks to fetch (the
+        // condition captures are a plain audio kit with all sixteen sounds
+        // named), so `apply_patch_read` is driven against the mutated `kit`
+        // above rather than `fetched_kit` — there is no encoder in this crate
+        // to turn a hand-edited mask bit back into bytes, and hand-rolling one
+        // would only be re-deriving `decode_pattern_kit`. The two are checked
+        // against each other below so this substitution cannot quietly drift
+        // from what a real decode produces.
+        assert_eq!(fetched_kit.tracks.len(), kit.tracks.len());
+        let count = session
+            .apply_patch_read(id, job.at, &kit, &job.source, 1_787_184_000)
+            .expect("all sixteen tracks patch");
+        assert_eq!(count, 16);
+
+        let pattern = session.device(id).unwrap().pattern(0).unwrap();
+        for t in 0..16 {
+            let patch = pattern.track(t).unwrap().patch.clone();
+            assert!(patch.is_some(), "track {t} must carry a record — every track was fetched");
+        }
+        assert_eq!(
+            pattern.track(1).unwrap().patch.as_ref().unwrap().sound,
+            digi_core::model::PatchSound::Midi,
+            "the forced MIDI track gets the MIDI shape, not a blank sound name"
+        );
+        assert_eq!(
+            pattern.track(2).unwrap().patch.as_ref().unwrap().sound,
+            digi_core::model::PatchSound::Unnamed,
+            "the forced blank sound name gets Unnamed, not an empty-string sentinel"
+        );
+        assert!(matches!(
+            pattern.track(0).unwrap().patch.as_ref().unwrap().sound,
+            digi_core::model::PatchSound::Named(_)
+        ));
+    }
+
+    // --- the "ask rather than assume" refusal -----------------------------------
+
+    #[test]
+    fn a_pattern_with_no_source_refuses_rather_than_guessing_a01() {
+        let mut session = Session::default();
+        let id = session.add_device(CoreDevice::new("DT2", &DT2, 16));
+        let device = session.device_mut(id).expect("just added");
+        device.io =
+            DeviceIo { input: Some(port("in")), output: Some(port("out")), ..DeviceIo::default() };
+        // A pattern written in this app from scratch: never fetched, so it has
+        // no `source` at all. Slot A01 happens to be empty too, which is the
+        // trap — a careless resolver could default to it silently.
+        let err = patch_read_job(&session, id, PortsPresent::unknown(), None).unwrap_err();
+        assert_eq!(
+            err,
+            digi_core::import::PatchReadError::UnknownSlot.to_string(),
+            "{err}"
+        );
+        assert!(
+            err.contains("no record of which slot"),
+            "the refusal has to say why, not just that it failed: {err}"
+        );
+    }
+
+    // --- a slot the caller named ------------------------------------------------
+
+    #[test]
+    fn a_named_slot_is_read_even_when_the_pattern_has_no_source() {
+        let mut session = Session::default();
+        let id = session.add_device(CoreDevice::new("DT2", &DT2, 16));
+        let device = session.device_mut(id).expect("just added");
+        device.io =
+            DeviceIo { input: Some(port("in")), output: Some(port("out")), ..DeviceIo::default() };
+        // The same pattern the test above refuses to resolve a slot for. The
+        // difference is not the pattern, it is that someone said which slot.
+        let job = patch_read_job(&session, id, PortsPresent::unknown(), Some(PatternRef::new(1, 2)))
+            .expect("a named slot needs no provenance");
+        assert_eq!(job.from(), PatternRef::new(1, 2), "the slot asked for is the slot fetched");
+        assert_eq!(job.at, PatternRef::new(0, 0), "and it lands on the pattern that is on screen");
+        assert_eq!(job.source.device_slug, "digitakt2", "the record still names the box it came off");
+    }
+
+    #[test]
+    fn a_named_slot_does_not_override_which_box_a_pattern_came_off() {
+        // A slot number is the user's to choose; the box is not. A DN2-sourced
+        // pattern under a DT2 row is still refused, however clearly the slot
+        // was asked for — reading anyway would file the DT2's kit names under a
+        // pattern whose own record says DN2.
+        let (mut session, id) = session_with_fixture();
+        let at = Slot::new(0, 0);
+        let pattern = session.device_mut(id).unwrap().pattern_mut(at.slot()).unwrap();
+        pattern.source = Some(Source { device_slug: "digitone2".into(), bank: 0, index: 0 });
+
+        let err = patch_read_job(&session, id, PortsPresent::unknown(), Some(PatternRef::new(0, 5)))
+            .unwrap_err();
+        assert_eq!(
+            err,
+            digi_core::import::PatchReadError::NotThisBox { pattern_slug: "digitone2".into() }.to_string(),
+            "{err}"
+        );
+    }
+
+    // --- the four ordinary failures ----------------------------------------------
+
+    #[test]
+    fn no_box_no_ports_set_at_all() {
+        let (session, id) = session_with_fixture();
+        let device = session.device(id).unwrap();
+        assert!(patch_read_blocker(device, PortsPresent::unknown()).is_none(), "unknown present never blocks");
+
+        let mut session = session;
+        session.device_mut(id).unwrap().io = DeviceIo::default();
+        let device = session.device(id).unwrap();
+        assert_eq!(
+            patch_read_blocker(device, PortsPresent::unknown()),
+            Some("No ports set — pick an in and an out for this box above".to_string())
+        );
+    }
+
+    #[test]
+    fn cable_gone_a_port_the_os_no_longer_lists() {
+        let (session, id) = session_with_fixture();
+        let device = session.device(id).unwrap();
+        // `PortsPresent::holds` treats a genuinely *empty* list as "not
+        // enumerated yet" rather than "unplugged" (its own documented rule),
+        // so the test has to give it a list that is non-empty but does not
+        // contain this box's ports — that is what makes a port read as gone.
+        let elsewhere = [digi_midi::PortInfo {
+            id: "elsewhere".into(),
+            name: "Some Other Port".into(),
+            slug: None,
+        }];
+        let why = patch_read_blocker(device, present(&elsewhere, &elsewhere))
+            .expect("this box's ports are not in a non-empty list that lacks them");
+        assert!(
+            why.contains("is no longer plugged in — reconnect the box to read its patch names"),
+            "{why}"
+        );
+    }
+
+    #[test]
+    fn handshake_refused_the_box_does_not_answer_identity() {
+        let (session, id) = session_with_fixture();
+        let job = patch_read_job(&session, id, PortsPresent::unknown(), None).expect("A01 has a source");
+        let mut fake = FakeBox::silent();
+        let err = read_patch_kit(&mut fake, &job).unwrap_err();
+        assert_eq!(err, "the box did not answer the identity handshake");
+        // Nothing was ever applied — the failure happened before there was
+        // anything to apply.
+        let unaffected = session.device(id).unwrap().pattern(0).unwrap().track(0).unwrap().patch.clone();
+        assert!(unaffected.is_some(), "the fixture's own import already gave this a record");
+        // The record is exactly what the import left, not a second write.
+        assert_eq!(unaffected.unwrap().from, Source { device_slug: "digitakt2".into(), bank: 0, index: 0 });
+    }
+
+    #[test]
+    fn wrong_firmware_a_pattern_struct_version_this_build_does_not_decode() {
+        let (session, id) = session_with_fixture();
+        let job = patch_read_job(&session, id, PortsPresent::unknown(), None).expect("A01 has a source");
+        let mut bytes = payload(DT2_FIXTURE);
+        // The pattern struct version is the first four bytes, big-endian
+        // (`decode_pattern_kit`'s own read). A version this build's
+        // `spec.pattern_versions` does not list is exactly what a newer
+        // firmware would send.
+        bytes[0..4].copy_from_slice(&999u32.to_be_bytes());
+        let mut fake = FakeBox::new(dt2_identity(), 0, bytes);
+        let err = read_patch_kit(&mut fake, &job).unwrap_err();
+        assert!(err.contains("unsupported") && err.contains("version"), "{err}");
+        assert_eq!(fake.fetches(), 1, "the fetch happened; only the decode refused");
+    }
+
+    #[test]
+    fn a_box_that_answers_as_the_wrong_model_is_refused_without_a_write_worded_sentence() {
+        let (session, id) = session_with_fixture();
+        let job = patch_read_job(&session, id, PortsPresent::unknown(), None).expect("A01 has a source");
+        // A DN2 answering on the DT2's cabled ports — the mis-cabled-desk case,
+        // read straight off `identity_from_responses` with the DN2's product id.
+        let dn2 = identity_from_responses(
+            &DeviceResponse { product_id: 43, supported_ids: vec![0x60], reported_name: String::new() },
+            "0049".into(),
+            "1.10D".into(),
+        );
+        let mut fake = FakeBox::new(dn2, 0, payload(DT2_FIXTURE));
+        let err = read_patch_kit(&mut fake, &job).unwrap_err();
+        assert!(err.contains("says it's a"), "{err}");
+        assert!(!err.contains("refusing to write"), "a read's refusal must not say \"write\": {err}");
+        assert!(err.contains("refusing to read"), "{err}");
+    }
+
+    // --- no patch record changes on any failure ----------------------------------
+
+    #[test]
+    fn no_failure_mode_touches_an_existing_patch_record() {
+        let (session, id) = session_with_fixture();
+        let before: Vec<_> = session
+            .device(id)
+            .unwrap()
+            .pattern(0)
+            .unwrap()
+            .tracks()
+            .iter()
+            .map(|t| t.patch.clone())
+            .collect();
+
+        // Run every failure path that can be reached with a `PatternIo` alone
+        // (the blocker cases never open a device at all, so they are covered
+        // by construction) and confirm the session is byte-for-byte the same
+        // afterwards — `read_patch_kit` never touches a `Session`, so this is
+        // really pinning that `apply_patch_read` is only ever called on `Ok`.
+        let job = patch_read_job(&session, id, PortsPresent::unknown(), None).expect("A01 has a source");
+        let mut silent = FakeBox::silent();
+        assert!(read_patch_kit(&mut silent, &job).is_err());
+
+        let mut bad_version = FakeBox::new(dt2_identity(), 0, {
+            let mut b = payload(DT2_FIXTURE);
+            b[0..4].copy_from_slice(&999u32.to_be_bytes());
+            b
+        });
+        assert!(read_patch_kit(&mut bad_version, &job).is_err());
+
+        let after: Vec<_> = session
+            .device(id)
+            .unwrap()
+            .pattern(0)
+            .unwrap()
+            .tracks()
+            .iter()
+            .map(|t| t.patch.clone())
+            .collect();
+        assert_eq!(before, after, "a session nothing was ever applied to must not have moved");
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_button_names_the_count_and_gets_the_singulars_right() {
+        assert_eq!(headline(12, 2), "Overwrite 12 tracks on 2 boxes");
+        assert_eq!(headline(1, 1), "Overwrite 1 track on 1 box");
+        // Nothing ticked is a button that is disabled rather than one that lies,
+        // but the words still have to be right when it is drawn.
+        assert_eq!(headline(0, 0), "Overwrite 0 tracks on 0 boxes");
+    }
+
+    fn aim(notes: usize, lanes: usize, name: Option<&str>) -> TrackAim {
+        TrackAim {
+            track_index: 0,
+            name: name.map(str::to_string),
+            notes,
+            lanes,
+            warnings: Vec::new(),
+        }
+    }
+
+    fn seen(existing_trigs: usize, kind: &str) -> TrackSurvey {
+        TrackSurvey {
+            track_index: 0,
+            existing_trigs,
+            kind: kind.into(),
+            box_plocks: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn a_row_says_what_is_going_and_what_it_lands_on() {
+        assert_eq!(
+            row_label(&aim(4, 2, Some("BASS")), Some(&seen(8, "BD"))),
+            "T1 BASS > BD — 4 notes and 2 p-lock lanes, replacing 8 trigs"
+        );
+        // An empty destination is stated rather than left silent: "onto an empty
+        // track" is the difference between adding and replacing.
+        assert_eq!(row_label(&aim(1, 0, None), Some(&seen(0, ""))), "T1 — 1 note, onto an empty track");
+    }
+
+    #[test]
+    fn a_track_the_box_and_the_session_call_the_same_thing_is_not_said_twice() {
+        assert_eq!(
+            row_label(&aim(2, 0, Some("BD")), Some(&seen(1, "BD"))),
+            "T1 BD — 2 notes, replacing 1 trig"
+        );
+    }
+
+    #[test]
+    fn a_box_that_moved_between_the_dialog_and_the_write_refuses() {
+        // Decision 5's other half. Consent was given for eight trigs; the write's
+        // own re-fetch says twelve, so the sentence agreed to is not the one
+        // about to happen.
+        let survey = Survey {
+            kit_name: "KIT 1".into(),
+            box_swing: 50,
+            free_lanes: 80,
+            existing: vec![seen(8, "BD")],
+        };
+        let kit = PatternKit {
+            version: 3,
+            name: String::new(),
+            tempo_bpm: 120.0,
+            kit_index: 0,
+            tracks: Vec::new(),
+            kit: digi_protocol::pattern::KitInfo {
+                version: 3,
+                name: "KIT 1".into(),
+                sound_names: Vec::new(),
+                midi_mask: 0,
+            },
+        };
+        let track = digi_protocol::safe_write::TrackConfirm {
+            track_index: 0,
+            existing_trigs: 12,
+            note_count: 4,
+            box_plocks: Vec::new(),
+        };
+        let args = ConfirmArgs {
+            pattern_kit: &kit,
+            label: "A01".into(),
+            index: 0,
+            swing: 50,
+            free_lanes: 80,
+            tracks: vec![track.clone()],
+        };
+        let why = changed_since_survey(&survey, &args).expect("eight is not twelve");
+        assert!(why.contains("had 8 when you were asked and has 12 now"), "{why}");
+
+        // And the same numbers consent.
+        let args = ConfirmArgs {
+            tracks: vec![digi_protocol::safe_write::TrackConfirm { existing_trigs: 8, ..track }],
+            ..args
+        };
+        assert_eq!(changed_since_survey(&survey, &args), None);
+    }
+}

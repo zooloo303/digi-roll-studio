@@ -1,0 +1,11 @@
+[package]
+name = "digi_generator"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+digi_core = { path = "../core" }
+digi_protocol = { path = "../protocol" }

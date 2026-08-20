@@ -1,0 +1,16 @@
+# Build output
+/target
+**/*.rs.bk
+
+# OS
+.DS_Store
+
+# Agent/editor scratch
+.claude/
+
+# Kept local, deliberately out of the public repo
+#   local/            full working PLAN + HANDOFF, pre-public commit log
+#   design_handoff_*  the two UI design-handoff packages some ui:: comments cite
+/local/
+/design_handoff_digi_roll_ui/
+/design_handoff_digi_roll_ui_v2/

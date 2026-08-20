@@ -1,0 +1,17 @@
+[package]
+name = "digi_midi"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+digi_protocol = { path = "../protocol" }
+# `midir` replaces `rtmidi`, which was declared but never called and could not
+# build without a system RtMidi C library plus bindgen. midir binds the OS's own
+# MIDI frameworks — CoreMIDI, ALSA, WinMM — so there is no third-party library
+# to install on macOS or Windows; Linux still wants libasound2-dev via
+# pkg-config. It is not pure Rust (PLAN.md §3 says so and is wrong); the point
+# is that the backends ship with the OS. SysEx in and out are fully supported.
+midir = "0.11"
