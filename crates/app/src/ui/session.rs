@@ -31,7 +31,7 @@ use eframe::egui::{self, Ui};
 
 use digi_core::device::PortRef;
 use digi_core::project::{Project, ProjectError};
-use digi_core::{DeviceId, Session};
+use digi_core::{default_session, DeviceId, Session};
 
 /// How the app asks the desktop for a path.
 ///
@@ -110,6 +110,8 @@ impl Chooser for NativeChooser {
 pub enum Status {
     Saved(PathBuf),
     Opened(PathBuf),
+    /// A fresh session was started, off nothing on disk.
+    New,
     /// Already worded for a person: see [`describe`].
     Failed(String),
 }
@@ -126,14 +128,39 @@ pub enum CloseGuard {
     Confirmed,
 }
 
+/// What the New guard is doing.
+///
+/// A **sibling** to [`CloseGuard`] rather than a third arm bolted onto it, and
+/// that is the whole of how the two stay out of each other's way: they are
+/// different fields, so answering one can never overwrite what the other
+/// remembers. There is no `Confirmed` arm here the way there is on
+/// `CloseGuard` — nothing outside this file retries a "New" request the way
+/// the OS retries a close, so once the modal resolves there is nothing left
+/// to remember.
+///
+/// The two can still both want the floor in the same frame — the OS can send
+/// a close request while this modal is up, or (in principle) the reverse —
+/// and [`SessionPanel::allow_close`] and [`SessionPanel::request_new`] each
+/// check the *other's* state before opening their own modal, so at most one
+/// of the two is ever `Asking` at once rather than stacking two questions
+/// about the same unsaved work.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum NewGuard {
+    #[default]
+    Idle,
+    /// The modal is up and the New request has been held for now.
+    Asking,
+}
+
 /// What one frame of the panel did, reported to the app shell.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct Outcome {
     /// The panel's `×` was clicked.
     pub close: bool,
-    /// The session in hand was replaced by one off disk, so the engine has to be
-    /// rebuilt around it. **Deliberately not the same flag as an edit** — a
-    /// freshly opened session is not unsaved work.
+    /// The session in hand was replaced — by one off disk, or by a fresh one
+    /// off `New` — so the engine has to be rebuilt around it. **Deliberately
+    /// not the same flag as an edit** — a freshly opened or freshly started
+    /// session is not unsaved work.
     pub reloaded: bool,
 }
 
@@ -152,6 +179,9 @@ pub struct SessionPanel {
     /// that silently stopped playing.
     lost_ports: Vec<String>,
     guard: CloseGuard,
+    /// The New button's own guard — see [`NewGuard`] for why this is a
+    /// separate field rather than a state shared with `guard`.
+    new_guard: NewGuard,
     /// Whether the `?` in the title bar has this panel's reference prose open —
     /// the "WHAT THIS IS NOT" and "PATTERNS" paragraphs that used to sit
     /// permanently in the body. Persisted on the struct rather than threaded
@@ -178,6 +208,7 @@ impl SessionPanel {
             status: None,
             lost_ports: Vec::new(),
             guard: CloseGuard::default(),
+            new_guard: NewGuard::default(),
             reference_visible: false,
         }
     }
@@ -202,6 +233,10 @@ impl SessionPanel {
 
     pub fn guard(&self) -> CloseGuard {
         self.guard
+    }
+
+    pub fn guard_new(&self) -> NewGuard {
+        self.new_guard
     }
 
     /// Fold this frame's edit flag in. Called once per frame from the shell with
@@ -326,6 +361,13 @@ impl SessionPanel {
         match self.guard {
             CloseGuard::Confirmed => true,
             _ if !self.dirty => true,
+            // The New modal is already asking the identical question — "keep
+            // this unsaved work or not?" — from a different button. Refusing
+            // here without touching `self.guard` leaves that modal as the one
+            // and only thing on screen; a close tried again after it resolves
+            // re-enters this function fresh and asks properly if the work is
+            // still unsaved.
+            _ if self.new_guard != NewGuard::Idle => false,
             _ => {
                 self.guard = CloseGuard::Asking;
                 false
@@ -341,6 +383,48 @@ impl SessionPanel {
     /// Stay open.
     pub fn cancel_close(&mut self) {
         self.guard = CloseGuard::Idle;
+    }
+
+    // --- the New guard ---------------------------------------------------------
+
+    /// Answer a New request: ask first if there is unsaved work, otherwise do
+    /// it outright. Returns whether the session was just replaced — the
+    /// caller (`ui`) folds that straight into [`Outcome::reloaded`], the same
+    /// way [`SessionPanel::open`]'s return value does.
+    ///
+    /// Refuses even to raise its own modal while the close guard already has
+    /// one up — see [`NewGuard`]'s header for why, and [`allow_close`] for the
+    /// other half of the same rule.
+    ///
+    /// [`allow_close`]: SessionPanel::allow_close
+    pub fn request_new(&mut self, session: &mut Session) -> bool {
+        if self.guard != CloseGuard::Idle {
+            return false;
+        }
+        if self.dirty {
+            self.new_guard = NewGuard::Asking;
+            false
+        } else {
+            self.confirm_new(session);
+            true
+        }
+    }
+
+    /// Do the reset: a fresh [`default_session`], and the panel put back to
+    /// its just-launched state. Called both for a clean session's immediate
+    /// New and for the modal's `Discard` and `Save` exits.
+    pub fn confirm_new(&mut self, session: &mut Session) {
+        *session = default_session();
+        self.path = None;
+        self.dirty = false;
+        self.lost_ports.clear();
+        self.status = Some(Status::New);
+        self.new_guard = NewGuard::Idle;
+    }
+
+    /// `Keep working`: stay on the session in hand, untouched.
+    pub fn cancel_new(&mut self) {
+        self.new_guard = NewGuard::Idle;
     }
 
     // --- drawing ---------------------------------------------------------------
@@ -395,6 +479,61 @@ impl SessionPanel {
             });
         });
         close_now
+    }
+
+    /// The New modal, drawn from inside [`ui`](SessionPanel::ui) rather than
+    /// from the shell the way [`guard_ui`](SessionPanel::guard_ui) is.
+    ///
+    /// The close guard has to live in the shell because a window close can
+    /// arrive while the Session panel is not even showing; a `New` request
+    /// cannot arrive except by way of the button drawn a few lines above this
+    /// call, in the same frame, so there is no seam here to hand to
+    /// `main.rs` in the first place. Returns whether the session was just
+    /// replaced, which `ui` folds into `Outcome::reloaded`.
+    fn new_guard_ui(&mut self, ui: &mut Ui, session: &mut Session) -> bool {
+        if self.new_guard != NewGuard::Asking {
+            return false;
+        }
+        let mut did_reset = false;
+        egui::Modal::new(egui::Id::new("session-new-guard")).show(ui.ctx(), |ui| {
+            ui.set_max_width(480.0);
+            ui.label(egui::RichText::new("This session has not been saved").strong());
+            ui.separator();
+            match &self.path {
+                Some(path) => ui.label(format!(
+                    "There are changes since it was last saved to {}.",
+                    path.display()
+                )),
+                None => ui.label(
+                    "It has never been saved, so starting a new one loses every \
+                     pattern, scene and port binding in it.",
+                ),
+            };
+            ui.add_space(6.0);
+            ui.label(
+                egui::RichText::new(
+                    "Nothing on a box changes either way — a session file is not a backup.",
+                )
+                .weak(),
+            );
+            ui.separator();
+            ui.horizontal(|ui| {
+                // Same order as the close guard's modal, for the same reason:
+                // cancel first and leftmost.
+                if ui.button("Keep working").clicked() {
+                    self.cancel_new();
+                }
+                if ui.button("Discard").clicked() {
+                    self.confirm_new(session);
+                    did_reset = true;
+                }
+                if ui.button("Save").clicked() && self.save(session) {
+                    self.confirm_new(session);
+                    did_reset = true;
+                }
+            });
+        });
+        did_reset
     }
 
     /// The panel body, drawn when the rail's Session tool is showing.
@@ -465,7 +604,22 @@ impl SessionPanel {
                     {
                         outcome.reloaded = true;
                     }
+                    if ui
+                        .button("New")
+                        .on_hover_text(
+                            "Start a fresh session — a DT2 and a DN2, 16 tracks \
+                             each, no ports bound",
+                        )
+                        .clicked()
+                        && self.request_new(session)
+                    {
+                        outcome.reloaded = true;
+                    }
                 });
+
+                if self.new_guard_ui(ui, session) {
+                    outcome.reloaded = true;
+                }
 
                 ui.add_space(6.0);
                 match &self.path {
@@ -522,6 +676,9 @@ impl SessionPanel {
                         }
                         Some(Status::Opened(path)) => {
                             super::consequence_line(ui, &format!("Opened {}", path.display()));
+                        }
+                        Some(Status::New) => {
+                            super::consequence_line(ui, "Started a new session.");
                         }
                         Some(Status::Failed(why)) => {
                             super::destructive_note(ui, "LAST ATTEMPT FAILED", why);

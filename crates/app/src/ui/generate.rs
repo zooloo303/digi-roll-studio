@@ -1141,7 +1141,7 @@ mod tests {
         digi_core::default_session()
     }
 
-    /// `GenContext::default()`'s three rows, aimed at a real box — the bare
+    /// `GenContext::default()`'s six rows, aimed at a real box — the bare
     /// default leaves every row's device as `None`, which is the state a
     /// freshly-added row starts in when there is no session to default it
     /// from (see `context::new_part`), not a state a plan can ever accept.
@@ -1202,12 +1202,48 @@ mod tests {
     }
 
     #[test]
+    fn the_default_parts_are_conflict_free_out_of_the_box() {
+        // Six rows now land on tracks 0..=5 in a row — `default_parts`'s own
+        // doc comment promises this, and `part_conflicts` is what a real
+        // session would use to notice two rows aimed at the same box+slot+
+        // track. A regression here (say, two default rows sharing a track)
+        // would otherwise only surface as an amber card the first time
+        // anyone opened the panel.
+        let session = session_with_two_boxes();
+        let ctx = default_ctx_on(&session);
+        let conflicts = part_conflicts(&ctx.parts, &session);
+        assert!(conflicts.is_empty(), "default parts collided: {conflicts:?}");
+        // `plan_generate` runs the same collision check on the way to a plan;
+        // this is the version a real Generate press would hit.
+        assert!(plan_generate(&ctx, &session).is_ok());
+    }
+
+    #[test]
+    fn the_default_parts_plan_and_apply_for_every_genre() {
+        // The Generate-panel-level version of the every-genre check: not
+        // just "does `resolve_context` succeed" (covered in `generator::
+        // context`'s own tests) but "does a real plan build and apply from
+        // the panel's own default rows", for every genre someone could
+        // switch to without touching a single row.
+        for genre in GenreId::ALL {
+            let mut session = session_with_two_boxes();
+            let mut ctx = default_ctx_on(&session);
+            ctx = ctx.for_genre(genre, false);
+            let plan = plan_generate(&ctx, &session)
+                .unwrap_or_else(|e| panic!("{genre:?}: default parts failed to plan: {}", e.message()));
+            assert_eq!(plan.rows.len(), 6, "{genre:?}: expected all six default rows");
+            let applied = apply_plan(&mut session, plan);
+            assert_eq!(applied, 6, "{genre:?}");
+        }
+    }
+
+    #[test]
     fn a_plan_names_every_on_row_and_skips_the_off_ones() {
         let session = session_with_two_boxes();
         let mut ctx = default_ctx_on(&session);
-        ctx.parts[1].on = false;
+        ctx.parts[1].on = false; // the chords row
         let plan = plan_generate(&ctx, &session).expect("a default context always resolves");
-        assert_eq!(plan.rows.len(), 2);
+        assert_eq!(plan.rows.len(), 5, "one of six default rows switched off");
         assert!(plan.rows.iter().all(|r| r.notes > 0));
     }
 
@@ -1218,7 +1254,7 @@ mod tests {
         let plan = plan_generate(&ctx, &session).unwrap();
         let expected_notes: Vec<usize> = plan.rows.iter().map(|r| r.notes).collect();
         let applied = apply_plan(&mut session, plan);
-        assert_eq!(applied, 3);
+        assert_eq!(applied, 6, "all six default rows: bass/chords/lead + kick/snare/closed hat");
 
         let device = session.devices[0].id;
         let pattern = session.device(device).unwrap().pattern(0).unwrap();
@@ -1227,7 +1263,8 @@ mod tests {
             assert_eq!(track.notes.len(), *expected);
             assert!(track.name.contains(row.role.label().to_lowercase().as_str()) || !track.name.is_empty());
         }
-        // A track no row named is untouched.
+        // A track no row named is untouched — the default rows only claim
+        // tracks 0..=5.
         assert!(pattern.track(15).unwrap().notes.is_empty());
     }
 

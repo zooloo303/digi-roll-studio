@@ -22,6 +22,7 @@ pub mod midifile;
 pub mod model;
 pub mod project;
 pub mod session;
+pub mod track_clip;
 
 pub use chords::{Harmony, Scale};
 pub use device::{Device, DeviceId, DeviceIo, DeviceModel, PortEnd, PortRef, DN2, DT2, MODELS};
@@ -33,6 +34,7 @@ pub use midifile::{midi_file_to_notes, track_to_midi_file, Imported, MidiFileErr
 pub use model::{ModelError, Note, PLockLane, Pattern, Source, Track, TrackKind, TrackScale};
 pub use project::{Project, ProjectError, FORMAT_VERSION};
 pub use session::{BindError, PatternRef, Scene, Session};
+pub use track_clip::{paste_track, ChordDrop, PasteReport, TrackClip};
 
 /// A session with a DT2 and a DN2 in it, one bank of slots each, and one scene
 /// pointing both at A01. The target case from PLAN.md §2, and what the app opens

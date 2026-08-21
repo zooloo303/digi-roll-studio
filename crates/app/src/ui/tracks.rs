@@ -64,6 +64,7 @@
 // the whole point of a per-track overlay instead of one bar for the pane.
 
 use digi_core::model::{PatchSound, TrackScale};
+use digi_core::track_clip::{paste_track, TrackClip};
 use digi_core::{Device, Pattern, Session, Source, Track, TrackKind};
 use eframe::egui::{self, Align2, FontId, Pos2, Rect, Sense, Stroke, Ui, Vec2};
 
@@ -179,7 +180,14 @@ pub fn track_tooltip_text(track_number: usize, track: &Track, pattern_source: Op
         // on `super`'s glyph table as unconfirmed — flagged from a real window
         // capture 2026-08-20, where it rendered as tofu. `channel_note`'s doc
         // comment above already made the same call for the same reason.
-        "Track {track_number} — {}\n{}\n{kind} · {} note{} · LEN {} · {} · CH{} · out: {port}",
+        // The last line is the copy chord, because a shortcut nobody can find
+        // is a shortcut that does not exist — and this one cannot be guessed:
+        // the obvious Cmd+C is unavailable for the reason
+        // `handle_clipboard_shortcuts` documents at length. The cell's own
+        // hover is the one place a person is already looking at the track they
+        // want to copy.
+        "Track {track_number} — {}\n{}\n{kind} · {} note{} · LEN {} · {} · CH{} · out: {port}\n\
+         Shift+C to copy this track · Shift+V to paste onto it",
         track.name,
         patch_line(track, pattern_source),
         track.notes.len(),
@@ -261,6 +269,220 @@ pub fn track_mut<'a>(session: &'a mut Session, selection: Selection) -> Option<&
     let device = session.devices.get(selection.device)?.id;
     let slot = session.slot_in_scene(session.current_scene, device)?.slot();
     session.device_mut(device)?.pattern_mut(slot)?.track_mut(selection.track)
+}
+
+// --- Shift+C / Shift+V: whole-track copy/paste -------------------------------
+//
+// The decision (`digi_core::track_clip`) is pure and lives in `core`; this is
+// only the seam that wires a keypress to it. `PLAN.md`'s copy-track item and
+// `DEVELOPMENT.md`'s lesson 7 both named this exact gap — `protocol::copy_track`
+// and the note-level `edit_ops::place_clipboard` landed with no caller — and
+// this is the third of the three: the in-app, whole-*track* copy the TRACKS
+// grid itself wants, one click and one keystroke apart.
+//
+// **Where the clipboard lives, and why not a field on `App`.** `tracks::ui`'s
+// signature is `(ui, session, selection, engine)` and two other packets are
+// editing this repo at the same time, so a new field threaded from
+// `main.rs`/`App` is off the table for this change (and the brief says so).
+// `ui.ctx()`'s own per-id memory already has exactly this job for a different
+// pane's state — see `super::working_popup`'s doc comment, which chose the
+// same mechanism for the same reason: state that is real but belongs to one
+// widget's lifetime, not to the session or to the shell. `insert_temp`/
+// `get_temp` need no serde impl and are never written to egui's persisted
+// `memory.json`, which is right for this: a clipboard that outlived a restart
+// would be surprising, not useful.
+//
+// **The clipboard holds a `Selection`, not a copy of the track's notes.** Both
+// `track` and `track_mut` above already resolve a `Selection` through the
+// *current* scene rather than remembering a `Pattern`, on purpose — "switching
+// scene moves the roll onto the pattern that is now playing". Pasting follows
+// the same rule: it re-reads the source at paste time, so a copy behaves
+// exactly as well across a scene change as the selection mechanism it is built
+// on, and a copied device that gets removed from the session fails exactly the
+// way any other stale `Selection` already fails elsewhere in this file — `None`,
+// caught and reported here rather than panicking.
+
+/// The whole-track clipboard's contents, kept in `ui.ctx()`'s per-id memory.
+/// See the section header above for why here and why a `Selection` rather than
+/// a snapshot of the music.
+#[derive(Clone, Debug, Default)]
+struct Clipboard {
+    source: Option<Selection>,
+    /// The last thing a copy or a paste had to say, shown in the pane header
+    /// by `ui()`. Untouched by a frame that does neither, so it reads as a
+    /// status line rather than flickering — the same contract `ui::edit`'s
+    /// `Status` keeps for its panel.
+    message: Option<String>,
+}
+
+/// A fixed id, not one derived from `ui.id()`: the clipboard has to keep
+/// meaning the same thing regardless of what else this pane's `Ui` tree looks
+/// like on a given frame, which a path-derived id cannot promise as readily as
+/// a name that never changes.
+fn clipboard_id() -> egui::Id {
+    egui::Id::new("digi-roll-studio::tracks::clipboard")
+}
+
+/// "DT2 T01" — a cell's identity for a status line, independent of whether it
+/// still resolves to a track (a removed device still has a name to report).
+fn cell_label(session: &Session, selection: Selection) -> String {
+    let device_name = session.devices.get(selection.device).map(|d| d.name.as_str()).unwrap_or("a removed box");
+    format!("{device_name} T{:02}", selection.track + 1)
+}
+
+/// What trying to paste `source` onto `target` came to.
+enum PasteOutcome {
+    Pasted { report: digi_core::PasteReport, source_label: String, target_label: String },
+    /// Nothing was ever copied. Silent: there is nothing to have an opinion
+    /// about yet.
+    NothingCopied,
+    /// The source and the target are the same cell. Silent, per the brief:
+    /// copying a track onto itself must be a no-op that does not flag `edited`
+    /// or dirty the session.
+    SameCell,
+    /// The copied `Selection` no longer resolves — its device was removed, or
+    /// (not reachable with today's two 16-track models, but not assumed away
+    /// either) its track index no longer exists.
+    SourceGone,
+    /// The paste target itself no longer resolves. Silent for the same reason
+    /// `SameCell` is: there is no cell on screen this could be reported
+    /// against.
+    NoTarget,
+}
+
+/// The pure decision, `core::track_clip::paste_track`, wired to two
+/// `Selection`s. Never mutates `session` on any branch except `Pasted`.
+fn try_paste(session: &mut Session, source: Option<Selection>, target: Selection) -> PasteOutcome {
+    let Some(source) = source else {
+        return PasteOutcome::NothingCopied;
+    };
+    if source == target {
+        return PasteOutcome::SameCell;
+    }
+    let Some(source_kind) = session.devices.get(source.device).map(|d| d.model.key) else {
+        return PasteOutcome::SourceGone;
+    };
+    let Some(source_track) = track(session, source) else {
+        return PasteOutcome::SourceGone;
+    };
+    let clip = TrackClip::copy_from(source_track, source_kind);
+    let source_label = cell_label(session, source);
+
+    let Some((target_kind, target_max_steps)) =
+        session.devices.get(target.device).map(|d| (d.model.key, d.model.max_steps))
+    else {
+        return PasteOutcome::NoTarget;
+    };
+    let target_label = cell_label(session, target);
+    let Some(target_track) = track_mut(session, target) else {
+        return PasteOutcome::NoTarget;
+    };
+    let report = paste_track(&clip, target_track, target_kind, target_max_steps);
+    PasteOutcome::Pasted { report, source_label, target_label }
+}
+
+/// The status line for a completed paste: what landed, and anything that
+/// didn't, in one sentence a person reads once rather than a table they have
+/// to parse.
+fn paste_message(source_label: &str, target_label: &str, report: &digi_core::PasteReport) -> String {
+    let mut message = format!(
+        "Pasted {source_label} onto {target_label} — {} note{}, {} lane{}.",
+        report.notes_pasted,
+        if report.notes_pasted == 1 { "" } else { "s" },
+        report.lanes_pasted,
+        if report.lanes_pasted == 1 { "" } else { "s" },
+    );
+    if !report.warnings.is_empty() {
+        message.push(' ');
+        message.push_str(&report.warnings.join(" "));
+    }
+    message
+}
+
+/// Shift+C copies `selection` onto the clipboard; Shift+V pastes whatever is
+/// there onto `selection`. Returns whether the session changed — only a real
+/// paste ever does, per the no-op rules below.
+///
+/// ## Why not Cmd+C / Cmd+V, which is what was asked for first
+///
+/// **Because they never arrive.** `egui-winit` intercepts the platform
+/// clipboard chord before it becomes a key event
+/// (`is_copy_command`/`is_paste_command`, egui-winit 0.36.1 `src/lib.rs`
+/// ~1019): on a match it pushes `Event::Copy` or `Event::Paste` and
+/// **returns**, so the `Event::Key { key: Key::C, .. }` a `consume_key` needs
+/// is never pushed at all. The first cut of this function matched
+/// `Modifiers::COMMAND` with `Key::C` and was unreachable code on every
+/// platform — it shipped dead, and the tests missed it because they fed the
+/// context a hand-built `Event::Key` the real platform never sends. **A test
+/// that builds the input the code expects, rather than the input the platform
+/// produces, proves nothing.** That is `DEVELOPMENT.md`'s lesson arriving in a
+/// new costume, and the tests below now use the chord this function actually
+/// binds.
+///
+/// Neither is Cmd+**Shift**+C a way out: `is_copy_command` tests only
+/// `modifiers.command && keycode == Key::C` and never checks that Shift is
+/// absent, so *any* C or V pressed with Command held is swallowed the same
+/// way.
+///
+/// And `Event::Paste` could not carry this even if it were caught: egui-winit
+/// only emits it when the **system** clipboard already holds non-empty text,
+/// so a track paste bound to it would work or not depending on whether you had
+/// lately copied text in some other app. A shortcut that is live only when an
+/// unrelated app has left something on the pasteboard is worse than no
+/// shortcut.
+///
+/// So the chord is Shift+C / Shift+V, which `egui-winit` passes straight
+/// through, and plain Cmd+C/Cmd+V stays free for text fields and for the
+/// note-level clipboard `core::edit_ops::place_clipboard` is waiting to become.
+/// `Modifiers::SHIFT` as a `consume_key` pattern requires Shift *and* no
+/// ctrl/command (`Modifiers::cmd_ctrl_matches`), so this cannot fire on the
+/// intercepted chord by accident.
+///
+/// Guarded by focus exactly the way `ui::edit::shortcuts` guards Cmd+Z: with a
+/// `DragValue` or a `TextEdit` focused elsewhere in this pane's own parameter
+/// row (or anywhere else in the app), a letter key has to mean whatever that
+/// control means by it, not "copy this track".
+fn handle_clipboard_shortcuts(ui: &Ui, session: &mut Session, selection: Selection) -> bool {
+    if ui.ctx().memory(|m| m.focused().is_some()) {
+        return false;
+    }
+    let (copy, paste) = ui.ctx().input_mut(|i| {
+        (
+            i.consume_key(egui::Modifiers::SHIFT, egui::Key::C),
+            i.consume_key(egui::Modifiers::SHIFT, egui::Key::V),
+        )
+    });
+    if !copy && !paste {
+        return false;
+    }
+
+    let id = clipboard_id();
+    let mut clipboard: Clipboard = ui.ctx().data(|d| d.get_temp(id)).unwrap_or_default();
+    let mut edited = false;
+
+    if copy {
+        // A copy over a selection naming no track (nothing there to copy) is
+        // silent and leaves whatever was already on the clipboard alone,
+        // rather than clearing a working copy on a stray keypress.
+        if track(session, selection).is_some() {
+            clipboard.source = Some(selection);
+            clipboard.message = Some(format!("Copied {} — Shift+V onto another cell to paste it.", cell_label(session, selection)));
+        }
+    } else {
+        match try_paste(session, clipboard.source, selection) {
+            PasteOutcome::Pasted { report, source_label, target_label } => {
+                edited = true;
+                clipboard.message = Some(paste_message(&source_label, &target_label, &report));
+            }
+            PasteOutcome::SourceGone => {
+                clipboard.message = Some("Nothing pasted — the copied track no longer exists.".to_string());
+            }
+            PasteOutcome::NothingCopied | PasteOutcome::SameCell | PasteOutcome::NoTarget => {}
+        }
+    }
+
+    ui.ctx().data_mut(|d| d.insert_temp(id, clipboard));
+    edited
 }
 
 // --- pure geometry and data rules -------------------------------------------
@@ -416,12 +638,22 @@ fn paint_header(ui: &mut Ui, session: &Session, selection: Selection) {
 /// One track cell: three text rows, the step-density strip, and — for a track
 /// that carries data — the two progress overlays. `number` is the 1-based
 /// track number this cell shows, zero-padded.
+///
+/// `copied` draws a second, inset ring in [`super::CYAN_FILL`] — the shade
+/// `colored_button` already pairs with [`super::CYAN`] elsewhere in this app
+/// for an "armed" control, reused here rather than a new token so a cell that
+/// is both selected (the outer, full-strength `CYAN` border) and the
+/// clipboard's source (this inner one) reads as two related marks rather than
+/// two competing ones. Modest on purpose — `DEVELOPMENT.md`'s glyph lesson is
+/// why this is a shape, not a badge crowded in among the four corners that are
+/// already spoken for on a data-carrying cell.
 fn paint_cell(
     painter: &egui::Painter,
     rect: Rect,
     number: usize,
     track: &Track,
     selected: bool,
+    copied: bool,
     position_steps: f64,
 ) {
     let has = has_data(track);
@@ -512,6 +744,10 @@ fn paint_cell(
         super::CELL_BORDER_SUBTLE
     };
     painter.rect_stroke(rect, 0.0, Stroke::new(1.0, border), egui::StrokeKind::Inside);
+
+    if copied {
+        painter.rect_stroke(rect.shrink(3.0), 0.0, Stroke::new(1.0, super::CYAN_FILL), egui::StrokeKind::Inside);
+    }
 }
 
 /// One device's row: the box-id gutter and its 16-cell grid. Returns whether a
@@ -524,6 +760,7 @@ fn paint_device_row(
     pattern: &Pattern,
     device_index: usize,
     selection: &mut Selection,
+    copied_selection: Option<Selection>,
     position_steps: f64,
 ) {
     let width = ui.available_width();
@@ -563,8 +800,10 @@ fn paint_device_row(
         if response.clicked() {
             *selection = Selection { device: device_index, track: t };
         }
-        let selected = *selection == Selection { device: device_index, track: t };
-        paint_cell(&painter, cell, t + 1, track, selected, position_steps);
+        let this_cell = Selection { device: device_index, track: t };
+        let selected = *selection == this_cell;
+        let copied = copied_selection == Some(this_cell);
+        paint_cell(&painter, cell, t + 1, track, selected, copied, position_steps);
     }
 }
 
@@ -592,19 +831,38 @@ pub fn ui(ui: &mut Ui, session: &mut Session, selection: &mut Selection, engine:
         ui.ctx().request_repaint();
     }
 
+    // Shift+C and Shift+V, read here rather than hoisted into the shell
+    // the way `edit::shortcuts` is: this pane is always drawn (`workspace::ui`
+    // calls it unconditionally, unlike the collapsible tool panel `edit`
+    // lives in), so it reaches every frame without help from `main.rs`. See
+    // the section above `Clipboard` for the rest of the argument.
+    changed |= handle_clipboard_shortcuts(ui, session, *selection);
+    let clipboard: Clipboard = ui.ctx().data(|d| d.get_temp(clipboard_id())).unwrap_or_default();
+
     egui::Frame::new()
         .fill(super::PANEL_BG)
         .stroke(Stroke::new(1.0, super::PANEL_BORDER))
         .inner_margin(egui::Margin { left: 14, right: 14, top: 12, bottom: 14 })
         .show(ui, |ui| {
             paint_header(ui, session, *selection);
-            ui.add_space(SECTION_GAP);
+            // The clipboard's last word — what a copy or a paste had to say,
+            // including any warning a paste came back with — sits directly
+            // under the header, the pane's own natural home for a line about
+            // the pane as a whole rather than about one track.
+            match clipboard.message.as_deref() {
+                Some(message) => {
+                    ui.add_space(4.0);
+                    super::consequence_line(ui, message);
+                    ui.add_space(SECTION_GAP - 4.0);
+                }
+                None => ui.add_space(SECTION_GAP),
+            }
 
             for (index, device) in session.devices.iter().enumerate() {
                 let Some(pattern) = session.current_pattern(device.id) else {
                     continue;
                 };
-                paint_device_row(ui, device, pattern, index, selection, position_steps);
+                paint_device_row(ui, device, pattern, index, selection, clipboard.source, position_steps);
                 ui.add_space(ROW_GAP);
             }
 
@@ -807,7 +1065,8 @@ mod tests {
             track_tooltip_text(3, &track, Some(&a01())),
             "Track 3 — BD HARD\n\
              SOUND: BD HARD — kit KIT 1, from A01, read 2026-08-20\n\
-             Audio · 1 note · LEN 16 · 1x · CH3 · out: none"
+             Audio · 1 note · LEN 16 · 1x · CH3 · out: none\n\
+             Shift+C to copy this track · Shift+V to paste onto it"
         );
     }
 
@@ -820,7 +1079,8 @@ mod tests {
             track_tooltip_text(1, &track, None),
             "Track 1 — T1\n\
              No patch read from the box — \"Read patch names\" in Setup fills this in.\n\
-             MIDI · 0 notes · LEN 16 · 1x · CH1 · out: none"
+             MIDI · 0 notes · LEN 16 · 1x · CH1 · out: none\n\
+             Shift+C to copy this track · Shift+V to paste onto it"
         );
     }
 
@@ -1080,5 +1340,181 @@ mod tests {
         frame(&ctx, vec![egui::Event::PointerMoved(pos)], &mut session, &mut selection, &engine);
         // No panic reaching here is the assertion: `paint_device_row` computed
         // `track_tooltip_text` for a real, patched track under a real hover.
+    }
+
+    // --- Shift+C / Shift+V ------------------------------------------------------
+    //
+    // These drive `handle_clipboard_shortcuts` directly (private to this
+    // module, so only reachable from here) to pin the clipboard's own state
+    // and its status message. `crates/app/tests/tracks_clipboard.rs` covers
+    // the same feature from outside the module, through the public `ui()`
+    // entry point, and deliberately does not reach into `Clipboard` — the
+    // split is the same one `ui::edit`'s own tests keep between `Status` and
+    // the shell.
+
+    /// The chord `handle_clipboard_shortcuts` actually binds, built the way
+    /// `egui-winit` really delivers it. **Not `Modifiers::COMMAND`**: that is
+    /// the event the platform never sends for C or V, because the clipboard
+    /// chord is intercepted upstream and turned into `Event::Copy` /
+    /// `Event::Paste` — see the function's own doc comment. Feeding a
+    /// COMMAND-modified C here is what let the first cut of this feature ship
+    /// dead with a green suite.
+    fn shift_key(key: egui::Key) -> egui::Event {
+        egui::Event::Key { key, physical_key: None, pressed: true, repeat: false, modifiers: egui::Modifiers::SHIFT }
+    }
+
+    fn run_clipboard(ctx: &egui::Context, key: egui::Key, session: &mut Session, selection: Selection) -> bool {
+        let input = egui::RawInput { events: vec![shift_key(key)], ..Default::default() };
+        let mut edited = false;
+        let mut output = ctx.run_ui(input, |ui| {
+            edited = handle_clipboard_shortcuts(ui, session, selection);
+        });
+        output.textures_delta.clear();
+        edited
+    }
+
+    fn read_clipboard(ctx: &egui::Context) -> Clipboard {
+        ctx.data(|d| d.get_temp(clipboard_id())).unwrap_or_default()
+    }
+
+    #[test]
+    fn copying_a_track_remembers_its_selection_and_says_so() {
+        let ctx = egui::Context::default();
+        let mut session = digi_core::default_session();
+        let sel = Selection { device: 0, track: 0 };
+
+        let edited = run_clipboard(&ctx, egui::Key::C, &mut session, sel);
+
+        assert!(!edited, "a copy alone is never an edit");
+        let clip = read_clipboard(&ctx);
+        assert_eq!(clip.source, Some(sel));
+        assert_eq!(clip.message.as_deref(), Some("Copied DT2 T01 — Shift+V onto another cell to paste it."));
+    }
+
+    #[test]
+    fn copying_a_selection_with_no_track_leaves_the_clipboard_alone() {
+        let ctx = egui::Context::default();
+        let mut session = digi_core::default_session();
+        let real = Selection { device: 0, track: 0 };
+        let nothing_there = Selection { device: 9, track: 0 };
+
+        run_clipboard(&ctx, egui::Key::C, &mut session, real);
+        let before = read_clipboard(&ctx);
+
+        run_clipboard(&ctx, egui::Key::C, &mut session, nothing_there);
+        let after = read_clipboard(&ctx);
+
+        assert_eq!(before.source, after.source, "a stray copy over nothing must not clear a working copy");
+    }
+
+    #[test]
+    fn pasting_reports_what_landed_and_what_did_not() {
+        let ctx = egui::Context::default();
+        let mut session = digi_core::default_session();
+        let source_sel = Selection { device: 0, track: 0 };
+        let dest_sel = Selection { device: 0, track: 5 };
+        {
+            let t = track_mut(&mut session, source_sel).unwrap();
+            t.notes = vec![digi_core::Note::new(0.0, 60, 1.0, 100, 0.0)];
+            t.plocks = vec![
+                digi_core::PLockLane::new(Some("filter.cutoff".into()), None, Some("DT2".into()), false, vec![Some(64)])
+                    .unwrap(),
+            ];
+        }
+
+        run_clipboard(&ctx, egui::Key::C, &mut session, source_sel);
+        let edited = run_clipboard(&ctx, egui::Key::V, &mut session, dest_sel);
+
+        assert!(edited);
+        let clip = read_clipboard(&ctx);
+        let message = clip.message.expect("a paste always leaves a status line");
+        assert!(message.contains("Pasted DT2 T01 onto DT2 T06"), "{message}");
+        assert!(message.contains("1 note"), "{message}");
+        assert!(message.contains("1 lane"), "{message}");
+        assert!(!message.contains("wasn't copied"), "nothing should have been dropped here: {message}");
+    }
+
+    #[test]
+    fn a_dropped_cross_device_lane_is_named_in_the_paste_message() {
+        let ctx = egui::Context::default();
+        let mut session = digi_core::default_session();
+        let source_sel = Selection { device: 0, track: 0 }; // DT2
+        let dest_sel = Selection { device: 1, track: 0 }; // DN2
+        {
+            let t = track_mut(&mut session, source_sel).unwrap();
+            t.notes = vec![digi_core::Note::new(0.0, 60, 1.0, 100, 0.0)];
+            // Unnamed and raw: meaningless on a different box's numbering.
+            t.plocks =
+                vec![digi_core::PLockLane::new(None, Some(200), Some("DT2".into()), false, vec![Some(10)]).unwrap()];
+        }
+
+        run_clipboard(&ctx, egui::Key::C, &mut session, source_sel);
+        let edited = run_clipboard(&ctx, egui::Key::V, &mut session, dest_sel);
+
+        assert!(edited, "the note still crosses even though the lane can't");
+        let message = read_clipboard(&ctx).message.unwrap();
+        assert!(message.contains("wasn't copied"), "{message}");
+    }
+
+    #[test]
+    fn pasting_a_stale_copy_says_the_track_is_gone_rather_than_editing_anything() {
+        let ctx = egui::Context::default();
+        let mut session = digi_core::default_session();
+        let dn2_sel = Selection { device: 1, track: 0 };
+        {
+            let t = track_mut(&mut session, dn2_sel).unwrap();
+            t.notes = vec![digi_core::Note::new(0.0, 60, 1.0, 100, 0.0)];
+        }
+
+        run_clipboard(&ctx, egui::Key::C, &mut session, dn2_sel);
+        session.devices.truncate(1); // the DN2 this clipboard points at is gone
+
+        let dt2_sel = Selection { device: 0, track: 0 };
+        let edited = run_clipboard(&ctx, egui::Key::V, &mut session, dt2_sel);
+
+        assert!(!edited);
+        let message = read_clipboard(&ctx).message.unwrap();
+        assert!(message.contains("no longer exists"), "{message}");
+    }
+
+    #[test]
+    fn a_focused_widget_swallows_the_shortcut_rather_than_letting_it_copy() {
+        // The same guard `ui::edit::shortcuts` keeps for Cmd+Z: with a control
+        // elsewhere in the app focused, Shift+C/Shift+V has to mean whatever
+        // that control means by it, not "copy this track".
+        let ctx = egui::Context::default();
+        let mut session = digi_core::default_session();
+        let sel = Selection { device: 0, track: 0 };
+        // A focus target that isn't part of this pane at all — the guard reads
+        // `ctx.memory().focused()`, which does not care which widget it is.
+        let focus_id = egui::Id::new("some-other-widget-entirely");
+        ctx.memory_mut(|m| m.request_focus(focus_id));
+
+        let edited = run_clipboard(&ctx, egui::Key::C, &mut session, sel);
+
+        assert!(!edited);
+        assert_eq!(read_clipboard(&ctx).source, None, "the keystroke must not have reached the clipboard at all");
+    }
+
+    /// Draws a whole frame with a cell marked as the clipboard's source, the
+    /// same way `hovering_a_track_cell_with_a_patch_runs_without_panicking`
+    /// checks a different field is wired up: not proof the ring is legible —
+    /// that is a screen check, per `DEVELOPMENT.md` lesson 8 — but proof
+    /// `paint_device_row`/`paint_cell` accept a live `copied_selection`
+    /// without a panic or an off-by-one in which cell it marks.
+    #[test]
+    fn drawing_the_pane_with_a_copied_cell_runs_without_panicking() {
+        let ctx = egui::Context::default();
+        let mut session = digi_core::default_session();
+        let mut selection = Selection { device: 0, track: 0 };
+        let engine = EngineLink::default();
+
+        frame(&ctx, vec![], &mut session, &mut selection, &engine);
+        frame(&ctx, vec![shift_key(egui::Key::C)], &mut session, &mut selection, &engine);
+        assert_eq!(read_clipboard(&ctx).source, Some(selection));
+
+        selection = Selection { device: 1, track: 3 };
+        frame(&ctx, vec![], &mut session, &mut selection, &engine);
+        frame(&ctx, vec![], &mut session, &mut selection, &engine);
     }
 }

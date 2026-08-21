@@ -185,9 +185,38 @@ fn new_part(role: Role, track: usize, density: u8, octave: u8) -> Part {
     }
 }
 
-/// The three default rows — bass, chords, lead, in that order — lining up
-/// with tracks 1–3 on a box if they're sent in order. Octaves are the
-/// register windows from the design: bass C2–C4, chords C4–C6, lead C5–up.
+/// The six default rows — bass, chords, lead, then a kick/snare/closed-hat
+/// kit, in that order — lining up with tracks 1–6 on a box if they're sent
+/// in order. Octaves are the register windows from the design: bass C2–C4,
+/// chords C4–C6, lead C5–up.
+///
+/// **Drum voices have no register.** `arrange::generate_for_role` never
+/// passes a drum row's octave to [`generate_drums`](crate::parts::drums::generate_drums)
+/// at all — a voice's destination track *is* the sound, so there is nothing
+/// for an octave to move (see `genres::drum_profile`'s header). `4` is
+/// therefore not a register choice, only a value that survives
+/// [`Part::sanitized`]'s 1–7 clamp and matches the placeholder the panel's
+/// own "+ add part…" button already leaves behind when a row is switched to
+/// a drum role (`ui::generate::parts_group`) — the panel hides the Oct
+/// control for a drum voice (`Role::is_drum_voice`) rather than pretending
+/// the number means something.
+///
+/// Densities: `60`/`55`/`65` for kick/snare/closed hat are read off
+/// `rhythm::trig_count_for` against each drum role's own `trigs_per_bar`
+/// range in `genres.rs`, not copied from the melodic rows. The spine tier
+/// (kick, snare — `DRUM_SPINE_RECIPE`) only ever carries `ProbWeak`, which
+/// never touches an accented trig, so pushing their density toward the
+/// busier half of their range is safe: at 60, DnB's kick (`(1,3)` per bar)
+/// lands ~2/bar — the table's own "1, and the syncopated and-of-3" — and
+/// Breaks' kick (`(2,5)`) lands ~4/bar, matching its "busier than DnB's"
+/// comment. Snare at 55 keeps the backbeat itself dominant (weight 1.0 on
+/// beats 2/4 always wins the weighted pick) while still drawing in the
+/// ghost hits the DnB and Breaks tables reserve for it. Closed hat's
+/// `trigs_per_bar` floor is already high everywhere (6–16), because a hat
+/// carries the pulse rather than punctuating it, so 65 pushes toward a
+/// steady near-continuous 16th feel (DnB: ~14/16 steps) and leaves
+/// `DRUM_COLOUR_RECIPE`'s conditions to do the thinning, rather than the
+/// raw trig count.
 ///
 /// **Not the JS's ceiling of three**: this is a starting point, not a limit.
 /// Rows can be added, removed and reassigned to any box, slot or track.
@@ -196,6 +225,9 @@ pub fn default_parts() -> Vec<Part> {
         new_part(Role::Bass, 0, 55, 2),
         new_part(Role::Chords, 1, 40, 4),
         new_part(Role::Lead, 2, 40, 5),
+        new_part(Role::Kick, 3, 60, 4),
+        new_part(Role::Snare, 4, 55, 4),
+        new_part(Role::ClosedHat, 5, 65, 4),
     ]
 }
 
@@ -394,14 +426,50 @@ mod tests {
     }
 
     #[test]
-    fn the_default_parts_are_three_distinct_rows_in_three_registers() {
+    fn the_default_parts_are_six_distinct_rows_on_six_tracks_in_order() {
+        // Bass, chords, lead, then kick/snare/closed-hat — tracks 0..=5 in
+        // that order, so they line up with a box's tracks 1-6 if sent as is.
         let d = GenContext::default();
+        assert_eq!(d.parts.len(), 6);
         let ids: std::collections::HashSet<PartId> = d.parts.iter().map(|p| p.id).collect();
-        assert_eq!(ids.len(), 3, "three distinct part identities");
-        let tracks: std::collections::HashSet<usize> = d.parts.iter().map(|p| p.destination.track).collect();
-        assert_eq!(tracks.len(), 3, "three distinct tracks");
+        assert_eq!(ids.len(), 6, "six distinct part identities");
+        let tracks: Vec<usize> = d.parts.iter().map(|p| p.destination.track).collect();
+        assert_eq!(tracks, vec![0, 1, 2, 3, 4, 5], "six distinct tracks, in row order");
+        let roles: Vec<Role> = d.parts.iter().map(|p| p.role).collect();
+        assert_eq!(
+            roles,
+            vec![Role::Bass, Role::Chords, Role::Lead, Role::Kick, Role::Snare, Role::ClosedHat]
+        );
+        // Register windows only mean something for the three melodic rows —
+        // see `default_parts`'s doc comment on why a drum row's octave is an
+        // inert placeholder rather than a fourth register.
         assert!(d.parts[0].octave < d.parts[1].octave);
         assert!(d.parts[1].octave < d.parts[2].octave);
+    }
+
+    #[test]
+    fn the_default_part_set_generates_for_every_genre() {
+        // The critical check: `GenContext::default()` is what the panel opens
+        // with, and switching genre keeps the same six rows (`for_genre` only
+        // re-defaults bars/progression). If any genre's `role_profile` match
+        // were missing Kick, Snare or ClosedHat the crate would not compile
+        // at all — the match in `genres.rs` is exhaustive over every
+        // `(GenreId, Role)` pair — but that only proves a profile *exists*,
+        // not that running it through the real pipeline produces music. This
+        // drives `arrange::generate_arrangement` itself, so a panic or an
+        // empty part hiding behind a profile that type-checks but is broken
+        // for one genre would still be caught here.
+        for genre in GenreId::ALL {
+            let ctx = GenContext::default().for_genre(genre, false);
+            assert_eq!(ctx.parts.len(), 6, "{genre:?}: default part count changed");
+            let arrangement = crate::arrange::generate_arrangement(&ctx, None)
+                .unwrap_or_else(|e| panic!("{genre:?}: the default six-part context failed to generate: {e:?}"));
+            assert_eq!(arrangement.parts.len(), 6);
+            for (part, ctx_part) in arrangement.parts.iter().zip(&ctx.parts) {
+                assert_eq!(part.role, ctx_part.role);
+                assert!(!part.notes.is_empty(), "{genre:?}/{:?} produced no notes", part.role);
+            }
+        }
     }
 
     #[test]
@@ -538,11 +606,18 @@ mod tests {
     #[test]
     fn target_destinations_is_the_checked_parts_destinations_in_row_order() {
         let mut ctx = GenContext::default();
-        ctx.parts[1].on = false;
+        ctx.parts[1].on = false; // the chords row
         let dests = ctx.target_destinations();
-        assert_eq!(dests.len(), 2);
-        assert_eq!(dests[0].track, ctx.parts[0].destination.track);
-        assert_eq!(dests[1].track, ctx.parts[2].destination.track);
+        assert_eq!(dests.len(), 5, "one of six rows switched off");
+        // Row order, skipping only the one turned off — named explicitly by
+        // index rather than re-filtering `ctx.parts` here, so this cannot
+        // become a tautology that passes however `target_destinations` is
+        // implemented.
+        assert_eq!(dests[0].track, ctx.parts[0].destination.track); // bass
+        assert_eq!(dests[1].track, ctx.parts[2].destination.track); // lead
+        assert_eq!(dests[2].track, ctx.parts[3].destination.track); // kick
+        assert_eq!(dests[3].track, ctx.parts[4].destination.track); // snare
+        assert_eq!(dests[4].track, ctx.parts[5].destination.track); // closed hat
     }
 
     #[test]
@@ -551,8 +626,9 @@ mod tests {
         let bass_id = ctx.parts[0].id;
         ctx.bump_variation(bass_id);
         assert_eq!(ctx.parts[0].variation, 1);
-        assert_eq!(ctx.parts[1].variation, 0);
-        assert_eq!(ctx.parts[2].variation, 0);
+        for p in &ctx.parts[1..] {
+            assert_eq!(p.variation, 0, "{:?} moved when only bass was bumped", p.role);
+        }
         ctx.reset_variations();
         assert!(ctx.parts.iter().all(|p| p.variation == 0));
     }

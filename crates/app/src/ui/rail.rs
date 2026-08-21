@@ -38,7 +38,7 @@ impl Tool {
         match self {
             Self::Edit => "Velocity, length, micro-timing, the trig lane and the p-lock lanes",
             Self::Harmony => "Key and scale, scale-tinted rows, chord draw, and a chord under everything selected",
-            Self::Generate => "A bassline, a chord part and a lead that agree with each other",
+            Self::Generate => "Bass, chords, lead and a kick/snare/hat kit, generated to agree with each other",
             Self::Session => "Save and open the session file",
         }
     }

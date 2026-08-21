@@ -322,20 +322,22 @@ mod tests {
 
     #[test]
     fn a_drum_row_flows_through_the_full_arrangement_pipeline() {
-        // Drum voices are not one of the three default rows, but a caller
-        // (the future Generate panel) can add one like any other part —
+        // Kick, Snare and ClosedHat are three of the six default rows since
+        // Neil's 2026-08-20 ask (`context::default_parts`); OpenHat is not,
+        // so it is what this test uses to prove a caller (the Generate
+        // panel) can still add a drum voice by hand like any other part —
         // this is that path, exercised end to end rather than only at
         // `parts::drums`'s own level.
         let mut c = ctx(GenContext { seed: 13, ..GenContext::default() });
-        let mut kick = crate::context::default_parts()[0];
-        kick.id = crate::context::PartId::next();
-        kick.role = Role::Kick;
-        kick.destination.track = 3;
-        c.parts.push(kick);
+        let mut hat = crate::context::default_parts()[0];
+        hat.id = crate::context::PartId::next();
+        hat.role = Role::OpenHat;
+        hat.destination.track = 6; // past the six default rows' own tracks 0..=5
+        c.parts.push(hat);
 
         let arrangement = generate_arrangement(&c, Some("DT2")).unwrap();
         let drum_part = arrangement.parts.last().unwrap();
-        assert_eq!(drum_part.role, Role::Kick);
+        assert_eq!(drum_part.role, Role::OpenHat);
         assert!(!drum_part.notes.is_empty());
         // No lanes were invented for the first cut of drums — see
         // `genres::drum_profile`'s header.
@@ -365,9 +367,12 @@ mod tests {
     fn the_seed_changes_everything_when_it_changes() {
         let base = GenContext::default();
         let a = generate_arrangement(&GenContext { seed: 12345, ..base.clone() }, None).unwrap();
-        let b = generate_arrangement(&GenContext { seed: 12346, ..base }, None).unwrap();
+        let b = generate_arrangement(&GenContext { seed: 12346, ..base.clone() }, None).unwrap();
         let different = a.parts.iter().zip(&b.parts).filter(|(pa, pb)| shape(&pb.notes) != shape(&pa.notes)).count();
-        assert_eq!(different, 3);
+        // All six of the default rows, now that there are six — each part's
+        // stream is keyed by its own `PartId` plus the song seed, so every
+        // row's stream moves when the seed does.
+        assert_eq!(different, base.parts.len());
     }
 
     #[test]

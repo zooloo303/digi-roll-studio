@@ -20,7 +20,7 @@ use digi_core::project::Project;
 use digi_core::session::PatternRef;
 use digi_core::{default_session, Session};
 use digi_roll_studio::ui::session::{
-    export_backup, Chooser, CloseGuard, SessionPanel, Status,
+    export_backup, Chooser, CloseGuard, NewGuard, SessionPanel, Status,
 };
 
 // ------------------------------------------------------------- the harness
@@ -125,6 +125,31 @@ fn seeded() -> Session {
     s.set_slot_in_scene(verse, dt2, PatternRef::new(0, 4));
     s.current_scene = verse;
     s
+}
+
+/// Assert `session` is a just-launched session, without comparing it to a
+/// second `default_session()` call by `==`.
+///
+/// **Why not `assert_eq!(session, default_session())`:** `DeviceId` comes off
+/// a process-global `AtomicU64` (`core::device::NEXT_DEVICE_ID`), so every
+/// call to `default_session()` mints fresh ids — two separate calls are never
+/// equal to one another even though their *shape* is identical. An equality
+/// assertion against a second call would be exactly lesson 4's shape: it
+/// fails even on correct code, for a reason that has nothing to do with the
+/// claim the test is making. Checking the shape field by field is what
+/// survives that.
+fn assert_is_fresh_default_session(session: &Session) {
+    assert_eq!(session.name, "Session");
+    assert_eq!(session.tempo_bpm, 120.0);
+    assert_eq!(session.current_scene, 0);
+    assert_eq!(session.scenes.len(), 1);
+    assert_eq!(session.devices.len(), 2);
+    assert_eq!(session.devices[0].name, "DT2");
+    assert_eq!(session.devices[0].model.num_tracks, 16);
+    assert!(!session.devices[0].has_ports(), "a new session's boxes must have no ports bound");
+    assert_eq!(session.devices[1].name, "DN2");
+    assert_eq!(session.devices[1].model.num_tracks, 16);
+    assert!(!session.devices[1].has_ports(), "a new session's boxes must have no ports bound");
 }
 
 // ------------------------------------------------------------- save and open
@@ -444,6 +469,193 @@ fn saving_from_the_guard_makes_the_session_closable() {
     // The guard is still Asking — the modal is up — but the answer has changed.
     p.discard_and_close();
     assert!(p.allow_close());
+}
+
+// ------------------------------------------------------------- the New guard
+
+#[test]
+fn new_on_a_clean_session_replaces_it_immediately_and_reports_it() {
+    // Nothing to lose, so no modal — `request_new`'s return value is exactly
+    // what `ui()` folds into `Outcome::reloaded`, the same way `open`'s
+    // return value already is (see that method's caller in `ui::session`).
+    let (mut p, _s) = panel();
+    let mut session = seeded();
+
+    assert!(p.request_new(&mut session), "a clean session needs no guard");
+    assert_is_fresh_default_session(&session);
+    assert_eq!(p.guard_new(), NewGuard::Idle);
+    assert_eq!(p.status(), Some(&Status::New));
+}
+
+#[test]
+fn new_on_a_dirty_session_waits_for_the_guard_to_be_answered() {
+    let (mut p, _s) = panel();
+    p.mark_edited(true);
+    let mut session = seeded();
+    let before = session.clone();
+
+    assert!(!p.request_new(&mut session), "dirty work must be asked about first");
+    assert_eq!(p.guard_new(), NewGuard::Asking);
+    assert_eq!(session, before, "nothing changes until the guard is answered");
+    assert!(p.is_dirty(), "and the dirty flag itself must not move either");
+}
+
+#[test]
+fn keeping_working_on_new_leaves_the_session_the_path_and_the_dirty_flag_untouched() {
+    let dir = tmp_dir("newkeep");
+    let (mut p, script) = panel();
+    script.borrow_mut().save_answers.push(Some(dir.join("d.json")));
+    let mut session = seeded();
+    assert!(p.save(&session), "give the panel a path to lose track of if this goes wrong");
+    p.mark_edited(true);
+    let before = session.clone();
+    let path_before = p.path().map(|p| p.to_path_buf());
+
+    assert!(!p.request_new(&mut session));
+    p.cancel_new();
+
+    assert_eq!(session, before, "Keep working must not touch the session");
+    assert_eq!(p.path().map(|p| p.to_path_buf()), path_before, "nor the adopted path");
+    assert!(p.is_dirty(), "nor the dirty flag — nothing was saved or discarded");
+    assert_eq!(p.guard_new(), NewGuard::Idle);
+}
+
+#[test]
+fn discarding_on_new_replaces_the_session_and_resets_the_panel() {
+    let (mut p, _s) = panel();
+    p.mark_edited(true);
+    let mut session = seeded();
+
+    assert!(!p.request_new(&mut session));
+    p.confirm_new(&mut session);
+
+    assert_is_fresh_default_session(&session);
+    assert_eq!(p.path(), None);
+    assert!(!p.is_dirty());
+    assert!(p.lost_ports().is_empty());
+    assert_eq!(p.guard_new(), NewGuard::Idle);
+}
+
+#[test]
+fn saving_then_new_writes_first_and_only_then_replaces_the_session() {
+    let dir = tmp_dir("newsave");
+    let path = dir.join("desk.json");
+    let (mut p, script) = panel();
+    script.borrow_mut().save_answers.push(Some(path.clone()));
+    let mut session = seeded();
+    p.mark_edited(true);
+
+    assert!(!p.request_new(&mut session));
+    assert_eq!(p.guard_new(), NewGuard::Asking);
+
+    // The Save exit: save, and only replace the session if the save actually
+    // reached the disk (mirrors the close guard's "Save and close").
+    assert!(p.save(&session), "the write must happen before anything is thrown away");
+    assert!(std::fs::read_to_string(&path).is_ok(), "bytes must be on disk already");
+    p.confirm_new(&mut session);
+
+    assert_is_fresh_default_session(&session);
+    assert!(!p.is_dirty());
+    assert_eq!(p.guard_new(), NewGuard::Idle);
+}
+
+#[test]
+fn after_new_a_save_asks_for_a_filename_instead_of_silently_reusing_the_old_one() {
+    // The one that matters most: if `path` survived a New, the very next Save
+    // would overwrite the *previous* session's file with the empty one,
+    // without ever asking.
+    let dir = tmp_dir("newpathreset");
+    let old_path = dir.join("old.json");
+    let new_path = dir.join("new.json");
+    let (mut p, script) = panel();
+    script.borrow_mut().save_answers.push(Some(old_path.clone()));
+    let mut session = seeded();
+    assert!(p.save(&session));
+    assert_eq!(p.path(), Some(old_path.as_path()));
+    // Captured right after the first save, so the later check is a byte
+    // comparison against what was actually written — not against a second,
+    // independently-constructed `seeded()` call, whose device ids would never
+    // match the first call's even if nothing were wrong.
+    let old_bytes = std::fs::read_to_string(&old_path).unwrap();
+
+    assert!(p.request_new(&mut session), "clean right after a save, so New applies at once");
+    assert_eq!(p.path(), None, "New must forget the old file");
+
+    script.borrow_mut().save_answers.push(Some(new_path.clone()));
+    assert!(p.save(&session));
+    assert_eq!(
+        script.borrow().calls,
+        vec!["save", "save"],
+        "the second save must ask the chooser again rather than reuse old.json silently"
+    );
+    assert_eq!(p.path(), Some(new_path.as_path()));
+    assert_eq!(
+        std::fs::read_to_string(&old_path).unwrap(),
+        old_bytes,
+        "the previous session's file on disk must be untouched by the New that followed it"
+    );
+}
+
+#[test]
+fn new_clears_a_stale_lost_ports_warning_from_whatever_was_open_before_it() {
+    let dir = tmp_dir("newlostports");
+    let path = dir.join("s.json");
+    let mut saved = seeded();
+    let dt2 = saved.devices[0].id;
+    saved.device_mut(dt2).unwrap().io.input =
+        Some(PortRef { id: "gone-in".into(), name: "Digitakt II".into() });
+    saved.device_mut(dt2).unwrap().io.output =
+        Some(PortRef { id: "gone-out".into(), name: "Digitakt II".into() });
+    std::fs::write(&path, Project::new(saved).to_json_pretty().unwrap()).unwrap();
+
+    let (mut p, script) = panel();
+    script.borrow_mut().open_answers.push(Some(path));
+    let mut session = default_session();
+    assert!(p.open(&mut session, &[], &[]));
+    assert!(!p.lost_ports().is_empty(), "setup: the open must have flagged something");
+
+    assert!(p.request_new(&mut session));
+    assert!(
+        p.lost_ports().is_empty(),
+        "a fresh session with no boxes wired up must not still show a warning \
+         left over from what used to be open"
+    );
+}
+
+// The two guards must not be able to stack a second modal over the one
+// already asking about the identical unsaved work — see `NewGuard`'s header
+// comment in `ui::session` for the reasoning. Both directions are tested
+// because each is a separate `if` in a different method.
+
+#[test]
+fn a_close_request_does_not_open_its_own_modal_while_the_new_guard_is_up() {
+    let (mut p, _s) = panel();
+    p.mark_edited(true);
+    let mut session = seeded();
+    assert!(!p.request_new(&mut session));
+    assert_eq!(p.guard_new(), NewGuard::Asking);
+
+    assert!(!p.allow_close(), "still unsaved, so the close itself must be refused");
+    assert_eq!(
+        p.guard(),
+        CloseGuard::Idle,
+        "but the close guard must not raise its own modal over the New one"
+    );
+    assert_eq!(p.guard_new(), NewGuard::Asking, "the New question must still be the one showing");
+}
+
+#[test]
+fn a_new_request_is_refused_rather_than_stacking_while_the_close_guard_is_up() {
+    let (mut p, _s) = panel();
+    p.mark_edited(true);
+    assert!(!p.allow_close());
+    assert_eq!(p.guard(), CloseGuard::Asking);
+
+    let mut session = seeded();
+    let before = session.clone();
+    assert!(!p.request_new(&mut session), "the close guard already has the floor");
+    assert_eq!(p.guard_new(), NewGuard::Idle, "New must not raise its own modal on top");
+    assert_eq!(session, before, "and nothing about the session may change either");
 }
 
 // ------------------------------------------------------------- backup export
