@@ -1,0 +1,127 @@
+# Build the two downloads and hang them off a draft GitHub release.
+#
+# Triggered by pushing a version tag:
+#
+#   git tag v0.1.0 && git push origin v0.1.0
+#
+# The Windows half has to happen here rather than on a developer Mac: the
+# installer needs the MSVC linker and the Windows SDK's rc.exe, and this repo
+# deliberately does not set up a mingw cross-compile (see crates/app/build.rs).
+#
+# The release is left as a DRAFT. The download page reads
+# /releases/latest, which skips drafts, so nothing on the site changes until
+# someone opens the release, checks the two assets, and hits Publish.
+name: release
+
+on:
+  push:
+    tags: ["v*"]
+  # So the whole thing can be rehearsed on a branch without spending a tag.
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  macos:
+    # Must be an arm64 image: this is the Apple Silicon download, and
+    # build-dmg.sh refuses to run anywhere else rather than quietly shipping an
+    # x86_64 binary under that name.
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Rust
+        run: |
+          rustup update --no-self-update stable
+          rustup default stable
+          rustup target add aarch64-apple-darwin
+
+      - name: Check the tag matches Cargo.toml
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: |
+          tag="${GITHUB_REF_NAME#v}"
+          crate=$(sed -n '/^\[workspace\.package\]/,/^\[/p' Cargo.toml \
+                  | sed -n 's/^version *= *"\([^"]*\)".*/\1/p' | head -1)
+          if [ "$tag" != "$crate" ]; then
+            echo "tag $GITHUB_REF_NAME does not match Cargo.toml version $crate" >&2
+            echo "the assets would be named $crate while the release says $tag" >&2
+            exit 1
+          fi
+          echo "both say $crate"
+
+      - name: Test
+        run: cargo test --workspace
+
+      # Assembles the bundle, ad-hoc re-signs it, builds the .dmg and verifies
+      # the signature survived the round trip through the image.
+      - name: Build the .dmg
+        run: packaging/macos/build-dmg.sh
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: macos-dmg
+          path: dist/*.dmg
+          if-no-files-found: error
+
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Rust
+        run: |
+          rustup update --no-self-update stable
+          rustup default stable
+          rustup target add x86_64-pc-windows-msvc
+
+      # The runner image ships some version of Inno Setup, but the .iss needs
+      # 6.3+ for `x64compatible`, so pin it to something known instead.
+      - name: Inno Setup
+        run: choco install innosetup -y --no-progress
+
+      - name: Test
+        run: cargo test --workspace
+
+      # `./` because PowerShell will not run a script from the current directory
+      # without it.
+      - name: Build the installer
+        shell: pwsh
+        run: ./packaging/windows/build-installer.ps1
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows-setup
+          path: dist/*.exe
+          if-no-files-found: error
+
+  draft-release:
+    needs: [macos, windows]
+    # Only a tag produces a release; a workflow_dispatch run is a rehearsal and
+    # stops at the two artifacts.
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: List what is about to be attached
+        run: ls -lh dist
+
+      # Named so the page's matchers find them: /\.(dmg)$/ for the macOS button
+      # and /\.(exe|msi)$/ for the Windows one. If these ever stop matching, the
+      # buttons silently fall back to pointing at the releases page.
+      - name: Draft the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" \
+            --draft \
+            --title "Digi-Roll Studio $GITHUB_REF_NAME" \
+            --generate-notes \
+            dist/*.dmg dist/*.exe
+          echo "Draft created. Publishing it is what makes the download buttons go live."

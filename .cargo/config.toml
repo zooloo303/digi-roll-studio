@@ -1,0 +1,16 @@
+# Static CRT on Windows.
+#
+# Rust's MSVC targets link the Visual C++ runtime dynamically by default, so the
+# packaged exe would need `vcruntime140.dll` on the machine it lands on. Most
+# Windows installs have it, having picked it up from some other program's
+# redistributable — but "most" is a bad bet for the first thing a user does with
+# a download, and when it is missing the failure is a bare
+# "the code execution cannot proceed" box naming a DLL, before any of our code
+# runs. The alternatives are to ship the redist inside the installer and run it,
+# or to not need it. This is the second one.
+#
+# The cost is a few hundred KB of binary. If a future dependency ever refuses to
+# link statically, dropping this line and adding the redist to the Inno Setup
+# script is the way out.
+[target.x86_64-pc-windows-msvc]
+rustflags = ["-C", "target-feature=+crt-static"]

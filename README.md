@@ -76,9 +76,21 @@ uses `midir` rather than `rtmidi`.
 
 ```sh
 cargo build --release
-cargo test --workspace          # 1,262 tests, no system dependencies
+cargo test --workspace          # 1,332 tests, no system dependencies
 cargo run -p digi_roll_studio   # the app
 ```
+
+### Packaging
+
+```sh
+packaging/macos/build-dmg.sh          # Digi-Roll-Studio-<ver>-macOS-AppleSilicon.dmg
+```
+
+The Windows installer is built on Windows, by
+`packaging\windows\build-installer.ps1`. Pushing a `v*` tag runs both on CI and
+drafts a release with the two assets attached — see
+[`packaging/README.md`](packaging/README.md), which also explains why the macOS
+bundle has to be ad-hoc re-signed after it is assembled and not before.
 
 **Hardware is never part of the dev loop.** The protocol suites read `.syx`
 captures from `crates/protocol/tests/fixtures/` — 1.4 MB of real DT2 and DN2
@@ -103,6 +115,9 @@ read-only.
 - **[`DEVELOPMENT.md`](DEVELOPMENT.md)** — how it was built, the hardware examples
   by safety class, your boxes' own MIDI settings that this app cannot reach, and
   nine lessons that each escaped a green test suite at least once.
+- **[`packaging/README.md`](packaging/README.md)** — how the two downloads are
+  built, why the asset filenames are load-bearing, and the three Windows-only
+  things that never show up in a `cargo run`.
 - **[`CREDITS.md`](CREDITS.md)** — elk-herd, digi-roll, and the third-party
   notices.
 

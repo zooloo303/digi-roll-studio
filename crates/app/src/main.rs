@@ -1,3 +1,17 @@
+// Release builds on Windows are GUI apps, not console apps.
+//
+// Without this the linker marks the exe as a console subsystem binary, and every
+// launch — from the Start menu, from the desktop shortcut, from the installer's
+// "run now" tick — opens a black cmd window alongside the real one and keeps it
+// there for the life of the process. It is the single most obvious way a
+// packaged Rust GUI app looks broken, and it is invisible until someone runs the
+// installed build rather than `cargo run`.
+//
+// Gated on `debug_assertions` so a debug build stays a console app: this crate
+// prints nothing itself, but a panic message going to a window that closes with
+// the process is the difference between a debuggable crash and a silent one.
+#![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
+
 use digi_roll_studio::engine::EngineLink;
 use digi_roll_studio::ui::edit::EditPanel;
 use digi_roll_studio::ui::generate::GeneratePanel;
@@ -366,9 +380,10 @@ impl eframe::App for App {
 /// comment first claimed the opposite.
 ///
 /// So the Dock is the **largest** consumer of the PNG below, which is the one
-/// argument for making the master bigger than it is. A bundle is still wanted for
-/// everything else about shipping, and `icons/README.md` has the `iconutil`
-/// recipe for the `.icns` it will need.
+/// argument for making the master bigger than it is. The bundle this asks for now
+/// exists — `packaging/macos/build-dmg.sh` assembles it, and runs the `iconutil`
+/// recipe from `icons/README.md` to get the `.icns` that the Finder and the
+/// installer read. This PNG is still what the Dock shows once the app is running.
 ///
 /// The bytes are embedded rather than read at run time so the binary stays a
 /// single file. Reaching out of the crate into the workspace's `icons/` keeps one
@@ -428,5 +443,96 @@ mod tests {
         let icon = super::icon();
         assert_eq!((icon.width, icon.height), (256, 256));
         assert_eq!(icon.rgba.len(), 256 * 256 * 4);
+    }
+
+    /// The committed `.ico` is a well-formed multi-size icon.
+    ///
+    /// `icons/windows/icon.ico` is a *committed build input*, same as the PNG
+    /// above: `build.rs` hands it to the Windows SDK's resource compiler, and
+    /// Inno Setup reads it for the installer's own icon. It is committed rather
+    /// than generated at build time so that neither CI nor a Windows box needs
+    /// an image library — `packaging/windows/make-ico.py` regenerates it, and
+    /// only runs on macOS.
+    ///
+    /// Which leaves a committed binary that nothing on this machine reads. Both
+    /// consumers are Windows-only, so a truncated or wrongly-rebuilt file would
+    /// get through a full green run here and surface as a failed release build,
+    /// or — worse, because `rc.exe` is happy with a valid-but-thin icon — as a
+    /// shipped installer wearing a blurry 256 scaled down into every slot.
+    /// DEVELOPMENT.md lesson 2, and lesson 9: the check that cannot run where
+    /// the asset is consumed should run where it is *edited*.
+    ///
+    /// So this parses the container by hand and asserts the contract
+    /// `make-ico.py` claims: six sizes, 32-bit, the small ones as DIBs with the
+    /// doubled height an ICO wants, and the 256 as a PNG.
+    #[test]
+    fn windows_ico_has_all_six_sizes() {
+        const ICO: &[u8] = include_bytes!("../../../icons/windows/icon.ico");
+
+        let u16_at = |o: usize| u16::from_le_bytes([ICO[o], ICO[o + 1]]);
+        let u32_at = |o: usize| {
+            u32::from_le_bytes([ICO[o], ICO[o + 1], ICO[o + 2], ICO[o + 3]]) as usize
+        };
+
+        assert_eq!(u16_at(0), 0, "reserved");
+        assert_eq!(u16_at(2), 1, "type 1 is an icon; 2 would be a cursor");
+        let count = u16_at(4) as usize;
+        assert_eq!(count, 6, "16, 32, 48, 64, 128, 256");
+
+        let mut sizes = Vec::new();
+        for i in 0..count {
+            let e = 6 + 16 * i;
+            // A byte cannot hold 256, so the format spells it 0. Every real
+            // packer relies on this and every hand-rolled parser forgets it.
+            let width = if ICO[e] == 0 { 256 } else { ICO[e] as usize };
+            let height = if ICO[e + 1] == 0 { 256 } else { ICO[e + 1] as usize };
+            assert_eq!(width, height, "entry {i} is not square");
+            assert_eq!(ICO[e + 2], 0, "entry {i} claims a colour palette");
+            assert_eq!(u16_at(e + 6), 32, "entry {i} is not 32-bit");
+
+            let len = u32_at(e + 8);
+            let off = u32_at(e + 12);
+            assert!(
+                off + len <= ICO.len(),
+                "entry {i} runs {} bytes past the end of the file",
+                off + len - ICO.len()
+            );
+            let payload = &ICO[off..off + len];
+
+            if width == 256 {
+                assert_eq!(
+                    &payload[..8],
+                    b"\x89PNG\r\n\x1a\n",
+                    "the 256 should be the PNG itself, not a quarter-megabyte DIB"
+                );
+            } else {
+                // BITMAPINFOHEADER. The height is stored doubled because the
+                // struct describes the colour rows *and* a 1-bit AND mask
+                // beneath them, even at 32-bit where the alpha channel has
+                // already made the mask redundant.
+                let dib = |o: usize| {
+                    u32::from_le_bytes([
+                        payload[o],
+                        payload[o + 1],
+                        payload[o + 2],
+                        payload[o + 3],
+                    ]) as usize
+                };
+                assert_eq!(dib(0), 40, "entry {i} is not a BITMAPINFOHEADER");
+                assert_eq!(dib(4), width, "entry {i} DIB width disagrees with the index");
+                assert_eq!(
+                    dib(8),
+                    height * 2,
+                    "entry {i} DIB height should be double the icon height"
+                );
+            }
+            sizes.push(width);
+        }
+
+        assert_eq!(
+            sizes,
+            vec![16, 32, 48, 64, 128, 256],
+            "ascending, and none of the sizes Windows draws are missing"
+        );
     }
 }

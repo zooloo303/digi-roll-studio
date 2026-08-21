@@ -15,3 +15,15 @@ digi_engine = { path = "../engine" }
 digi_midi = { path = "../midi" }
 serde_json = "1"
 rfd = "0.17.2"
+
+# Windows-only, and a *build* dependency: it runs the Windows SDK's resource
+# compiler over the icon and the version strings so the packaged exe carries them
+# in Explorer, the taskbar and the installer's shortcut. The runtime
+# `with_icon()` in main.rs cannot do this — that sets the icon of a *running*
+# window; this sets the icon of the *file*.
+#
+# Scoped to `cfg(windows)` because a build script runs on the host: on macOS and
+# Linux the crate is never fetched or built, and build.rs compiles to an empty
+# main.
+[target.'cfg(windows)'.build-dependencies]
+winresource = "0.1"

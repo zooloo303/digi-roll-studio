@@ -1,6 +1,9 @@
 # Build output
 /target
 **/*.rs.bk
+# Assembled .app, .dmg and installer — release artefacts, rebuilt by
+# packaging/ and attached to the GitHub release, never committed.
+/dist/
 
 # OS
 .DS_Store
