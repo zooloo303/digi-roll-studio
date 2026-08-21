@@ -90,7 +90,7 @@ use digi_generator::context::{
 };
 use digi_generator::genres::{genre_profile, GenreId, Role};
 use digi_generator::plockdesign::{arbitrate_pool, LaneClaim};
-use digi_generator::progressions::default_progression_for;
+use digi_generator::progressions::{default_progression_for, next_progression_for, progression_note};
 use digi_generator::theory::DEFAULT_SCALE;
 use eframe::egui::{self, Color32, Ui};
 
@@ -512,30 +512,67 @@ impl GeneratePanel {
             // **An explicit width, because `TextEdit`'s default is
             // `f32::INFINITY`.** Left at the default it asked for every pixel
             // available and pushed the panel's `Ui` out with it — which put
-            // the "N bars long" readout beside it off the edge, and then, since
-            // everything below inherited the inflated width, took FEEL's value
-            // boxes and the PARTS cards off the right edge too. The panel is a
-            // fixed 330px, so the field takes what is left of this row after
-            // the label and the readout rather than asking for the sky.
-            let readout_w = 64.0;
-            let field_w = (ui.available_width() - readout_w - ui.spacing().item_spacing.x).max(60.0);
+            // what sits beside it off the edge, and then, since everything
+            // below inherited the inflated width, took FEEL's value boxes and
+            // the PARTS cards off the right edge too. The panel is a fixed
+            // 330px, so the field takes what is left of this row after the
+            // label and the ↻ button rather than asking for the sky.
+            let button_w = 26.0;
+            let field_w = (ui.available_width() - button_w - ui.spacing().item_spacing.x).max(60.0);
             ui.add(
                 egui::TextEdit::singleline(&mut self.ctx.progression).desired_width(field_w),
             )
             .on_hover_text("Roman numerals, e.g. \"i VI III VII\" — a scale degree per chord.");
-            match check_progression(&self.ctx.progression) {
-                Ok(bars) => {
-                    ui.label(
-                        egui::RichText::new(format!("{} long", plural(bars as usize, "bar")))
-                            .size(10.0)
-                            .color(TEXT_DIMMEST),
-                    );
-                }
-                Err(e) => {
-                    ui.colored_label(super::CAUTION, &e.0);
-                }
+            // **The ↻ button digi-roll had here.**
+            // `progressions::next_progression_for` was ported with "the ↻
+            // button" written above it and then never called from anywhere —
+            // the library was in the crate and the only way to reach it was to
+            // type a progression out by hand. Same mark as a PARTS card's
+            // reroll, because it is the same act: show me another one.
+            if ui
+                .small_button("↻")
+                .on_hover_text(
+                    "Another progression from this genre's library, in order and wrapping —                      the seed and everything else stay put",
+                )
+                .clicked()
+            {
+                self.ctx.progression =
+                    next_progression_for(self.ctx.genre, &self.ctx.progression).to_string();
             }
         });
+        // What the progression *is*, under the field rather than beside it: the
+        // library's own one-line note plus how long it runs, which is
+        // digi-roll's caption and the reason the library entries carry a `note`
+        // at all. A progression longer than the pattern is genuinely truncated
+        // — `theory::bar_slots` takes `bars` bars and stops — so the caption
+        // says so rather than leaving "4 bars" beside a 2-bar pattern to be
+        // puzzled over.
+        match check_progression(&self.ctx.progression) {
+            Ok(bars) => {
+                let note = progression_note(&self.ctx.progression);
+                let mut caption = if note.is_empty() {
+                    String::new()
+                } else {
+                    format!("{note} · ")
+                };
+                caption.push_str(&plural(bars as usize, "bar"));
+                if bars > self.ctx.bars {
+                    caption.push_str(&format!(
+                        ", truncated to your {}",
+                        plural(self.ctx.bars as usize, "bar")
+                    ));
+                }
+                ui.label(
+                    egui::RichText::new(caption)
+                        .size(10.0)
+                        .line_height(Some(13.0))
+                        .color(TEXT_DIMMEST),
+                );
+            }
+            Err(e) => {
+                ui.colored_label(super::CAUTION, &e.0);
+            }
+        }
 
         let suggestion = bpm_suggestion(self.ctx.genre, session.tempo_bpm.round() as u32);
         ui.horizontal(|ui| {
@@ -559,6 +596,20 @@ impl GeneratePanel {
         ui.horizontal(|ui| {
             ui.label("Seed");
             ui.add(egui::DragValue::new(&mut self.ctx.seed));
+            // **The other button digi-roll had and this panel lost**: roll a
+            // fresh seed *now*, without pressing Generate. Unlocked, Generate
+            // rolls one for you at the moment it writes, which is a different
+            // thing — this is for keeping the arrangement you have and asking
+            // for a different roll of the same settings, and for filling in a
+            // number worth locking. It sets the field, so the lock beside it
+            // then holds exactly what you can see.
+            if ui
+                .small_button("↻")
+                .on_hover_text("Roll a fresh seed into the field now")
+                .clicked()
+            {
+                self.ctx.seed = random_seed();
+            }
             ui.checkbox(&mut self.ctx.seed_locked, "Lock").on_hover_text(
                 "Locked, Generate reuses this exact seed — the same settings make the same music \
                  every time. Unlocked, Generate rolls a fresh one first.",
@@ -1481,6 +1532,146 @@ mod tests {
 
         assert_eq!(session.tempo_bpm, 174.0, "SET sets the transport to the genre's own tempo");
         assert!(edited, "and says so, which is what gets the new tempo to the engine");
+    }
+
+    /// Every position a frame painted `label`, in paint order. The panel draws
+    /// three ↻ buttons — progression, seed, and one per PARTS card — so
+    /// `painted_at`'s "the last one wins" is not enough to press a chosen one.
+    fn painted_all(ctx: &egui::Context, label: &str, mut body: impl FnMut(&mut Ui)) -> Vec<egui::Pos2> {
+        let input = egui::RawInput::default();
+        let mut output = ctx.run_ui(input, &mut body);
+        output.textures_delta.clear();
+
+        fn walk(shape: &egui::Shape, label: &str, found: &mut Vec<egui::Pos2>) {
+            match shape {
+                egui::Shape::Text(text) if text.galley.text() == label => {
+                    found.push(text.pos + text.galley.size() / 2.0);
+                }
+                egui::Shape::Vec(shapes) => shapes.iter().for_each(|s| walk(s, label, found)),
+                _ => {}
+            }
+        }
+        let mut found = Vec::new();
+        for clipped in &output.shapes {
+            walk(&clipped.shape, label, &mut found);
+        }
+        found
+    }
+
+    /// Press at `pos`: the two-frame press/release egui needs, hit-testing
+    /// against the layout the caller has already drawn.
+    fn press(ctx: &egui::Context, pos: egui::Pos2, mut body: impl FnMut(&mut Ui)) {
+        for events in [
+            vec![
+                egui::Event::PointerMoved(pos),
+                egui::Event::PointerButton {
+                    pos,
+                    button: egui::PointerButton::Primary,
+                    pressed: true,
+                    modifiers: egui::Modifiers::NONE,
+                },
+            ],
+            vec![egui::Event::PointerButton {
+                pos,
+                button: egui::PointerButton::Primary,
+                pressed: false,
+                modifiers: egui::Modifiers::NONE,
+            }],
+        ] {
+            let input = egui::RawInput { events, ..Default::default() };
+            let mut output = ctx.run_ui(input, &mut body);
+            output.textures_delta.clear();
+        }
+    }
+
+    #[test]
+    fn the_progression_reroll_button_walks_the_genres_library() {
+        // digi-roll had this button and the port lost it:
+        // `progressions::next_progression_for` was written with "the ↻ button"
+        // in its own doc comment and called from nowhere, so the library was
+        // unreachable without typing an entry out by hand.
+        let ctx = egui::Context::default();
+        let mut session = session_with_two_boxes();
+        let mut panel = GeneratePanel::default();
+        panel.ctx.genre = GenreId::Dnb;
+        panel.ctx.progression = default_progression_for(GenreId::Dnb).to_string();
+        let first = panel.ctx.progression.clone();
+
+        let mut draw = |ui: &mut Ui| {
+            panel.ui(ui, &mut session);
+        };
+        // The progression's is the first ↻ the panel paints; the seed's is the
+        // second and the PARTS cards' come after.
+        let buttons = painted_all(&ctx, "↻", &mut draw);
+        assert!(buttons.len() >= 2, "the progression and seed buttons both drew");
+        press(&ctx, buttons[0], &mut draw);
+
+        let second = panel.ctx.progression.clone();
+        assert_ne!(second, first, "the field moved on to another entry");
+        assert_eq!(second, next_progression_for(GenreId::Dnb, &first));
+        assert!(
+            check_progression(&second).is_ok(),
+            "and what it landed on parses, which is what the library guarantees"
+        );
+    }
+
+    #[test]
+    fn the_seed_button_rolls_a_fresh_seed_into_the_field() {
+        let ctx = egui::Context::default();
+        let mut session = session_with_two_boxes();
+        let mut panel = GeneratePanel::default();
+        panel.ctx.seed = 0;
+        panel.ctx.seed_locked = true;
+
+        let mut draw = |ui: &mut Ui| {
+            panel.ui(ui, &mut session);
+        };
+        let buttons = painted_all(&ctx, "↻", &mut draw);
+        press(&ctx, buttons[1], &mut draw);
+
+        assert_ne!(panel.ctx.seed, 0, "a number went into the field");
+        assert!(
+            panel.ctx.seed_locked,
+            "and the lock is untouched — this fills the field the lock then holds"
+        );
+    }
+
+    #[test]
+    fn the_progression_caption_says_what_it_is_and_how_long_it_runs() {
+        // The library carries a one-line note per entry for this caption and
+        // nothing else, and a progression longer than the pattern really is cut
+        // short — `theory::bar_slots` takes `bars` bars and stops — so the
+        // caption says so rather than printing "4 bars" beside a 2-bar pattern.
+        let ctx = egui::Context::default();
+        let mut session = session_with_two_boxes();
+        let mut panel = GeneratePanel::default();
+        panel.ctx.genre = GenreId::Dnb;
+        panel.ctx.progression = String::from("i VI III VII");
+        panel.ctx.bars = 2;
+
+        let note = progression_note("i VI III VII");
+        assert!(!note.is_empty(), "the entry has a note to draw");
+        let wanted = format!("{note} · 4 bars, truncated to your 2 bars");
+        assert_eq!(
+            painted_all(&ctx, &wanted, |ui| {
+                panel.ui(ui, &mut session);
+            })
+            .len(),
+            1,
+            "the caption is drawn, once, as written"
+        );
+
+        // Four bars into a four-bar pattern: nothing is truncated, so nothing
+        // claims to be.
+        panel.ctx.bars = 4;
+        let plain = format!("{note} · 4 bars");
+        assert_eq!(
+            painted_all(&ctx, &plain, |ui| {
+                panel.ui(ui, &mut session);
+            })
+            .len(),
+            1
+        );
     }
 
     #[test]

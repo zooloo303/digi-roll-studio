@@ -811,6 +811,15 @@ fn paint_device_row(
 /// never does; only the parameter row below the grid can.
 pub fn ui(ui: &mut Ui, session: &mut Session, selection: &mut Selection, engine: &EngineLink) -> bool {
     let mut changed = false;
+    /// What the VOL field shows before anything has set it. The middle of the
+    /// range rather than the top: a fader that opens at 127 invites a first drag
+    /// that can only go down, and the box's own default is not knowable from
+    /// here anyway (see `Track::level`).
+    const DEFAULT_LEVEL: u8 = 100;
+    // Set by the VOL field below, acted on after the selected track's mutable
+    // borrow of the session ends — sending reads the session back, which is the
+    // one thing that borrow forbids.
+    let mut level_moved = false;
 
     // Read before the mutable borrow of the selected track below: the param
     // row says which box the track belongs to, and a bare track number does
@@ -899,6 +908,36 @@ pub fn ui(ui: &mut Ui, session: &mut Session, selection: &mut Selection, engine:
                     changed = true;
                 }
 
+                // **VOL is the box's own track LEVEL, and moving it moves the
+                // box.** It sends the moment it changes — a fader that waited
+                // for the transport would be a fader that does nothing while
+                // stopped, which is when most mixing happens. Nothing puts the
+                // level back afterwards, exactly as if the encoder had been
+                // turned by hand, and the hover says so.
+                //
+                // `None` until touched: see `Track::level`. The field shows
+                // `DEFAULT_LEVEL` while it is unset, dimmed by the same argument
+                // the hover makes — the app does not know where the box's fader
+                // is and must not pretend the number under the pointer is a
+                // reading. The first drag makes it a value, and only then is
+                // anything sent.
+                ui.label("VOL");
+                let mut level = track.level.unwrap_or(DEFAULT_LEVEL);
+                let response = ui.add(egui::DragValue::new(&mut level).range(0..=127));
+                if response.changed() {
+                    track.level = Some(level);
+                    level_moved = true;
+                    changed = true;
+                }
+                response.on_hover_text(match track.level {
+                    Some(_) => "The box's own track LEVEL (CC 95). Sent as you move it — this \
+                                rides the box's fader, and nothing puts it back.",
+                    None => "The box's own track LEVEL (CC 95). Nothing has been sent yet: \
+                             only the box knows where its fader is, so this shows a starting \
+                             number rather than a reading. Move it and it rides the box's \
+                             fader, and nothing puts it back.",
+                });
+
                 ui.label("LEN");
                 if ui
                     .add(egui::DragValue::new(&mut track.length_steps).range(1..=128))
@@ -947,6 +986,19 @@ pub fn ui(ui: &mut Ui, session: &mut Session, selection: &mut Selection, engine:
                 ui.label(egui::RichText::new(format!("{} trigs", track.notes.len())).color(super::TRIG_GREEN));
             });
         });
+
+    // **Out of the closure, because sending reads the session** — which the
+    // selected track's `&mut` borrow above forbids. The engine link resolves the
+    // port and the box's own controller number
+    // (`EngineLink::send_track_level`); a `false` from it means the fader moved
+    // and nothing heard it, which is not worth a line of UI here — every one of
+    // its four reasons (no engine, no box, no port, no chart) is already visible
+    // in the device strip and the CH note beside this very field.
+    if level_moved {
+        if let Some(device) = session.devices.get(selection.device).map(|d| d.id) {
+            engine.send_track_level(session, device, selection.track);
+        }
+    }
 
     changed
 }

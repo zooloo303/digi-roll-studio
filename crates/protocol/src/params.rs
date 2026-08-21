@@ -370,6 +370,41 @@ pub static DN2_PARAMS: &[Param] = &[
     },
 ];
 
+// --- The track's own level -----------------------------------------------------
+
+/// The track LEVEL fader, per box: the one on the box's mixer, not the AMP
+/// page's VOL.
+///
+/// **Deliberately not one of the [`Param`]s above.** The two tables model
+/// *p-lock* parameters, and every entry in them carries a `plock` measured on
+/// hardware in Phase 0. Nobody has measured this one's paramId, so an entry here
+/// would be a lane the "+ add lane…" picker offers and the write path then
+/// refuses — the split at the top of this file exists to keep a missing
+/// measurement from becoming a wrong byte, and the honest place for a parameter
+/// with a published CC and no measured lane is its own function. Move it into
+/// the tables the day someone locks LEVEL on a box and reads the paramId back.
+///
+/// The numbers are from the boxes' own charts (DT2 Appendix B, DN2 Appendix C,
+/// cross-checked against midi.guide, which is where the tables above came from
+/// too). **The two boxes agree on the CC and disagree on the NRPN**, which is
+/// exactly the trap this file is built around: 95 on both, but NRPN 1/100 on a
+/// DT2 and 1/110 on a DN2.
+///
+/// **CC 7 is not this, on either box.** Channel Volume is absent from both
+/// appendices — an audio track does not answer it — so a fader sending 7 would
+/// move nothing at all. Worth writing down because 7 is the obvious guess.
+pub fn track_level_midi(device_kind: &str) -> Option<MidiMap> {
+    match device_kind {
+        "DT2" => Some(MidiMap { cc: Some(95), cc_lsb: None, nrpn: Some((1, 100)) }),
+        "DN2" => Some(MidiMap { cc: Some(95), cc_lsb: None, nrpn: Some((1, 110)) }),
+        _ => None,
+    }
+}
+
+/// What the box calls it on screen, for a UI that has to name what it is
+/// sending.
+pub const TRACK_LEVEL_LABEL: &str = "TRACK LEVEL";
+
 // --- Table lookup -------------------------------------------------------------
 //
 // Every lookup goes through these, so a table with nothing in it behaves like a
@@ -785,6 +820,34 @@ lfo3.depth|LFO3 DEPTH|LFO3|true|||[1,72]|31|256|0|127|1|true|true"
             "fx.reverbSend", "fx.chorusSend", "lfo1.depth", "lfo2.depth", "lfo3.depth",
         ] {
             assert_eq!(nrpn("DT2", name), nrpn("DN2", name), "{name}");
+        }
+    }
+
+    #[test]
+    fn track_level_is_cc_95_on_both_boxes_and_a_different_nrpn_on_each() {
+        // The trap this file exists for, in one parameter: shared CC, different
+        // NRPN. A single number copied from one appendix to the other would ride
+        // the wrong thing on a DN2.
+        assert_eq!(track_level_midi("DT2").unwrap().cc, Some(95));
+        assert_eq!(track_level_midi("DN2").unwrap().cc, Some(95));
+        assert_eq!(track_level_midi("DT2").unwrap().nrpn, Some((1, 100)));
+        assert_eq!(track_level_midi("DN2").unwrap().nrpn, Some((1, 110)));
+        // A box with no chart gets nothing, not a guess — same rule as
+        // `param_table_for`'s empty table.
+        assert!(track_level_midi("DT1").is_none());
+    }
+
+    #[test]
+    fn track_level_is_not_in_the_p_lock_tables_and_nothing_claims_cc_7() {
+        // It has no measured paramId, so it must not be offered as a lane; and
+        // CC 7 is in neither appendix, so nothing in here may map to it.
+        for kind in DEVICE_KINDS {
+            assert!(param_by_name(param_table_for(kind), "track.level").is_none());
+            assert!(
+                param_table_for(kind).iter().all(|p| p.midi.cc != Some(7)),
+                "{kind}: CC 7 is Channel Volume and neither box answers it"
+            );
+            assert_ne!(track_level_midi(kind).unwrap().cc, Some(7));
         }
     }
 

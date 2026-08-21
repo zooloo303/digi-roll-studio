@@ -7,7 +7,7 @@
 use digi_core::edit_ops::{
     adopt_step_trig, clamp_micro, clamp_velocity, clear_track, clipboard_anchor,
     duplicate_last_bar, nudge_velocities, place_clipboard, resize_selection_by,
-    set_selection_length, Caret, ClipNote, LenEntry, PasteBounds, ResizeOpts, MICRO_MAX,
+    set_selection_length, Caret, ClipNote, LenEntry, PLockShift, PasteBounds, ResizeOpts, MICRO_MAX,
     MICRO_MIN, PITCH_MAX, PITCH_MIN, VEL_MAX, VEL_MIN,
 };
 use digi_core::lengths::{snap_len_fine, LEN_MIN};
@@ -556,4 +556,215 @@ fn track_with(length_steps: u16, notes: &[(f64, u8, f64)]) -> digi_core::Track {
         .map(|&(step, pitch, len)| Note::new(step, pitch, len, 100, 0.0))
         .collect();
     track
+}
+
+// ------------------------------------------------- p-locks under a move
+
+/// A lane holding values at the given slots, on the display axis.
+fn lane(name: &str, at: &[(usize, u16)]) -> digi_core::PLockLane {
+    let mut values = vec![None; 128];
+    for &(slot, v) in at {
+        values[slot] = Some(v);
+    }
+    digi_core::PLockLane::new(
+        Some(String::from(name)),
+        None,
+        Some(String::from("DT2")),
+        false,
+        values,
+    )
+    .unwrap()
+}
+
+/// The slots a lane holds a value on, so an assertion reads as a shape rather
+/// than as 128 `None`s.
+fn locks(lane: &digi_core::PLockLane) -> Vec<(usize, u16)> {
+    lane.values
+        .iter()
+        .enumerate()
+        .filter_map(|(slot, v)| v.map(|v| (slot, v)))
+        .collect()
+}
+
+#[test]
+fn a_lock_travels_with_the_trig_it_belongs_to() {
+    // The bug this exists for: the roll moved the trig and left the sweep on the
+    // step it came off, so the automation belonged to whatever turned up there
+    // next and the moved trig had none.
+    let mut track = track_with(16, &[(4.0, 60, 1.0)]);
+    track.plocks = vec![lane("filter.cutoff", &[(4, 100)])];
+    let moving = vec![track.notes[0].id];
+
+    let shift = PLockShift::capture(&track, &moving);
+    track.notes[0].step = 7.0;
+    assert!(shift.apply(&mut track, 3.0));
+    assert_eq!(locks(&track.plocks[0]), [(7, 100)]);
+}
+
+#[test]
+fn every_lane_on_the_track_travels_not_just_the_first() {
+    let mut track = track_with(16, &[(2.0, 60, 1.0)]);
+    track.plocks = vec![
+        lane("filter.cutoff", &[(2, 30)]),
+        lane("amp.pan", &[(2, 90)]),
+    ];
+    let moving = vec![track.notes[0].id];
+
+    let shift = PLockShift::capture(&track, &moving);
+    assert!(shift.apply(&mut track, 5.0));
+    assert_eq!(locks(&track.plocks[0]), [(7, 30)]);
+    assert_eq!(locks(&track.plocks[1]), [(7, 90)]);
+}
+
+#[test]
+fn a_step_that_keeps_a_note_keeps_its_locks_and_the_mover_takes_a_copy() {
+    // One note dragged out of a locked chord. The step still has a trig on it,
+    // so the box still has a lock there; the note that left lands on a trig of
+    // its own, which carries the value it was playing.
+    let mut track = track_with(16, &[(4.0, 60, 1.0), (4.0, 67, 1.0)]);
+    track.plocks = vec![lane("filter.cutoff", &[(4, 64)])];
+    let moving = vec![track.notes[1].id];
+
+    let shift = PLockShift::capture(&track, &moving);
+    assert!(shift.apply(&mut track, 2.0));
+    assert_eq!(locks(&track.plocks[0]), [(4, 64), (6, 64)]);
+}
+
+#[test]
+fn the_lock_already_on_the_destination_wins() {
+    // The same rule as `adopt_step_trig`: the trig at the destination was
+    // already there and the arriving one is joining it.
+    let mut track = track_with(16, &[(0.0, 60, 1.0), (4.0, 62, 1.0)]);
+    track.plocks = vec![lane("filter.cutoff", &[(0, 10), (4, 120)])];
+    let moving = vec![track.notes[0].id];
+
+    let shift = PLockShift::capture(&track, &moving);
+    assert!(shift.apply(&mut track, 4.0));
+    assert_eq!(
+        locks(&track.plocks[0]),
+        [(4, 120)],
+        "step 4 keeps its own value and step 0 is vacated"
+    );
+}
+
+#[test]
+fn a_run_of_trigs_moving_one_step_does_not_overwrite_its_own_tail() {
+    // Cleared before stamped, or step 5's value would be gone by the time step
+    // 4's landed on it — three locks becoming one.
+    let mut track = track_with(16, &[(4.0, 60, 1.0), (5.0, 60, 1.0), (6.0, 60, 1.0)]);
+    track.plocks = vec![lane("filter.cutoff", &[(4, 1), (5, 2), (6, 3)])];
+    let moving: Vec<u32> = track.notes.iter().map(|n| n.id).collect();
+
+    let shift = PLockShift::capture(&track, &moving);
+    assert!(shift.apply(&mut track, 1.0));
+    assert_eq!(locks(&track.plocks[0]), [(5, 1), (6, 2), (7, 3)]);
+}
+
+#[test]
+fn a_drag_that_reverses_lands_back_exactly_where_it_started() {
+    // Every frame recomputes from the captured base, so nothing accumulates —
+    // the same contract `resize_selection_by`'s start lengths keep.
+    let mut track = track_with(16, &[(4.0, 60, 1.0)]);
+    track.plocks = vec![lane("filter.cutoff", &[(4, 100)])];
+    let before = track.plocks.clone();
+    let moving = vec![track.notes[0].id];
+
+    let shift = PLockShift::capture(&track, &moving);
+    for delta in [1.0, 5.0, 9.0, 2.0] {
+        shift.apply(&mut track, delta);
+    }
+    assert!(shift.apply(&mut track, 0.0), "the last frame put it back");
+    assert_eq!(track.plocks, before);
+    assert!(
+        !shift.apply(&mut track, 0.0),
+        "and a frame that moves nothing reports nothing, so it costs no undo step"
+    );
+}
+
+#[test]
+fn a_trigless_lane_is_passed_through_untouched() {
+    // Trigless values are not attached to any trig, so no trig carries them —
+    // and v1's contract is to leave them exactly as the box had them.
+    let mut track = track_with(16, &[(4.0, 60, 1.0)]);
+    let mut trigless = lane("filter.cutoff", &[(4, 100)]);
+    trigless.trigless = true;
+    track.plocks = vec![trigless];
+    let before = track.plocks.clone();
+    let moving = vec![track.notes[0].id];
+
+    let shift = PLockShift::capture(&track, &moving);
+    assert!(!shift.apply(&mut track, 3.0));
+    assert_eq!(track.plocks, before);
+}
+
+#[test]
+fn a_lock_dragged_past_the_last_slot_a_lane_has_is_dropped() {
+    // There is nowhere to store it: the trig is past what the box can name too,
+    // and `export::notes_for_device` is what says so.
+    let mut track = track_with(128, &[(126.0, 60, 1.0)]);
+    track.plocks = vec![lane("filter.cutoff", &[(126, 100)])];
+    let moving = vec![track.notes[0].id];
+
+    let shift = PLockShift::capture(&track, &moving);
+    assert!(shift.apply(&mut track, 4.0));
+    assert!(locks(&track.plocks[0]).is_empty());
+}
+
+#[test]
+fn a_track_with_no_lanes_captures_nothing_and_does_nothing() {
+    let mut track = track_with(16, &[(4.0, 60, 1.0)]);
+    let moving = vec![track.notes[0].id];
+    let shift = PLockShift::capture(&track, &moving);
+    assert!(shift.is_empty());
+    assert!(!shift.apply(&mut track, 3.0));
+}
+
+#[test]
+fn two_notes_on_one_step_carry_that_steps_lock_once() {
+    // A whole chord moving is one trig moving. The slot is captured once, so
+    // the value cannot be stamped twice — and the step it left is vacated.
+    let mut track = track_with(16, &[(4.0, 60, 1.0), (4.0, 64, 1.0), (4.0, 67, 1.0)]);
+    track.plocks = vec![lane("amp.pan", &[(4, 20)])];
+    let moving: Vec<u32> = track.notes.iter().map(|n| n.id).collect();
+
+    let shift = PLockShift::capture(&track, &moving);
+    assert!(shift.apply(&mut track, 3.0));
+    assert_eq!(locks(&track.plocks[0]), [(7, 20)]);
+}
+
+#[test]
+fn micro_timing_does_not_move_a_lock_onto_a_neighbouring_slot() {
+    // A trig at 4.4 is a trig on step 4 with an offset — one lock, on slot 4 —
+    // which is `export::notes_for_device`'s rounding, applied here too.
+    let mut track = track_with(16, &[(4.4, 60, 1.0)]);
+    track.plocks = vec![lane("filter.cutoff", &[(4, 100)])];
+    let moving = vec![track.notes[0].id];
+
+    let shift = PLockShift::capture(&track, &moving);
+    assert!(shift.apply(&mut track, 1.0));
+    assert_eq!(locks(&track.plocks[0]), [(5, 100)]);
+}
+
+#[test]
+fn a_lane_shorter_than_the_full_step_count_is_indexed_safely() {
+    // `PLockLane::values` is a public field and `PLockLane::new`'s padding to 128
+    // is a constructor's courtesy, not the type's guarantee — a lane built by
+    // hand can be shorter, and `crates/app/tests/write.rs` builds one. A move at
+    // the end of a long pattern must not index past it.
+    let mut track = track_with(64, &[(40.0, 60, 1.0)]);
+    let short = digi_core::PLockLane {
+        name: Some(String::from("filter.cutoff")),
+        param_id: None,
+        device_kind: Some(String::from("DT2")),
+        trigless: false,
+        values: vec![Some(64); 16],
+    };
+    track.plocks = vec![short];
+    let moving = vec![track.notes[0].id];
+
+    let shift = PLockShift::capture(&track, &moving);
+    // Nothing to carry — slot 40 is past the end of this lane — and nothing to
+    // panic about either.
+    assert!(!shift.apply(&mut track, 4.0));
+    assert_eq!(track.plocks[0].values.len(), 16, "and the lane is left as it was");
 }

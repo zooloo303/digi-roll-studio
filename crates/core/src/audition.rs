@@ -20,7 +20,7 @@
 // authored and auditioned before anyone knows what its uint16 would be. The
 // stored word only appears at the pattern's lane pool, which is unported.
 
-use digi_protocol::params::{curated_param, param_table_for};
+use digi_protocol::params::{curated_param, param_table_for, track_level_midi, TRACK_LEVEL_LABEL};
 
 use crate::model::PLockLane;
 
@@ -87,6 +87,34 @@ pub fn plock_messages_for_step(
         });
     }
     out
+}
+
+/// The track's LEVEL fader, resolved for the box it is aimed at.
+///
+/// Same shape as a lane's message and sent down the same path, so the choice
+/// between NRPN and CC is made once, in `app::plocks` — which matters here more
+/// than for a lane, because the two boxes give track level the *same* CC and
+/// different NRPNs (`params::track_level_midi`).
+///
+/// `None` for a box with no published chart: a fader that guessed a controller
+/// number would move some other parameter, which is the one outcome worse than
+/// a fader that does nothing.
+///
+/// **This is a live control, not pattern data.** Nothing about it is written to
+/// the box's kit — `protocol::pattern` does not map the kit's level bytes at all
+/// — so it moves the box's own fader exactly as a hand on the encoder would, and
+/// nothing puts it back. The same bargain [`plock_messages_for_step`] makes, and
+/// the UI owes the same warning.
+pub fn track_level_message(device_kind: &str, level: u8) -> Option<ParamMessage> {
+    let midi = track_level_midi(device_kind)?;
+    let display = level.min(127);
+    Some(ParamMessage {
+        label: TRACK_LEVEL_LABEL,
+        nrpn: midi.nrpn,
+        cc: midi.cc,
+        value7: display,
+        value14: (display as u16) << 7,
+    })
 }
 
 /// Would playing this pattern move anything on the box?
@@ -232,6 +260,34 @@ mod tests {
         assert!(!has_auditable_lanes(&[empty], "DT2"));
         let held = lane(Some("filter.cutoff"), None, Some("DT2"), &[(7, 1)]);
         assert!(has_auditable_lanes(&[held], "DT2"));
+    }
+
+    #[test]
+    fn the_track_level_fader_resolves_to_each_boxs_own_number() {
+        // The boxes share the CC and differ on the NRPN, which is the one shape
+        // of mistake this layer exists to make impossible.
+        let dt2 = track_level_message("DT2", 64).expect("the DT2 has a chart");
+        assert_eq!((dt2.nrpn, dt2.cc), (Some((1, 100)), Some(95)));
+        let dn2 = track_level_message("DN2", 64).expect("the DN2 has a chart");
+        assert_eq!((dn2.nrpn, dn2.cc), (Some((1, 110)), Some(95)));
+        // Same axis as a lane's: 0–127, put in the top seven bits of the 14.
+        assert_eq!((dt2.value7, dt2.value14), (64, 8192));
+        assert_eq!(dt2.label, "TRACK LEVEL");
+    }
+
+    #[test]
+    fn a_box_with_no_published_chart_gets_no_fader_rather_than_a_guess() {
+        // A guessed controller number moves *some* parameter. That is worse than
+        // a fader that does nothing, and it is the same call
+        // `plock_messages_for_step` makes for a lane aimed at the wrong box.
+        assert!(track_level_message("DT1", 64).is_none());
+        assert!(track_level_message("", 64).is_none());
+    }
+
+    #[test]
+    fn a_level_above_the_axis_is_clamped_like_a_lanes_value() {
+        let m = track_level_message("DT2", 200).expect("a chart");
+        assert_eq!((m.value7, m.value14), (127, 16256));
     }
 
     #[test]

@@ -82,6 +82,21 @@ pub enum TransportCommand {
     /// not have is the UI's problem to notice, and it rebuilds rather than
     /// snapshotting.
     Snapshot { session: Arc<Session>, ports: PortTable },
+    /// Send these, now, in the order given — no deadline and no queue.
+    ///
+    /// For a control the *user* is turning rather than one the sequencer plays:
+    /// a fader moved while the transport is stopped has to reach the box anyway,
+    /// and one moved while it is playing must not wait for a step boundary that
+    /// may be two bars off. Scheduling it at `at = 0.0` would be worse than
+    /// either, since 0.0 is the top of the run and every event before now is
+    /// sent immediately — a fader move would land in the middle of whatever the
+    /// queue was already holding.
+    ///
+    /// The messages are resolved out here, by the caller that knows which
+    /// controller number a knob lives at (`app::plocks`, `core::audition`) —
+    /// `PLAN.md` §3 keeps that knowledge out of this crate, and a command
+    /// carrying finished [`MidiMsg`]s is how it stays out.
+    SendNow(Vec<(PortId, MidiMsg)>),
     Quit,
 }
 
@@ -456,6 +471,17 @@ impl EngineThread {
                 }
             }
             TransportCommand::Stop => self.flush_stop(),
+            TransportCommand::SendNow(msgs) => {
+                // Through `scratch` and `send_now`, which is the same path a
+                // panic takes: one place that turns events into bytes on a
+                // port. `at` is unused — nothing waits — and is written 0.0
+                // rather than being made optional, because these never enter
+                // the queue where a deadline would mean anything.
+                self.scratch.clear();
+                self.scratch
+                    .extend(msgs.into_iter().map(|(port, msg)| ScheduledEvent::new(0.0, port, msg)));
+                self.send_now();
+            }
             TransportCommand::Panic => {
                 self.scratch.clear();
                 self.scheduler.panic(0.0, &mut self.scratch);

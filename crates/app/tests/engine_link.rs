@@ -587,3 +587,150 @@ fn moving_a_port_from_one_box_to_the_other_leaves_one_connection_open() {
         &vec!["IAC Driver Bus 1".to_string()],
     );
 }
+
+/// Set a track's LEVEL, the way the VOL field does.
+fn set_level(session: &mut Session, device: usize, track: usize, level: Option<u8>) {
+    let id = session.devices[device].id;
+    let slot = session.slot_in_scene(session.current_scene, id).expect("a slot").slot();
+    session
+        .device_mut(id)
+        .expect("device")
+        .pattern_mut(slot)
+        .expect("pattern")
+        .track_mut(track)
+        .expect("track")
+        .level = level;
+}
+
+/// Every NRPN on the wire, as `(port, channel, [(controller, value); 4])`.
+///
+/// **One `send` carries all four control changes**, which is the point of
+/// `MidiMsg::Nrpn` being one variant: the parameter select and its value must
+/// not be interleaved with anything else. So this parses a 12-byte blob rather
+/// than four sends — and a test that split them would be asserting the opposite
+/// of the contract.
+fn nrpn_sent(log: &Log) -> Vec<(usize, u8, Vec<(u8, u8)>)> {
+    log.sent
+        .iter()
+        .filter(|(_, bytes)| bytes.len() == 12 && bytes[0] & 0xf0 == 0xb0)
+        .map(|(port, bytes)| {
+            let pairs = bytes.chunks(3).map(|c| (c[1], c[2])).collect();
+            (port.0, bytes[0] & 0x0f, pairs)
+        })
+        .collect()
+}
+
+#[test]
+fn moving_a_tracks_level_sends_the_boxs_own_fader_on_that_tracks_channel() {
+    // The whole of the volume feature at the seam: a number in the session
+    // becomes NRPN 1/100 — the DT2's track level — on the port that track's
+    // notes go to, with the transport stopped, because stopped is when most
+    // mixing happens.
+    let (log, factory) = recording();
+    let mut engine = EngineLink::with_sinks(factory);
+    let mut session = digi_core::default_session();
+    bind_output(&mut session, 0, "a port");
+    set_level(&mut session, 0, 2, Some(64));
+
+    engine.reroute(&session);
+    let device = session.devices[0].id;
+    assert!(engine.send_track_level(&session, device, 2));
+    std::thread::sleep(Duration::from_millis(50));
+
+    let log = log.lock().expect("sink log");
+    assert_eq!(
+        nrpn_sent(&log),
+        // Track 3 sits on channel 3 by `Track::new`'s 1:1 map, which is channel
+        // byte 2 on the wire. 99/98 = NRPN MSB 1, LSB 100; then 6/38 = 64 in the
+        // top seven bits of the 14, which is where a 0–127 axis puts it.
+        [(0, 2, vec![(99, 1), (98, 100), (6, 64), (38, 0)])],
+        "one NRPN, on the DT2's own number, on the track's channel"
+    );
+}
+
+#[test]
+fn a_dn2_gets_its_own_level_number_not_the_dt2s() {
+    // 95 is the CC on both boxes and the NRPN is not: 1/100 on a DT2, 1/110 on
+    // a DN2. Sending one box's number to the other is the mistake this whole
+    // parameter layer is shaped to prevent.
+    let (log, factory) = recording();
+    let mut engine = EngineLink::with_sinks(factory);
+    let mut session = digi_core::default_session();
+    bind_output(&mut session, 1, "the dn2");
+    set_level(&mut session, 1, 0, Some(127));
+
+    engine.reroute(&session);
+    let device = session.devices[1].id;
+    assert!(engine.send_track_level(&session, device, 0));
+    std::thread::sleep(Duration::from_millis(50));
+
+    let log = log.lock().expect("sink log");
+    let sent = nrpn_sent(&log);
+    assert_eq!(sent.len(), 1, "one message");
+    assert_eq!(sent[0].2[1], (98, 110), "the DN2's LSB, not the DT2's 100");
+    assert_eq!(sent[0].2[2], (6, 127));
+}
+
+#[test]
+fn a_track_that_has_never_been_touched_sends_nothing() {
+    // `Track::level` is `None` until someone moves the fader, and `None` has to
+    // stay silent: the app does not know where the box's fader is, so opening a
+    // project must not ride sixteen of them to a number it invented.
+    let (log, factory) = recording();
+    let mut engine = EngineLink::with_sinks(factory);
+    let mut session = digi_core::default_session();
+    bind_output(&mut session, 0, "a port");
+
+    engine.reroute(&session);
+    let device = session.devices[0].id;
+    assert!(!engine.send_track_level(&session, device, 0), "nothing to send");
+    std::thread::sleep(Duration::from_millis(50));
+    assert!(log.lock().expect("sink log").sent.is_empty());
+}
+
+#[test]
+fn a_level_follows_the_track_to_its_own_port_not_its_boxs() {
+    // Same rule as the notes — `Scheduler::prepare` gives a track's own
+    // `out_port` precedence over its device's — because a fader that reached a
+    // different port from the notes would ride some other box's track.
+    let (log, factory) = recording();
+    let mut engine = EngineLink::with_sinks(factory);
+    let mut session = digi_core::default_session();
+    bind_output(&mut session, 0, "the box");
+    let id = session.devices[0].id;
+    let slot = session.slot_in_scene(0, id).expect("a slot").slot();
+    {
+        let track = session
+            .device_mut(id)
+            .expect("device")
+            .pattern_mut(slot)
+            .expect("pattern")
+            .track_mut(3)
+            .expect("track");
+        track.out_port = Some("a synth over MIDI".into());
+        track.level = Some(10);
+    }
+
+    engine.reroute(&session);
+    assert!(engine.send_track_level(&session, id, 3));
+    std::thread::sleep(Duration::from_millis(50));
+
+    let log = log.lock().expect("sink log");
+    let sent = nrpn_sent(&log);
+    assert_eq!(sent.len(), 1);
+    assert_eq!(sent[0].0, PortId(1).0, "the track's own port, not the box's");
+}
+
+#[test]
+fn a_level_on_a_track_routed_nowhere_is_refused_rather_than_guessed() {
+    let (log, factory) = recording();
+    let mut engine = EngineLink::with_sinks(factory);
+    let mut session = digi_core::default_session();
+    set_level(&mut session, 0, 0, Some(64));
+
+    engine.reroute(&session);
+    let device = session.devices[0].id;
+    assert!(!engine.send_track_level(&session, device, 0));
+    std::thread::sleep(Duration::from_millis(50));
+    assert!(log.lock().expect("sink log").sent.is_empty());
+}

@@ -7,7 +7,7 @@
 // which don't apply at this layer at all.
 //
 // **What travels: `notes`, `plocks`, `length_steps`, `scale`, `track_prob`.
-// What does not: `out_port`, `channel`, `mute`, `solo`, `name`, `patch`.**
+// What does not: `out_port`, `channel`, `mute`, `solo`, `level`, `name`, `patch`.**
 // The routing fields belong to the destination track's place in the studio,
 // not to the music being copied — the same call `protocol::copy_track` makes
 // for sounds and kit (its own doc comment: "Sounds, kit and the pattern's own
@@ -241,7 +241,7 @@ pub struct TrackClip {
 
 impl TrackClip {
     /// Lift what travels out of `track`. Everything else — `out_port`,
-    /// `channel`, `mute`, `solo`, `name`, `patch` — is the destination's own
+    /// `channel`, `mute`, `solo`, `level`, `name`, `patch` — is the destination's own
     /// and is never read here, so there is nothing in this type that could
     /// leak it into a paste by accident.
     pub fn copy_from(track: &Track, source_kind: impl Into<String>) -> Self {

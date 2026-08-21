@@ -12,8 +12,10 @@
 use crate::plocks::CuratedPLocks;
 use std::sync::Arc;
 
+use digi_core::audition::track_level_message;
+use digi_core::device::DeviceId;
 use digi_core::Session;
-use digi_engine::event::PortTable;
+use digi_engine::event::{MidiMsg, PortTable};
 use digi_engine::scheduler::{intern_ports, Scheduler};
 use digi_engine::sink::MidirSink;
 use digi_engine::transport::{PortSink, Transport, TransportCommand, TransportState};
@@ -176,6 +178,69 @@ impl EngineLink {
     pub fn resume(&mut self, session: &Session) {
         self.sync(session);
         self.send(TransportCommand::Continue);
+    }
+
+    /// Send a track's LEVEL to the box it plays on, right now.
+    ///
+    /// **The port is resolved the way the scheduler resolves it** — the track's
+    /// own `out_port` if it has one, else its device's output — because a fader
+    /// that reached a different port from the notes would move some other box's
+    /// track. `scheduler::prepare` writes that rule for playback; this is the
+    /// same rule for a control the user is turning, and the only other place it
+    /// is spelled.
+    ///
+    /// Returns whether anything went. `false` covers all four ways it cannot:
+    /// no engine yet, a device this session cannot name a box for, a box with no
+    /// published controller for level, and a track routed nowhere. A caller that
+    /// wants to say "the fader moved but nothing heard it" has this to say it
+    /// from; nothing here writes to the session.
+    pub fn send_track_level(&self, session: &Session, device: DeviceId, track: usize) -> bool {
+        let Some(device) = session.devices.iter().find(|d| d.id == device) else {
+            return false;
+        };
+        let Some(kind) = device.model.spec().map(|s| s.device) else {
+            return false;
+        };
+        let Some(track) = session
+            .current_pattern(device.id)
+            .and_then(|p| p.tracks().get(track).cloned())
+        else {
+            return false;
+        };
+        let Some(level) = track.level else {
+            return false;
+        };
+        let Some(message) = track_level_message(kind, level) else {
+            return false;
+        };
+        let name = match &track.out_port {
+            Some(name) => Some(name.as_str()),
+            None => device.io.output.as_ref().map(|p| p.name.as_str()),
+        };
+        let Some(port) = name.and_then(|n| self.ports.get(n)) else {
+            return false;
+        };
+        // NRPN first, CC as the fallback — `plocks::CuratedPLocks` chooses in
+        // this order and gives the three reasons. Level is a case where it
+        // matters for a fourth: the boxes share the CC (95) and differ on the
+        // NRPN, so the NRPN is the one that cannot be sent to the wrong box by
+        // accident.
+        let msg = match (message.nrpn, message.cc) {
+            (Some((msb, lsb)), _) => MidiMsg::Nrpn {
+                channel: track.channel,
+                msb,
+                lsb,
+                value14: message.value14,
+            },
+            (None, Some(cc)) => MidiMsg::ControlChange {
+                channel: track.channel,
+                controller: cc,
+                value: message.value7,
+            },
+            (None, None) => return false,
+        };
+        self.send(TransportCommand::SendNow(vec![(port, msg)]));
+        self.transport.is_some()
     }
 
     pub fn stop(&mut self) {

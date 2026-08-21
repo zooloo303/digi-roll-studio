@@ -277,6 +277,16 @@ not obey `PLAN.md` §7 rule 7 with the singular one — so the function and its
 caller landed together, and the seam (one backup per slot rather than per track)
 was decided by the person who would have to live with the ring being full.
 
+**And once more in the Generate panel, found by Neil looking at the old
+browser app and asking what happened to two of its buttons (2026-08-20).**
+`progressions::next_progression_for` was ported with the words *"The ↻ button"*
+in its own doc comment, and `progression_note` with a caption to draw; both were
+tested, and neither was called from anywhere. So the progression library was
+reachable only by typing one of its entries out by hand, and the note each entry
+carries was drawn nowhere at all. **A ported function that names the control it
+is for, and has no caller, is a missing button — the doc comment is the report.**
+The two buttons are now wired and pressed by tests.
+
 Still waiting: **`copy_track`** (needs a destination and somewhere to put its
 `warnings`) and **the clipboard** — `place_clipboard`, `ClipNote` and
 `clipboard_anchor` are complete, tested and called by nothing, and the seam they

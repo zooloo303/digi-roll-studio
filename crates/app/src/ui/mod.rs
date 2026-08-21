@@ -78,6 +78,8 @@
 // | `−` U+2212 | scene bar: remove this scene |
 // | `■` U+25A0 | transport: stop |
 // | `▶` U+25B6 | transport: play; scene bar: this scene is sounding |
+// | `↻` U+21BB | reroll: a PARTS card's row, the Generate panel's progression, and its seed |
+// | `▲` U+25B2 | the conflict marker on a PARTS card |
 // | `“ ”` U+201C/D | the kit name in the write confirm dialog, a backup's filename in the send group's log line, and every row of the Backups list (`StashEntry::summary`, which the restore dialog quotes too) |
 //
 // **Known missing, all five found by drawing them**: `●` U+25CF, `▸` U+25B8 (the

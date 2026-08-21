@@ -10,7 +10,7 @@
 // clamps once for a group and per-note elsewhere, so does this, because those
 // differences are the behaviour.
 
-use crate::model::Note;
+use crate::model::{Note, Track, PLOCK_STEPS};
 
 /// The drawable pitch rows, as js/pianoroll.js labels them: C2 to C8.
 pub const PITCH_MIN: u8 = 24;
@@ -295,6 +295,174 @@ pub fn adopt_step_trig(notes: &mut [Note], arriving: &[u32]) -> usize {
         }
     }
     changed
+}
+
+// --- P-locks under a move ----------------------------------------------------
+
+/// Which lane slot a trig's locks live in, or `None` for a step no lane can
+/// hold one on.
+///
+/// The rounding is `export::notes_for_device`'s, and it has to be: the box
+/// stores a trig on a whole step with micro-timing as its own field, so two
+/// notes at 4.0 and 4.4 are one trig and share one lock. The range is the lane's
+/// own [`PLOCK_STEPS`] — a note dragged past the wrap line is representable
+/// here, but a lock on it would have nowhere to sit.
+pub fn lane_slot(step: f64) -> Option<usize> {
+    let s = step.round();
+    (s >= 0.0 && s < PLOCK_STEPS as f64).then_some(s as usize)
+}
+
+/// The p-lock lanes as a move found them, so the locks can ride along with the
+/// trigs that are moving.
+///
+/// **A lock belongs to its trig.** That is how the box stores it — the lane
+/// pool holds a value per step and the step is a trig — so a trig that moves and
+/// leaves its filter sweep behind on the old step is not "locks unchanged", it is
+/// a sweep now belonging to whatever trig turns up there next, and a moved trig
+/// that has quietly lost its own. Before this existed the roll did exactly that,
+/// on every drag.
+///
+/// Three rules, and each is the one the rest of the editor already keeps:
+///
+/// * **The lock leaves only when the trig does.** A step that still has a note
+///   on it after the move still has a trig, so it keeps its locks — and the
+///   moving note takes a copy. That is what makes dragging one note out of a
+///   locked chord, and alt-drag's copy, both come out right without a second
+///   code path: the copies begin life on their originals' steps, so the
+///   originals are the notes staying behind.
+/// * **The incumbent wins at the destination.** A step that already holds a lock
+///   in a lane keeps it, exactly as [`adopt_step_trig`] gives an arriving note
+///   the incumbent trig's PROB/FILL/COND rather than the other way round. The
+///   trig was already there; the arriving one is joining it.
+/// * **A trigless lane is not touched at all.** Those values are not attached to
+///   any trig — that is what makes them trigless — so there is nothing for a
+///   trig to carry, and v1's contract is to pass them through as the box had
+///   them (`PLockLane::trigless`).
+///
+/// Captured once at the press, like [`Grabbed`]-style move state everywhere
+/// else, and [`Self::apply`] recomputes the whole lane from that base on every
+/// frame. A drag that reverses lands back exactly where it started, and one held
+/// still reports no change, neither of which is true of shifting values in
+/// place.
+///
+/// [`Grabbed`]: crate::model::Note
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct PLockShift {
+    /// Per lane, in track order: the values it began the gesture with, or `None`
+    /// for a lane this must not touch.
+    lanes: Vec<Option<Vec<Option<u16>>>>,
+    /// The lane slots the moving trigs started on, deduplicated, each with
+    /// whether the move empties it.
+    sources: Vec<Source>,
+}
+
+/// One slot a moving trig came off.
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct Source {
+    slot: usize,
+    /// No note that is staying put is left on this slot, so the trig — and its
+    /// locks — genuinely leave.
+    vacated: bool,
+}
+
+impl PLockShift {
+    /// What a move of `moving` (note ids) would have to carry. Cheap and
+    /// allocation-free on a track with no lanes, which is most of them.
+    pub fn capture(track: &Track, moving: &[u32]) -> Self {
+        if track.plocks.is_empty() || moving.is_empty() {
+            return Self::default();
+        }
+        let mut sources: Vec<Source> = Vec::new();
+        for note in track.notes.iter().filter(|n| moving.contains(&n.id)) {
+            let Some(slot) = lane_slot(note.step) else {
+                continue;
+            };
+            if sources.iter().any(|s| s.slot == slot) {
+                continue;
+            }
+            // Anything staying behind on this slot keeps the trig — and with it
+            // the locks — where they are.
+            let vacated = !track
+                .notes
+                .iter()
+                .any(|n| !moving.contains(&n.id) && lane_slot(n.step) == Some(slot));
+            sources.push(Source { slot, vacated });
+        }
+        if sources.is_empty() {
+            return Self::default();
+        }
+        Self {
+            lanes: track
+                .plocks
+                .iter()
+                .map(|lane| (!lane.trigless).then(|| lane.values.clone()))
+                .collect(),
+            sources,
+        }
+    }
+
+    /// Nothing to carry: no lanes, or no trig with a slot to carry one from.
+    pub fn is_empty(&self) -> bool {
+        self.sources.is_empty() || self.lanes.iter().all(Option::is_none)
+    }
+
+    /// Put every carried lock where the trig it belongs to has ended up, and
+    /// report whether that changed anything.
+    ///
+    /// `step_delta` is the move's own delta, the one already clamped for the
+    /// group — so the locks travel exactly as far as the notes did and cannot
+    /// drift a step away from their trigs at the edge of the grid.
+    ///
+    /// A lock whose trig has been dragged past the last slot a lane has is
+    /// dropped, for the same reason it could not have been captured there: there
+    /// is nowhere to store it. The trig is off the end of what the box can name
+    /// too, and `export::notes_for_device` is the one that says so.
+    pub fn apply(&self, track: &mut Track, step_delta: f64) -> bool {
+        if self.is_empty() {
+            return false;
+        }
+        let delta = step_delta.round() as i64;
+        let mut changed = false;
+        for (lane, base) in track.plocks.iter_mut().zip(&self.lanes) {
+            let Some(base) = base else {
+                continue;
+            };
+            let mut wanted = base.clone();
+            // Cleared first, then stamped, so a run of trigs moving one step
+            // does not overwrite its own tail: the slot ahead has already given
+            // its value up before the slot behind lands on it.
+            for source in self.sources.iter().filter(|s| s.vacated) {
+                if let Some(slot) = wanted.get_mut(source.slot) {
+                    *slot = None;
+                }
+            }
+            for source in &self.sources {
+                let Ok(dest) = usize::try_from(source.slot as i64 + delta) else {
+                    continue;
+                };
+                // Indexed through `get`, not `[]`, for both ends. A lane's
+                // `values` is a public field and `PLOCK_STEPS` is the length
+                // `PLockLane::new` gives one, not a length the type enforces —
+                // so a lane built by hand can be shorter, and a move at the end
+                // of a long pattern would index past it.
+                if dest >= PLOCK_STEPS || dest >= wanted.len() {
+                    continue;
+                }
+                // An incumbent lock stays. A slot being vacated has no
+                // incumbent — its own trig is on the way out.
+                let occupied = base.get(dest).copied().flatten().is_some()
+                    && !self.sources.iter().any(|s| s.slot == dest && s.vacated);
+                if !occupied {
+                    wanted[dest] = base.get(source.slot).copied().flatten();
+                }
+            }
+            if lane.values != wanted {
+                lane.values = wanted;
+                changed = true;
+            }
+        }
+        changed
+    }
 }
 
 // --- Velocity ----------------------------------------------------------------

@@ -222,6 +222,24 @@ pub struct Track {
     pub mute: bool,
     #[serde(default)]
     pub solo: bool,
+    /// The box's own track LEVEL, once someone has moved it — and `None` until
+    /// then, which is the whole of why this is an `Option`.
+    ///
+    /// **`None` means "this app has never touched that fader", not "the fader is
+    /// at zero" and not "it is at some default".** Only the box knows where its
+    /// level actually sits; nothing in a pattern dump tells us
+    /// (`protocol::pattern` does not map the kit's level bytes), so a `0`
+    /// default would have the app open a project and immediately ride sixteen
+    /// faders to silence to make the box agree with a number it invented. A
+    /// value here is a value the user set, and the only thing that ever sends
+    /// one is that act.
+    ///
+    /// On the display axis every parameter in this app uses: MIDI 0–127. The
+    /// controller it goes out on is per box and is
+    /// `protocol::params::track_level_midi` — **not CC 7**, which is in neither
+    /// box's chart.
+    #[serde(default)]
+    pub level: Option<u8>,
     /// What the app last saw fetched into this track, if anything. Survives a
     /// rename — the track's own `name` is a copy of `patch.sound` taken at
     /// import time, and nothing keeps the two in sync afterwards, so this is
@@ -302,6 +320,9 @@ impl Track {
             channel: (index % 16) as u8,
             mute: false,
             solo: false,
+            // Never a number: see the field. Until someone moves the fader
+            // there is nothing honest to send.
+            level: None,
             patch: None,
         }
     }

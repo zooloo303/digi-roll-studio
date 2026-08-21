@@ -69,6 +69,7 @@ use std::collections::BTreeSet;
 use digi_core::chords::{chord_for_cell, ChordNote, Harmony, Row};
 use digi_core::edit_ops::{
     adopt_step_trig, clamp_micro, clamp_velocity, nudge_velocities, resize_selection_by, LenEntry,
+    PLockShift,
     ResizeOpts,
 };
 use digi_core::lengths::snap_len_fine;
@@ -249,7 +250,15 @@ pub struct PianoRoll {
 #[derive(Clone, PartialEq, Debug)]
 enum Drag {
     /// Moving the selection as one body. `anchor` is where the button went down.
-    Move { anchor: Pos2, group: Vec<Grabbed> },
+    Move {
+        anchor: Pos2,
+        group: Vec<Grabbed>,
+        /// The p-lock lanes as the press found them, so the locks ride along
+        /// with the trigs. Captured here for the same reason `group` is: a lock
+        /// has to be placed from where the gesture *began*, or a drag held
+        /// still would shift it once per frame. See [`PLockShift`].
+        locks: PLockShift,
+    },
     /// Stretching the selection by one note's right edge — the JS's
     /// `_resizeStart`.
     Resize {
@@ -874,6 +883,17 @@ impl PianoRoll {
             .collect()
     }
 
+    /// The p-lock lanes as this move found them, so the locks travel with the
+    /// trigs rather than staying on the steps those trigs came off.
+    ///
+    /// The rules — and the reason a lock is the trig's rather than the step's —
+    /// live in [`PLockShift`], in `core`, where they can be argued about without
+    /// a pointer. This is only the group's ids in the shape it wants.
+    fn hold_locks(&self, track: &Track, group: &[Grabbed]) -> PLockShift {
+        let moving: Vec<u32> = group.iter().map(|g| g.id).collect();
+        PLockShift::capture(track, &moving)
+    }
+
     /// The rubber band, in the JS's own colours — a 16% wash and a solid edge.
     /// Drawn after `interact` so the band is the one the current frame's pointer
     /// made, not the one the last frame left behind.
@@ -1438,7 +1458,14 @@ impl PianoRoll {
                             track.notes.extend(clones);
                             changed = true;
                             let group = self.grab(track);
-                            self.dragging = Some(Drag::Move { anchor: pos, group });
+                            // **The copies carry copies of the locks**, and that
+                            // falls out of `PLockShift`'s own rule rather than
+                            // needing a case here: the clones begin on their
+                            // originals' steps, the originals are staying put, so
+                            // those steps keep their locks and the copies take a
+                            // copy. Same arithmetic, same as the positions.
+                            let locks = self.hold_locks(track, &group);
+                            self.dragging = Some(Drag::Move { anchor: pos, group, locks });
                         }
                     }
                     Intent::Resize(id) => {
@@ -1468,7 +1495,8 @@ impl PianoRoll {
                         }
                         let group = self.grab(track);
                         if !group.is_empty() {
-                            self.dragging = Some(Drag::Move { anchor: pos, group });
+                            let locks = self.hold_locks(track, &group);
+                            self.dragging = Some(Drag::Move { anchor: pos, group, locks });
                         }
                     }
                     Intent::Velocity(id) => {
@@ -1535,7 +1563,7 @@ impl PianoRoll {
         if let (Some(drag), Some(pos)) = (self.dragging.clone(), response.interact_pointer_pos())
         {
             match drag {
-                Drag::Move { anchor, group } => {
+                Drag::Move { anchor, group, locks } => {
                     let step_delta = ((pos.x - anchor.x) / grid.cell.x).round() as f64;
                     let pitch_delta = -((pos.y - anchor.y) / grid.cell.y).round() as i32;
 
@@ -1572,6 +1600,11 @@ impl PianoRoll {
                             }
                         }
                     }
+                    // **The locks go where the trigs went**, off the *clamped*
+                    // delta above rather than the raw one, so a group stopped by
+                    // the edge of the grid does not leave its automation a step
+                    // ahead of the trigs it belongs to.
+                    changed |= locks.apply(track, step_delta);
                 }
                 Drag::Resize { grabbed, start_len, items } => {
                     // Everything is measured against the grabbed note, because
@@ -3519,6 +3552,141 @@ mod tests {
         let copy = track.notes.iter().find(|n| n.id != original).expect("the copy");
         assert_eq!((copy.step, copy.pitch, copy.len, copy.velocity), (8.0, 84, 2.0, 70));
         assert_eq!(ids(&roll), vec![copy.id], "and the copy is what is selected");
+    }
+
+    /// A track with one editable lane holding a value on each named slot.
+    fn with_lane(track: &mut Track, at: &[(usize, u16)]) {
+        let mut values = vec![None; 128];
+        for &(slot, v) in at {
+            values[slot] = Some(v);
+        }
+        track.plocks = vec![digi_core::PLockLane::new(
+            Some(String::from("filter.cutoff")),
+            None,
+            Some(String::from("DT2")),
+            false,
+            values,
+        )
+        .unwrap()];
+    }
+
+    /// The slots a lane holds a value on.
+    fn lane_locks(track: &Track) -> Vec<(usize, u16)> {
+        track.plocks[0]
+            .values
+            .iter()
+            .enumerate()
+            .filter_map(|(slot, v)| v.map(|v| (slot, v)))
+            .collect()
+    }
+
+    #[test]
+    fn dragging_a_trig_takes_its_p_locks_with_it() {
+        // The roll moved the trig and left the lock behind on the step it came
+        // off, so the sweep belonged to whatever trig turned up there next and
+        // the moved trig had none. Reported by Neil, 2026-08-20. The rules are
+        // `edit_ops::PLockShift`'s; this is the gesture actually carrying them.
+        let ctx = egui::Context::default();
+        let grid = live_grid();
+        let mut roll = PianoRoll::default();
+        let mut track = Track::new(0, TrackKind::Audio);
+        track.notes = vec![Note::new(2.0, 84, 1.0, 100, 0.0)];
+        with_lane(&mut track, &[(2, 100)]);
+
+        drag_between(
+            &ctx,
+            &mut roll,
+            &mut track,
+            &grid,
+            egui::Modifiers::NONE,
+            at(&grid, 2.0, 84),
+            at(&grid, 6.0, 84),
+        );
+
+        assert_eq!(track.notes[0].step, 6.0, "the trig moved");
+        assert_eq!(lane_locks(&track), [(6, 100)], "and the lock is on it, not on step 2");
+    }
+
+    #[test]
+    fn a_group_move_carries_every_moved_trigs_locks_by_the_clamped_delta() {
+        // Two trigs, two locks, and a delta the group's own clamp decides — the
+        // locks have to travel exactly as far as the notes did or the automation
+        // ends up a step away from the trig it belongs to.
+        let ctx = egui::Context::default();
+        let grid = live_grid();
+        let mut roll = PianoRoll::default();
+        let mut track = Track::new(0, TrackKind::Audio);
+        track.notes =
+            vec![Note::new(2.0, 84, 1.0, 100, 0.0), Note::new(5.0, 83, 1.0, 100, 0.0)];
+        with_lane(&mut track, &[(2, 30), (5, 90)]);
+        roll.selected.extend(track.notes.iter().map(|n| n.id));
+
+        // Dragged left, further than the earliest trig can go: the clamp stops
+        // the group at step 0 and both locks stop with it.
+        drag_between(
+            &ctx,
+            &mut roll,
+            &mut track,
+            &grid,
+            egui::Modifiers::NONE,
+            at(&grid, 2.0, 84),
+            at(&grid, 0.0, 84),
+        );
+
+        let steps: Vec<f64> = track.notes.iter().map(|n| n.step).collect();
+        assert_eq!(steps, [0.0, 3.0]);
+        assert_eq!(lane_locks(&track), [(0, 30), (3, 90)]);
+    }
+
+    #[test]
+    fn an_alt_drag_copies_the_locks_and_leaves_the_originals() {
+        // The copy lands on a trig of its own, so it needs the lock the original
+        // was playing; the original has not moved, so it keeps its own.
+        let ctx = egui::Context::default();
+        let grid = live_grid();
+        let mut roll = PianoRoll::default();
+        let mut track = Track::new(0, TrackKind::Audio);
+        track.notes = vec![Note::new(4.0, 84, 1.0, 100, 0.0)];
+        with_lane(&mut track, &[(4, 77)]);
+
+        drag_between(
+            &ctx,
+            &mut roll,
+            &mut track,
+            &grid,
+            egui::Modifiers::ALT,
+            at(&grid, 4.0, 84),
+            at(&grid, 8.0, 84),
+        );
+
+        assert_eq!(lane_locks(&track), [(4, 77), (8, 77)]);
+    }
+
+    #[test]
+    fn neither_a_resize_nor_a_velocity_drag_moves_a_lock() {
+        // Locks are per step, and neither gesture moves a note onto a new one.
+        let ctx = egui::Context::default();
+        let grid = live_grid();
+        let mut roll = PianoRoll::default();
+        let mut track = Track::new(0, TrackKind::Audio);
+        track.notes = vec![Note::new(4.0, 84, 1.0, 100, 0.0)];
+        with_lane(&mut track, &[(4, 55)]);
+
+        let edge = Pos2 { x: grid.x_of_step(5.0) - 2.0, y: at(&grid, 4.0, 84).y };
+        drag_between(&ctx, &mut roll, &mut track, &grid, egui::Modifiers::NONE, edge, at(&grid, 9.0, 84));
+        assert_eq!(lane_locks(&track), [(4, 55)], "a resize leaves it alone");
+
+        let body = at(&grid, 4.0, 84);
+        drag_between(
+            &ctx,
+            &mut roll,
+            &mut track,
+            &grid,
+            egui::Modifiers::SHIFT,
+            body,
+            Pos2 { x: body.x, y: body.y - 20.0 },
+        );
+        assert_eq!(lane_locks(&track), [(4, 55)], "and so does a velocity drag");
     }
 
     #[test]
