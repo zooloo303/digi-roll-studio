@@ -359,13 +359,13 @@ fn a_firmware_the_format_was_never_verified_against_is_refused_the_same_way() {
     // are that it reaches the row unaltered and that nothing was read or sent.
     let (session, id, _) = session_with_import();
     let mut box_ = FakeBox::dt2();
-    box_.identity = identity(42, "0071");
+    box_.identity = identity(42, "9999");
 
     let (result, seen) =
         drive(&mut box_, &job_for(&session, id, 0), &tmp_stash("build"), Some(true));
 
     let refusal = result.expect_err("an unverified build");
-    assert!(refusal.contains("0071"), "{refusal}");
+    assert!(refusal.contains("9999"), "{refusal}");
     assert!(refusal.contains("read-only"), "{refusal}");
     assert!(seen.asks.is_empty());
     assert_eq!((box_.fetches, box_.sends), (0, 0));

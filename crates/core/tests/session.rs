@@ -854,7 +854,7 @@ fn re_identifying_the_same_ports_updates_that_box_rather_than_claiming_another()
         .unwrap();
     let again = s
         .bind_identity(
-            &identity("digitakt2", "Digitakt II", "0071", "1.16"),
+            &identity("digitakt2", "Digitakt II", "0071", "1.15C"),
             port("111", "Elektron Digitakt II"),
             port("222", "Elektron Digitakt II"),
         )

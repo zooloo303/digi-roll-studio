@@ -406,13 +406,13 @@ fn a_firmware_the_format_was_never_verified_against_is_refused() {
     let stash = tmp_stash("build");
     let mut box_ = FakeBox::dt2();
     let entry = overwrite_a01(&mut box_, &stash, &session, id, spec);
-    box_.identity = identity(42, "0071");
+    box_.identity = identity(42, "9999");
 
     let job = plan(&session, PortsPresent::unknown(), id, &stash, &entry, false).unwrap();
     let (result, seen) = drive(&mut box_, &job, Some(true));
 
     let refusal = result.expect_err("an unverified build");
-    assert!(refusal.contains("0071"), "{refusal}");
+    assert!(refusal.contains("9999"), "{refusal}");
     assert!(refusal.contains("read-only"), "{refusal}");
     assert!(seen.asks.is_empty());
     assert_eq!((box_.fetches, box_.sends), (0, 0));

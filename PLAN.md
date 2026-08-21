@@ -546,8 +546,11 @@ These are not up for renegotiation in the port.
 
 **Hardware is never part of the dev loop** (§7 rule 5). `cargo test --workspace`
 needs no system dependencies and no box. This section is the separate register of
-what has actually met a DT2 (build 0070, OS 1.15B) and a DN2, because a green
-suite cannot say.
+what has actually met a DT2 and a DN2, because a green suite cannot say. Every
+entry below was recorded on a DT2 at OS 1.15B (build 0070) and a DN2 at OS 1.10D
+(build 0049). Both boxes moved to 1.15C (0071) and 1.10E (0050) on 2026-08-21;
+the fetch-edit-write round trip was re-run on the new OSes that day, and the last
+entry below is that run. Nothing else here has been.
 
 ### What has touched a box
 
@@ -566,6 +569,9 @@ suite cannot say.
 - **A four-note chord** — written to a box and fetched back intact, 2026-08-19.
 - **The tempo fix** — a few sessions and the Generate panel's SET, confirmed
   against what the boxes actually played, 2026-08-20.
+- **The new OSes** — DT2 1.15C (0071) and DN2 1.10E (0050), 2026-08-21. Patterns
+  fetched off both boxes, edited in the app and written back, verified. This is
+  the run those two builds are on the write allowlist for.
 
 ### What has not
 

@@ -65,9 +65,19 @@ use crate::trig_cond::{apply_track_prob, apply_track_trig_settings, trig_setting
 /// per device — a full encode → send → re-read → byte-compare cycle plus a
 /// controlled-experiment pass over the trig fields. **Extend a list only after
 /// re-verifying on the new build.**
+///
+/// 0071 and 0050 joined the list on 2026-08-21. Both OSes landed on 2026-06-23
+/// carrying one sentence of release notes — "adds support for updated production
+/// processes" — which is the same sentence 1.15B and 1.10D themselves shipped
+/// under: an Elektron production-sourcing change, not a firmware feature. That
+/// is the reason to expect nothing moved, not the evidence, so the round trip
+/// was run on both boxes on the new OSes the same day: a pattern fetched off the
+/// box, edited in the app, written back, and verified byte-identical. The
+/// trig-field controlled experiment was not repeated — the format is unchanged,
+/// and that pass is what these two inherit from the builds above them.
 pub const WRITE_ALLOWED_BUILDS: &[(&str, &[&str])] = &[
-    ("digitakt2", &["0070"]), // 1.15B, verified 2026-08-01
-    ("digitone2", &["0049"]), // 1.10D, verified 2026-08-01
+    ("digitakt2", &["0070", "0071"]), // 1.15B, verified 2026-08-01; 1.15C, 2026-08-21
+    ("digitone2", &["0049", "0050"]), // 1.10D, verified 2026-08-01; 1.10E, 2026-08-21
 ];
 
 /// How many mismatching offsets the verify step reports. The JS default is 64;
@@ -1175,7 +1185,7 @@ mod tests {
         // the one that drifts is the one nothing tests.
         assert_eq!(
             WRITE_ALLOWED_BUILDS,
-            &[("digitakt2", &["0070"][..]), ("digitone2", &["0049"][..])]
+            &[("digitakt2", &["0070", "0071"][..]), ("digitone2", &["0049", "0050"][..])]
         );
     }
 
