@@ -52,7 +52,7 @@ try {
     # dialog — worth failing the build over rather than shipping.
     $info = (Get-Item $exe).VersionInfo
     if ($info.ProductName -ne 'Digi-Roll Studio') {
-        throw ("$exe carries ProductName '$($info.ProductName)' — the version " +
+        throw ("$exe carries ProductName '$($info.ProductName)' - the version " +
                'resource from crates/app/build.rs is missing. Is rc.exe from the ' +
                'Windows SDK on this machine?')
     }
@@ -66,7 +66,9 @@ try {
             "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe",
             "$env:ProgramFiles\Inno Setup 6\ISCC.exe",
             "${env:ProgramFiles(x86)}\Inno Setup 7\ISCC.exe",
-            "$env:ProgramFiles\Inno Setup 7\ISCC.exe"
+            "$env:ProgramFiles\Inno Setup 7\ISCC.exe",
+            "${env:LOCALAPPDATA}\Programs\Inno Setup 6\ISCC.exe",
+            "${env:LOCALAPPDATA}\Programs\Inno Setup 7\ISCC.exe"
         ) | Where-Object { Test-Path $_ } | Select-Object -First 1
     }
     if (-not $iscc) {
