@@ -111,12 +111,18 @@ const DUMP_STALL: Duration = Duration::from_millis(5000);
 /// "send instantly, then wait `len/800 + 100`". The pauses get coarser, not
 /// shorter.
 ///
-/// **Not yet run against a box.** This is read off `midir` 0.11's source rather
-/// than measured — the WinMM path has no hardware evidence in this repo, and
-/// whether a driver swallows 127 KB in a single `midiOutLongMsg` is the thing a
-/// PC and a real DT2 have to answer. The failure mode if it does not is loud
-/// (`paced_send` propagates with `?`, and rule 1 has already taken the backup),
-/// not a corrupted slot.
+/// **Verified against a DN2 on 2026-08-21**, from the installed Windows build: a
+/// driver does swallow a whole pattern in one `midiOutLongMsg`, so the unchunked
+/// path this constant selects works against real hardware. That was the last
+/// assumption in the write path taken from `midir` 0.11's source rather than
+/// measured.
+///
+/// **Not the DT2's larger payload, which no WinMM build has sent** — a DT2 store
+/// is 127,577 framed bytes against the DN2's smaller one, so the biggest single
+/// transfer this code can attempt has still only ever gone out over CoreMIDI.
+/// The failure mode if some driver refuses it is loud rather than silent
+/// (`paced_send` propagates with `?`, and rule 1 has already taken the backup):
+/// a refused write, not a scrambled slot.
 #[cfg(not(target_os = "windows"))]
 const SEND_CHUNK: usize = 4096;
 #[cfg(target_os = "windows")]
@@ -622,7 +628,13 @@ mod tests {
         assert!(msg.len() > 65_535 + 65_535 / 2, "and it is not marginally over");
         // Which is only useful if the chunks it goes out in do fit. Measured
         // boundary, 2026-08-18: 65,535 bytes arrive and 65,536 vanish silently.
-        let chunks: Vec<_> = msg.chunks(SEND_CHUNK).collect();
+        //
+        // `CHUNKED` rather than `SEND_CHUNK` for the reason spelled out where that
+        // literal is declared: `SEND_CHUNK` is `usize::MAX` on Windows, so a test
+        // that followed it there would split into exactly one piece and assert
+        // that one piece is under 65,535 — both of which are false, and neither of
+        // which is what this test is about. The rule being pinned is CoreMIDI's.
+        let chunks: Vec<_> = msg.chunks(CHUNKED).collect();
         assert!(chunks.len() > 1, "a message this size has to be split");
         for c in &chunks {
             assert!(c.len() <= 65_535, "a chunk over 65,535 bytes is dropped without an error");
