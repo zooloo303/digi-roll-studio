@@ -532,9 +532,12 @@ These are not up for renegotiation in the port.
   breaking SEND TO BOX, SYNC EVERY TRACK and restore on Windows while leaving
   identify, fetch and clock working. `SEND_CHUNK` is now `cfg`-conditional.
 
-  **What is still open:** none of the WinMM path has met hardware. Whether a
-  driver swallows 127 KB in a single `midiOutLongMsg` is the first thing to try
-  on a PC. The failure mode if it does not is loud rather than silent —
+  **Answered on 2026-08-21:** a driver does swallow a whole pattern in a single
+  `midiOutLongMsg`. A DN2 was identified, auto-connected and written to from an
+  installed Windows build — so the `cfg`-conditional `SEND_CHUNK` is right, and
+  the unchunked path it selects on Windows works against real hardware. What is
+  still open is the DT2's larger payload, which no WinMM build has sent. The
+  failure mode if a driver ever refuses one is loud rather than silent —
   `paced_send` propagates with `?`, and rule 1 has already taken the backup — so
   a bad answer costs a refused write, not a scrambled slot. Linux is unexamined
   beyond the observation that ALSA accepts sysex continuations, so the chunking
@@ -572,11 +575,17 @@ entry below is that run. Nothing else here has been.
 - **The new OSes** — DT2 1.15C (0071) and DN2 1.10E (0050), 2026-08-21. Patterns
   fetched off both boxes, edited in the app and written back, verified. This is
   the run those two builds are on the write allowlist for.
+- **Windows, end to end** — 2026-08-21. The Inno installer built on a PC and
+  installed; the app ran; auto-connect found a DN2 and claimed it; a pattern with
+  a trig condition on it was written to the box and behaved as expected. The
+  first box any WinMM build has met, and the answer to §8's open question.
+- **Both installers, from a user's side** — 2026-08-21. The `.dmg` installs and
+  the app opens and runs; the Windows setup `.exe` likewise.
 
 ### What has not
 
-- **The whole WinMM path.** The app compiles for Windows; no box has met that
-  build. See §8.
+- **A DT2 on Windows.** The WinMM path has met a DN2 (above) and no DT2, so the
+  larger of the two payloads has only ever gone out over CoreMIDI. See §8.
 - **Linux**, beyond the observation that the chunking is correct for ALSA.
 - **`copy_track`** — it has no caller, so nothing can drive it.
 - **"Read patch names"** against a box, since the named-slot path landed

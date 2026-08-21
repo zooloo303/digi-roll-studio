@@ -60,11 +60,11 @@ socket. The checkbox is at the bottom of BOXES.
 | Generator | seeded, nine modules, per-genre; a six-row arrangement has played and been synced to both boxes byte-identical |
 | Copy-track | ported, translating p-lock lanes between boxes by parameter name — **no caller yet**, so no UI can copy a track |
 | Song mode | **not built** — `Scene` has no `chain` field. A point release |
-| Platforms | macOS is where it is developed and hardware-tested. **Windows compiles** (whole workspace, `x86_64-pc-windows-msvc`) but no WinMM path has met a box yet. Linux is untested |
+| Platforms | macOS and Windows are both **hardware-tested from their own installer** — on Windows a DN2 was auto-connected and written to; a DT2 has not met a Windows build. Linux is untested |
 
-**What is left before MVP1:** crash-safety (saving is manual, so a crash takes
-the session) and packaging (no app bundle yet — it runs from a checkout, though
-it has its icon and the Dock shows it).
+**What is left before MVP1:** crash-safety — saving is manual, so a crash still
+takes the session. Packaging is done: both installers are built, and each has
+been installed and run on its own platform.
 
 ---
 
