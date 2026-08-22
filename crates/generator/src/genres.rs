@@ -37,10 +37,11 @@ pub enum GenreId {
     Breaks,
     Electro,
     House,
+    Techno,
 }
 
 impl GenreId {
-    pub const ALL: [Self; 4] = [Self::Dnb, Self::Breaks, Self::Electro, Self::House];
+    pub const ALL: [Self; 5] = [Self::Dnb, Self::Breaks, Self::Electro, Self::House, Self::Techno];
 
     pub fn as_str(self) -> &'static str {
         match self {
@@ -48,6 +49,7 @@ impl GenreId {
             Self::Breaks => "breaks",
             Self::Electro => "electro",
             Self::House => "house",
+            Self::Techno => "techno",
         }
     }
 
@@ -358,6 +360,13 @@ pub fn genre_profile(id: GenreId) -> GenreProfile {
             // which is the same musical result on one track.
             GenreProfile { id, label: "House", bpm: 124, bpm_range: (120, 128), bars: 1, groove: swung(0.14) }
         }
+        GenreId::Techno => {
+            // Straighter and harder than house: the same four-on-the-floor
+            // kick, but the swing that makes house shuffle is exactly what
+            // techno's hypnotic grid must not have, so the shuffle here is
+            // barely there — just enough to keep the hats off a metronome.
+            GenreProfile { id, label: "Techno", bpm: 130, bpm_range: (125, 145), bars: 2, groove: swung(0.02) }
+        }
     }
 }
 
@@ -645,6 +654,71 @@ pub fn role_profile(id: GenreId, role: Role) -> RoleProfile {
             ],
         },
 
+        (GenreId::Techno, Role::Bass) => RoleProfile {
+            // A rolling, hypnotic pulse — mostly eighths with the beat
+            // favoured, closer to Electro's staccato than DnB's syncopation:
+            // techno's low end is a loop to sink into, not a line to follow.
+            weights: [1.0, 0.1, 0.5, 0.1, 0.6, 0.1, 0.5, 0.1, 0.6, 0.1, 0.5, 0.1, 0.6, 0.1, 0.5, 0.1],
+            trigs_per_bar: (6, 12),
+            span: 24,
+            anchor_len: Some(0.5),
+            len: LenProfile::Plain { normal: 0.4, ghost: Some(0.2), max: 1.0 },
+            velocity: Velocity { accent: 116, normal: 100, ghost: 70 },
+            approach: Some(0.1),
+            octave_leap: Some(0.15),
+            strum: None,
+            spread: None,
+            motif: None,
+            conditions: &[ALT_BARS, WEAK_PROB],
+            lanes: &[
+                LaneRecipe { name: "filter.cutoff", shape: LaneShape::Wander, from: 35, to: 100 },
+                LaneRecipe { name: "fx.overdrive", shape: LaneShape::Accent, from: 20, to: 85 },
+            ],
+        },
+        (GenreId::Techno, Role::Chords) => RoleProfile {
+            // Barely there: one long pad hit a bar, sometimes a second at the
+            // half — the harmonic wash under the loop, not a progression
+            // anyone is meant to follow.
+            weights: [1.0, 0.05, 0.1, 0.05, 0.1, 0.05, 0.1, 0.05, 0.6, 0.05, 0.1, 0.05, 0.1, 0.05, 0.1, 0.05],
+            trigs_per_bar: (1, 3),
+            span: 24,
+            anchor_len: None,
+            len: LenProfile::Mode { mode: LenMode::Sustain, normal: 12.0, max: 16.0 },
+            velocity: Velocity { accent: 100, normal: 88, ghost: 70 },
+            approach: None,
+            octave_leap: None,
+            strum: Some(0.0),
+            spread: Some(0.3),
+            motif: None,
+            conditions: &[ALT_BARS, EVERY_FOURTH],
+            lanes: &[
+                LaneRecipe { name: "filter.cutoff", shape: LaneShape::Arc, from: 40, to: 95 },
+                LaneRecipe { name: "fx.reverbSend", shape: LaneShape::Swell, from: 35, to: 100 },
+            ],
+        },
+        (GenreId::Techno, Role::Lead) => RoleProfile {
+            // The acid line: even sixteenths in a narrow window, the same
+            // few notes circling — the hypnotic repetition is the hook, so
+            // `motif`'s window is the tightest of any genre's lead.
+            weights: [0.8, 0.4, 0.6, 0.4, 0.7, 0.4, 0.6, 0.4, 0.8, 0.4, 0.6, 0.4, 0.7, 0.4, 0.6, 0.4],
+            trigs_per_bar: (6, 14),
+            span: 24,
+            anchor_len: None,
+            len: LenProfile::Plain { normal: 0.25, ghost: None, max: 1.0 },
+            velocity: Velocity { accent: 114, normal: 98, ghost: 74 },
+            approach: None,
+            octave_leap: None,
+            strum: None,
+            spread: None,
+            motif: Some(MotifProfile { notes: (5, 8), window: 5 }),
+            conditions: &[ALT_BARS, WEAK_PROB, EVERY_FOURTH],
+            lanes: &[
+                LaneRecipe { name: "filter.cutoff", shape: LaneShape::Wander, from: 30, to: 115 },
+                LaneRecipe { name: "filter.resonance", shape: LaneShape::Rise, from: 30, to: 95 },
+                LaneRecipe { name: "lfo1.depth", shape: LaneShape::Pulse, from: 60, to: 100 },
+            ],
+        },
+
         // --- drums: new design, no oracle — see `drum_profile`'s header ---------
 
         (GenreId::Dnb, Role::Kick) => drum_profile(
@@ -923,6 +997,82 @@ pub fn role_profile(id: GenreId, role: Role) -> RoleProfile {
             (1, 4),
             LenProfile::Plain { normal: 0.5, ghost: Some(0.25), max: 1.0 },
             Velocity { accent: 108, normal: 90, ghost: 58 },
+            DRUM_FILL_RECIPE,
+        ),
+
+        (GenreId::Techno, Role::Kick) => drum_profile(
+            // Four-on-the-floor again, but harder and louder than House's —
+            // techno's kick is the room, not the pulse under the room.
+            [1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0],
+            (4, 4),
+            LenProfile::Plain { normal: 0.5, ghost: Some(0.5), max: 1.0 },
+            Velocity { accent: 122, normal: 112, ghost: 84 },
+            DRUM_SPINE_RECIPE,
+        ),
+        (GenreId::Techno, Role::Snare) => drum_profile(
+            // A clean, mechanical backbeat with no ghosts — same shape as
+            // Electro's, because techno's snare is a machine hit too, not a
+            // player's — just harder.
+            [0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0],
+            (2, 2),
+            LenProfile::Plain { normal: 0.25, ghost: Some(0.25), max: 0.5 },
+            Velocity { accent: 116, normal: 102, ghost: 74 },
+            DRUM_SPINE_RECIPE,
+        ),
+        (GenreId::Techno, Role::Clap) => drum_profile(
+            // Doubles the snare's backbeat with a syncopated pickup at the
+            // "and" of 3 — the extra push into the back half every peak-time
+            // techno clap track leans on.
+            [0.0, 0.0, 0.0, 0.0, 0.9, 0.0, 0.0, 0.0, 0.0, 0.0, 0.3, 0.0, 0.9, 0.0, 0.0, 0.0],
+            (2, 3),
+            LenProfile::Plain { normal: 0.5, ghost: Some(0.25), max: 1.0 },
+            Velocity { accent: 114, normal: 98, ghost: 68 },
+            DRUM_SPINE_RECIPE,
+        ),
+        (GenreId::Techno, Role::Rimshot) => drum_profile(
+            // Dense off-sixteenth ticks — the percussive chatter that fills
+            // the space a sparse techno arrangement leaves open.
+            [0.0, 0.35, 0.0, 0.4, 0.0, 0.35, 0.0, 0.4, 0.0, 0.35, 0.0, 0.4, 0.0, 0.35, 0.0, 0.4],
+            (4, 8),
+            LenProfile::Plain { normal: 0.25, ghost: Some(0.125), max: 0.5 },
+            Velocity { accent: 100, normal: 84, ghost: 56 },
+            DRUM_COLOUR_RECIPE,
+        ),
+        (GenreId::Techno, Role::ClosedHat) => drum_profile(
+            // The genre's signature: relentless, near-even sixteenths with
+            // the off-16ths a shade louder — the "tss-tss" that never lets up.
+            [0.6, 0.7, 0.6, 0.7, 0.6, 0.7, 0.6, 0.7, 0.6, 0.7, 0.6, 0.7, 0.6, 0.7, 0.6, 0.7],
+            (12, 16),
+            LenProfile::Plain { normal: 0.25, ghost: Some(0.125), max: 0.5 },
+            Velocity { accent: 92, normal: 78, ghost: 52 },
+            DRUM_COLOUR_RECIPE,
+        ),
+        (GenreId::Techno, Role::OpenHat) => drum_profile(
+            // The off-beat open hat, same slot as House's — the "and" of
+            // every beat, techno's other constant besides the kick.
+            [0.0, 0.0, 0.7, 0.0, 0.0, 0.0, 0.7, 0.0, 0.0, 0.0, 0.7, 0.0, 0.0, 0.0, 0.7, 0.0],
+            (3, 4),
+            LenProfile::Plain { normal: 0.25, ghost: Some(0.125), max: 0.5 },
+            Velocity { accent: 100, normal: 84, ghost: 58 },
+            DRUM_COLOUR_RECIPE,
+        ),
+        (GenreId::Techno, Role::Ride) => drum_profile(
+            // Flat, quiet eighths with no beat emphasis — a metallic texture
+            // under the loop rather than a voice of its own, the same
+            // reasoning as Electro's ride.
+            [0.5, 0.0, 0.5, 0.0, 0.5, 0.0, 0.5, 0.0, 0.5, 0.0, 0.5, 0.0, 0.5, 0.0, 0.5, 0.0],
+            (5, 8),
+            LenProfile::Plain { normal: 0.5, ghost: Some(0.25), max: 1.0 },
+            Velocity { accent: 80, normal: 68, ghost: 48 },
+            DRUM_COLOUR_RECIPE,
+        ),
+        (GenreId::Techno, Role::Tom) => drum_profile(
+            // Sparse and off the kick, same logic as House's: with the kick
+            // on all four, a tom's only room is the gaps between.
+            [0.0, 0.0, 0.0, 0.3, 0.0, 0.0, 0.4, 0.0, 0.0, 0.0, 0.0, 0.35, 0.0, 0.0, 0.5, 0.0],
+            (1, 4),
+            LenProfile::Plain { normal: 0.5, ghost: Some(0.25), max: 1.0 },
+            Velocity { accent: 110, normal: 90, ghost: 58 },
             DRUM_FILL_RECIPE,
         ),
     }

@@ -21,7 +21,7 @@ pub struct ProgressionEntry {
     pub note: &'static str,
 }
 
-use GenreId::{Breaks, Dnb, Electro, House};
+use GenreId::{Breaks, Dnb, Electro, House, Techno};
 
 pub const PROGRESSIONS: &[ProgressionEntry] = &[
     // --- minor loops, the shared backbone -----------------------------------------
@@ -85,7 +85,7 @@ pub const PROGRESSIONS: &[ProgressionEntry] = &[
     // --- electro: static and mechanical -------------------------------------------
     ProgressionEntry {
         text: "i i VI VI",
-        genres: &[Electro],
+        genres: &[Electro, Techno],
         note: "barely moves — the riff does the work",
     },
     ProgressionEntry {
@@ -95,8 +95,14 @@ pub const PROGRESSIONS: &[ProgressionEntry] = &[
     },
     ProgressionEntry {
         text: "i:4",
-        genres: &[Electro, Dnb, Breaks, House],
+        genres: &[Electro, Dnb, Breaks, House, Techno],
         note: "one chord, four bars — a modal drone for a riff to sit on",
+    },
+    // --- techno: hypnotic and static -----------------------------------------------
+    ProgressionEntry {
+        text: "i i i VII",
+        genres: &[Techno],
+        note: "three bars pedalling before the one move — built for a long, hypnotic loop",
     },
 ];
 
