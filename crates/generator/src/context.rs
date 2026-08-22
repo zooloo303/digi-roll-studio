@@ -187,8 +187,15 @@ fn new_part(role: Role, track: usize, density: u8, octave: u8) -> Part {
 
 /// The six default rows — bass, chords, lead, then a kick/snare/closed-hat
 /// kit, in that order — lining up with tracks 1–6 on a box if they're sent
-/// in order. Octaves are the register windows from the design: bass C2–C4,
-/// chords C4–C6, lead C5–up.
+/// in order. Octaves are the register windows the three melodic rows land
+/// in: bass C3–C5, chords C5–C7, lead C6–up.
+///
+/// **Each is one octave above the design's own figures** (bass C2–C4,
+/// chords C4–C6, lead C5–up), which put a generated part low enough that
+/// every run wanted transposing up by hand before it was usable. The design
+/// numbers are a register in the abstract; these are where the parts sit
+/// once a box is actually playing them. The window heights (`span` in
+/// `genres.rs`) are untouched — this moves the floor, not the range.
 ///
 /// **Drum voices have no register.** `arrange::generate_for_role` never
 /// passes a drum row's octave to [`generate_drums`](crate::parts::drums::generate_drums)
@@ -222,9 +229,9 @@ fn new_part(role: Role, track: usize, density: u8, octave: u8) -> Part {
 /// Rows can be added, removed and reassigned to any box, slot or track.
 pub fn default_parts() -> Vec<Part> {
     vec![
-        new_part(Role::Bass, 0, 55, 2),
-        new_part(Role::Chords, 1, 40, 4),
-        new_part(Role::Lead, 2, 40, 5),
+        new_part(Role::Bass, 0, 55, 3),
+        new_part(Role::Chords, 1, 40, 5),
+        new_part(Role::Lead, 2, 40, 6),
         new_part(Role::Kick, 3, 60, 4),
         new_part(Role::Snare, 4, 55, 4),
         new_part(Role::ClosedHat, 5, 65, 4),
@@ -445,6 +452,25 @@ mod tests {
         // inert placeholder rather than a fourth register.
         assert!(d.parts[0].octave < d.parts[1].octave);
         assert!(d.parts[1].octave < d.parts[2].octave);
+    }
+
+    #[test]
+    fn the_melodic_defaults_sit_an_octave_above_the_designs_own_registers() {
+        // Pinned rather than left to the ordering assertion above, because
+        // the whole point of these three numbers is *which* octave, not the
+        // gaps between them: the design's 2/4/5 generated a part low enough
+        // that every run wanted transposing up by hand.
+        let d = GenContext::default();
+        let octaves: Vec<u8> = d.parts[..3].iter().map(|p| p.octave).collect();
+        assert_eq!(octaves, vec![3, 5, 6]);
+        // And each is still a register the roll can draw a full window of —
+        // `window_for` pulls an octave too high back down, which would make
+        // a raise silently do nothing.
+        for (i, &oct) in octaves.iter().enumerate() {
+            let (lo, hi) = crate::theory::window_for(24, i32::from(oct));
+            assert_eq!(lo, 12 * i32::from(oct), "octave {oct} was pulled back down");
+            assert!(hi - lo >= 12);
+        }
     }
 
     #[test]

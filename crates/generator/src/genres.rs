@@ -19,6 +19,20 @@
 //     fifteen tracks — hence house's shuffle living in this array.
 //   * **`bpm` is a suggestion**, offered by the panel with a Set button.
 //     Nothing here changes the transport behind your back.
+//   * **`len` is in steps, and every bass profile's is doubled from the
+//     first cut's.** The numbers carried over from `js/gen/genres.js` made
+//     a bassline that read as short in every genre — notes stopping well
+//     inside the gap to the next trig, so the line never joined up — and
+//     wanted lengthening by hand after every run. `normal` and `ghost` are
+//     now exactly twice what they were, and `anchor_len` is raised only
+//     where the anchor would otherwise have ended up shorter than the
+//     ordinary notes around it (electro, house, techno, breaks); DnB's
+//     four-step anchor was always long and is untouched. `max` is
+//     untouched everywhere: the ceiling was never the problem, and
+//     `bass.rs` still takes the smaller of the length, the gap to the next
+//     trig and that ceiling, so a longer `normal` lengthens a note only
+//     where there is room for one. Electro and techno stay staccato
+//     because their `max` of one step caps them there regardless.
 //
 // Register windows are `[12 * octave, 12 * octave + span]` with the octave
 // coming from the song context, so moving a part's octave moves its window
@@ -422,7 +436,7 @@ pub fn role_profile(id: GenreId, role: Role) -> RoleProfile {
             trigs_per_bar: (2, 7),
             span: 24,
             anchor_len: Some(4.0),
-            len: LenProfile::Plain { normal: 0.75, ghost: Some(0.25), max: 6.0 },
+            len: LenProfile::Plain { normal: 1.5, ghost: Some(0.5), max: 6.0 },
             velocity: Velocity { accent: 120, normal: 100, ghost: 66 },
             approach: Some(0.35),
             octave_leap: Some(0.12),
@@ -481,8 +495,8 @@ pub fn role_profile(id: GenreId, role: Role) -> RoleProfile {
             weights: [1.0, 0.2, 0.45, 0.3, 0.3, 0.5, 0.55, 0.3, 0.6, 0.25, 0.5, 0.45, 0.35, 0.5, 0.6, 0.4],
             trigs_per_bar: (3, 9),
             span: 24,
-            anchor_len: Some(1.5),
-            len: LenProfile::Plain { normal: 0.5, ghost: Some(0.25), max: 4.0 },
+            anchor_len: Some(2.0),
+            len: LenProfile::Plain { normal: 1.0, ghost: Some(0.5), max: 4.0 },
             velocity: Velocity { accent: 118, normal: 98, ghost: 58 },
             approach: Some(0.3),
             octave_leap: Some(0.18),
@@ -541,8 +555,8 @@ pub fn role_profile(id: GenreId, role: Role) -> RoleProfile {
             weights: [1.0, 0.6, 0.7, 0.6, 0.75, 0.6, 0.7, 0.6, 0.85, 0.6, 0.7, 0.6, 0.8, 0.6, 0.75, 0.65],
             trigs_per_bar: (6, 14),
             span: 24,
-            anchor_len: Some(0.5),
-            len: LenProfile::Plain { normal: 0.25, ghost: Some(0.25), max: 1.0 },
+            anchor_len: Some(1.0),
+            len: LenProfile::Plain { normal: 0.5, ghost: Some(0.5), max: 1.0 },
             velocity: Velocity { accent: 122, normal: 100, ghost: 72 },
             approach: Some(0.15),
             octave_leap: Some(0.45),
@@ -601,8 +615,8 @@ pub fn role_profile(id: GenreId, role: Role) -> RoleProfile {
             weights: [0.35, 0.05, 1.0, 0.1, 0.3, 0.05, 1.0, 0.1, 0.3, 0.05, 1.0, 0.1, 0.3, 0.05, 1.0, 0.15],
             trigs_per_bar: (4, 8),
             span: 24,
-            anchor_len: Some(0.5),
-            len: LenProfile::Plain { normal: 0.5, ghost: Some(0.25), max: 2.0 },
+            anchor_len: Some(1.0),
+            len: LenProfile::Plain { normal: 1.0, ghost: Some(0.5), max: 2.0 },
             velocity: Velocity { accent: 112, normal: 100, ghost: 78 },
             approach: Some(0.2),
             octave_leap: Some(0.2),
@@ -661,8 +675,8 @@ pub fn role_profile(id: GenreId, role: Role) -> RoleProfile {
             weights: [1.0, 0.1, 0.5, 0.1, 0.6, 0.1, 0.5, 0.1, 0.6, 0.1, 0.5, 0.1, 0.6, 0.1, 0.5, 0.1],
             trigs_per_bar: (6, 12),
             span: 24,
-            anchor_len: Some(0.5),
-            len: LenProfile::Plain { normal: 0.4, ghost: Some(0.2), max: 1.0 },
+            anchor_len: Some(0.8),
+            len: LenProfile::Plain { normal: 0.8, ghost: Some(0.4), max: 1.0 },
             velocity: Velocity { accent: 116, normal: 100, ghost: 70 },
             approach: Some(0.1),
             octave_leap: Some(0.15),

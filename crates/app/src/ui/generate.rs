@@ -20,6 +20,15 @@
 // read a track's notes and lanes and put them safely on a card, and neither
 // needs to know its content came from a generator rather than a hand.
 //
+// **A row's ↻ writes on the press, the button asks first.** Both land in the
+// same place by the same path ([`GeneratePanel::apply`]); they differ only in
+// whether the confirm dialog stands in front. A press of GENERATE replaces
+// every "on" row at once and is worth a dialog; a ↻ replaces one row and
+// whatever answers it, is the direct answer to "show me another one", and
+// would be useless with a modal in the way. The dialog is not skipped
+// blindly, though: it still appears when a re-roll would land on a track
+// this panel has never written — see `GeneratePanel::written`.
+//
 // That is a deliberate narrowing of "What to do next" in `DEVELOPMENT.md`, which
 // pictured one button calling `safe_write_tracks` behind its own confirm
 // dialog. Doing that here would duplicate a fair slice of `ui::sync`'s survey
@@ -82,6 +91,7 @@ use std::collections::{HashMap, HashSet};
 
 use digi_core::chords::PITCH_CLASSES;
 use digi_core::device::DeviceId;
+use digi_core::model::{Note, PLockLane};
 use digi_core::session::PatternRef;
 use digi_core::Session;
 use digi_generator::arrange::{apply_part_to_track, generate_arrangement, generate_part, ArrangeError, ArrangedPart};
@@ -370,6 +380,22 @@ pub fn apply_plan(session: &mut Session, plan: GeneratePlan) -> usize {
     applied
 }
 
+/// A row's music, with the note ids stripped, for asking whether a re-roll
+/// actually moved this row. Ids are the one field that must not count: every
+/// generate mints fresh ones (`Note::new`), so two runs of identical music
+/// compare unequal on the whole struct.
+fn music_of(row: &PlannedRow) -> (Vec<Note>, Vec<PLockLane>) {
+    let notes = row.arranged.notes.iter().map(|n| Note { id: 0, ..n.clone() }).collect();
+    (notes, row.arranged.plocks.clone())
+}
+
+/// A destination as the `(device, slot, track)` triple both `plan_generate`'s
+/// collision check and `GeneratePanel::written` key on. `None` for a row with
+/// no box yet, which no plan ever reaches anyway.
+fn destination_key(d: &Destination) -> Option<(DeviceId, usize, usize)> {
+    d.device.map(|device| (device, d.slot.slot(), d.track))
+}
+
 fn plural(n: usize, word: &str) -> String {
     format!("{n} {word}{}", if n == 1 { "" } else { "s" })
 }
@@ -410,6 +436,16 @@ pub struct GeneratePanel {
     ctx: GenContext,
     confirm: Option<GeneratePlan>,
     status: Option<Status>,
+    /// Every destination this panel has already written to, as
+    /// `(device, slot, track)`. The one thing a re-roll needs to know that a
+    /// plan cannot tell it: whether the track it is about to overwrite holds
+    /// this panel's own output or somebody's hand-drawn notes. Re-rolling
+    /// your own output is the whole point of the button and asks nothing;
+    /// re-rolling over a track this panel has never touched falls back to
+    /// the confirm dialog, because "show me another one" is not consent to
+    /// replace something you drew. Not persisted, along with the rest of the
+    /// panel's state — see the module header's last section.
+    written: HashSet<(DeviceId, usize, usize)>,
     /// The title bar's `?` — see `reference_text`. Toggled by
     /// `panel_title_bar` itself, not by this file, per that function's own
     /// contract.
@@ -418,7 +454,13 @@ pub struct GeneratePanel {
 
 impl Default for GeneratePanel {
     fn default() -> Self {
-        Self { ctx: GenContext::default(), confirm: None, status: None, reference_visible: false }
+        Self {
+            ctx: GenContext::default(),
+            confirm: None,
+            status: None,
+            written: HashSet::new(),
+            reference_visible: false,
+        }
     }
 }
 
@@ -450,7 +492,7 @@ impl GeneratePanel {
                 ui.add_space(10.0);
                 self.feel_group(ui);
                 ui.add_space(10.0);
-                self.parts_group(ui, session);
+                out.edited |= self.parts_group(ui, session);
                 ui.add_space(10.0);
                 out.edited |= self.generate_group(ui, session);
             });
@@ -647,7 +689,7 @@ impl GeneratePanel {
     /// line, a compact Density/Octave pair on the second. See
     /// [`part_conflicts`] for how a collision reaches the one card that has
     /// it rather than a message at the bottom of the panel.
-    fn parts_group(&mut self, ui: &mut Ui, session: &Session) {
+    fn parts_group(&mut self, ui: &mut Ui, session: &mut Session) -> bool {
         section_header(ui, "PARTS", Some("call and response, top down"));
         ui.add_space(4.0);
 
@@ -707,8 +749,8 @@ impl GeneratePanel {
                             if ui
                                 .small_button("↻")
                                 .on_hover_text(
-                                    "Re-roll just this row and whatever answers it below — the \
-                                     seed and every row above it stay put",
+                                    "Re-roll just this row and whatever answers it below, into \
+                                     the session now — the seed and every row above it stay put",
                                 )
                                 .clicked()
                             {
@@ -738,8 +780,9 @@ impl GeneratePanel {
             ui.add_space(5.0);
         }
 
+        let mut edited = false;
         if let Some(id) = reroll {
-            self.ctx.bump_variation(id);
+            edited = self.reroll_now(id, session);
         }
         if let Some(id) = remove {
             self.ctx.parts.retain(|p| p.id != id);
@@ -766,6 +809,118 @@ impl GeneratePanel {
                 variation: 0,
             });
         }
+
+        edited
+    }
+
+    /// A ↻ press on one row: re-roll it and everything that answers it,
+    /// straight into the session.
+    ///
+    /// **The counter bump on its own was the whole of this button until
+    /// now**, and it wrote nothing, drew nothing and said nothing — a press
+    /// was indistinguishable from a press on a dead control, and the
+    /// tooltip's present tense ("re-roll just this row") promised an action
+    /// the code deferred to the next Generate. This is the tooltip's version.
+    ///
+    /// The apply set is worked out by generating the arrangement twice —
+    /// once before the counter moves, once after — and keeping the rows that
+    /// are *below or at* the re-rolled one **and** whose music actually came
+    /// out different. Both halves are load-bearing:
+    ///
+    ///   * **Position alone is too wide.** Row order is call-and-response,
+    ///     but only the melodic roles answer: a lead nudges off the steps
+    ///     the rows above own and chords weight away from them, while every
+    ///     drum voice passes `avoid: 0.0` on purpose — a kick under a hi-hat
+    ///     is the point, not a collision. So re-rolling the lead of the
+    ///     default six leaves the three drum rows generating byte-identical
+    ///     music, and writing them anyway would burn a hand-tweaked kick for
+    ///     no musical reason and report "4 tracks" when one moved.
+    ///   * **Difference alone is too wide.** The rows *above* also change if
+    ///     the seed or a slider moved between generates; position is what
+    ///     holds the promise that everything above a re-roll stays put.
+    ///
+    /// Two more things it deliberately does not do:
+    ///
+    ///   * **Touch the seed**, locked or not, unlike the Generate button.
+    ///     A re-roll moves one row's own stream; rolling a fresh seed here
+    ///     would move every row, which is the opposite of what a row-level
+    ///     button is for.
+    ///   * **Skip the dialog for a track it has never written.** See
+    ///     [`Self::written`].
+    ///
+    /// A row that is switched off still counts as re-rolled: `arrange` puts
+    /// every part into the busy map regardless of `on`, so the melodic rows
+    /// below it move even though the row itself writes nothing. And the
+    /// counter is bumped only once both plans have been built — a re-roll
+    /// that cannot plan leaves the row exactly where it was rather than
+    /// quietly advancing its stream.
+    fn reroll_now(&mut self, id: PartId, session: &mut Session) -> bool {
+        let Some(from) = self.ctx.parts.iter().position(|p| p.id == id) else { return false };
+        let downstream: HashSet<PartId> = self.ctx.parts[from..].iter().map(|p| p.id).collect();
+
+        let before = match plan_generate(&self.ctx, session) {
+            Ok(plan) => plan,
+            Err(e) => {
+                self.status = Some(Status::Failed(e.message()));
+                return false;
+            }
+        };
+        self.ctx.bump_variation(id);
+        let after = match plan_generate(&self.ctx, session) {
+            Ok(plan) => plan,
+            Err(e) => {
+                self.status = Some(Status::Failed(e.message()));
+                return false;
+            }
+        };
+
+        let was: HashMap<PartId, (Vec<Note>, Vec<PLockLane>)> =
+            before.rows.iter().map(|r| (r.part_id, music_of(r))).collect();
+        // `pool_warnings` is kept whole rather than filtered: the lane budget
+        // it reports was arbitrated across every "on" row aimed at that slot,
+        // so it is still the true reason a re-rolled row got fewer lanes than
+        // Motion asked for, even when the row that took them is above this one
+        // and is not being rewritten.
+        let GeneratePlan { rows, pool_warnings } = after;
+        let on_below = rows.iter().any(|r| downstream.contains(&r.part_id));
+        let rows: Vec<PlannedRow> = rows
+            .into_iter()
+            .filter(|r| downstream.contains(&r.part_id))
+            .filter(|r| was.get(&r.part_id) != Some(&music_of(r)))
+            .collect();
+        if rows.is_empty() {
+            self.status = Some(Status::Failed(if on_below {
+                "that re-roll came out the same — press it again, or move a slider first".into()
+            } else {
+                "nothing to re-roll into — this row and every row below it are switched off".into()
+            }));
+            return false;
+        }
+        let plan = GeneratePlan { rows, pool_warnings };
+
+        if plan.rows.iter().any(|r| destination_key(&r.destination).is_none_or(|k| !self.written.contains(&k))) {
+            self.confirm = Some(plan);
+            return false;
+        }
+
+        let row_warnings: Vec<String> = plan.rows.iter().flat_map(|r| r.warnings.clone()).collect();
+        let pool_warnings = plan.pool_warnings.clone();
+        let rows = self.apply(session, plan);
+        self.status = Some(Status::Applied { rows, row_warnings, pool_warnings });
+        true
+    }
+
+    /// [`apply_plan`], plus the record of where it landed that
+    /// [`Self::written`] is. Every path that writes goes through here, so a
+    /// track generated by the button and a track generated by a re-roll are
+    /// equally "ours" to re-roll again without asking.
+    fn apply(&mut self, session: &mut Session, plan: GeneratePlan) -> usize {
+        for row in &plan.rows {
+            if let Some(key) = destination_key(&row.destination) {
+                self.written.insert(key);
+            }
+        }
+        apply_plan(session, plan)
     }
 
     /// GENERATE: the plan, the button — which counts parts or conflicts per
@@ -890,7 +1045,7 @@ impl GeneratePanel {
             let plan = self.confirm.take().expect("just matched Some above");
             let row_warnings: Vec<String> = plan.rows.iter().flat_map(|r| r.warnings.clone()).collect();
             let pool_warnings = plan.pool_warnings.clone();
-            let rows = apply_plan(session, plan);
+            let rows = self.apply(session, plan);
             self.status = Some(Status::Applied { rows, row_warnings, pool_warnings });
             return true;
         }
@@ -1175,8 +1330,9 @@ fn reference_text(ui: &mut Ui) {
              none at all, every trig fires every time round.\nHUMANIZE: velocity and micro-timing \
              wobble away from the genre's own groove.\n\n\
              PARTS: one row per track this writes. Row order is call-and-response — whatever \
-             comes after a row in this list answers it. Reroll re-rolls just that row and \
-             whatever answers it below; the seed and every row above it stay put.",
+             comes after a row in this list answers it. Reroll rewrites just that row and \
+             whatever answers it below, straight into the session — no Generate press needed, \
+             and the seed and every row above it stay put.",
         )
         .weak()
         .small(),
@@ -1218,6 +1374,141 @@ mod tests {
             octave: 4,
             variation: 0,
         }
+    }
+
+    /// Notes as plain comparable data — `Note` carries an id that differs
+    /// between two generates of the same music, so the ids are dropped and
+    /// only what the roll draws is compared.
+    fn shape(session: &Session, index: usize, track: usize) -> Vec<(f64, u8, f64, u8)> {
+        session.devices[index]
+            .pattern(0)
+            .and_then(|p| p.track(track))
+            .map(|t| t.notes.iter().map(|n| (n.step, n.pitch, n.len, n.velocity)).collect())
+            .unwrap_or_default()
+    }
+
+    /// A panel whose six default rows are aimed at a real box and have
+    /// already been generated once, which is the state a re-roll is for.
+    fn generated_panel(session: &mut Session) -> GeneratePanel {
+        let mut panel = GeneratePanel { ctx: default_ctx_on(session), ..GeneratePanel::default() };
+        let plan = plan_generate(&panel.ctx, session).expect("the default six should plan");
+        panel.apply(session, plan);
+        panel
+    }
+
+    #[test]
+    fn a_reroll_rewrites_its_own_row_and_everything_below_it_and_nothing_above() {
+        let mut session = session_with_two_boxes();
+        let mut panel = generated_panel(&mut session);
+
+        // Row 2 of six: bass and chords are above it, lead and the three drum
+        // voices below.
+        let before: Vec<Vec<_>> = (0..6).map(|t| shape(&session, 0, t)).collect();
+        let lead = panel.ctx.parts[2].id;
+        assert!(panel.reroll_now(lead, &mut session), "a re-roll of generated tracks should apply");
+
+        for track in [0, 1] {
+            assert_eq!(shape(&session, 0, track), before[track], "row above the re-roll moved");
+        }
+        assert_ne!(shape(&session, 0, 2), before[2], "the re-rolled row did not change");
+        // The three drum rows are below the lead but answer nothing — every
+        // voice generates with `avoid: 0.0` — so a lead re-roll must leave
+        // them alone rather than rewrite them with identical music.
+        for track in 3..6 {
+            assert_eq!(shape(&session, 0, track), before[track], "a drum row was rewritten for nothing");
+        }
+        assert!(
+            matches!(&panel.status, Some(Status::Applied { rows: 1, .. })),
+            "it should report the one track it actually moved, got {:?}",
+            panel.status.as_ref().map(|s| matches!(s, Status::Applied { .. }))
+        );
+    }
+
+    #[test]
+    fn a_reroll_of_the_top_row_can_carry_down_to_the_melodic_rows_that_answer_it() {
+        // **Across seeds, not on one.** Chords weight away from the steps the
+        // bass owns (`avoid: 0.15`) and the lead nudges off them, but both
+        // only move when the re-rolled bass actually lands somewhere it
+        // didn't before — a gentle weighting re-picking the same step is the
+        // common case, not a bug. Pinning one seed here failed depending on
+        // which other tests had run first, because `PartId::next()` is a
+        // process-global counter and the part id is part of the RNG stream
+        // tag. So the claim under test is that the threading is live at all,
+        // which is what the position half of the apply-set filter exists to
+        // carry.
+        let carried = (0..12u32).any(|seed| {
+            let mut session = session_with_two_boxes();
+            let mut panel = generated_panel(&mut session);
+            panel.ctx.seed = seed;
+            panel.ctx.seed_locked = true;
+            // Re-generate at this seed, so `before` is the tracks' real state.
+            let plan = plan_generate(&panel.ctx, &session).expect("the default six should plan");
+            panel.apply(&mut session, plan);
+            let before: Vec<Vec<_>> = (0..3).map(|t| shape(&session, 0, t)).collect();
+
+            let bass = panel.ctx.parts[0].id;
+            if !panel.reroll_now(bass, &mut session) {
+                return false;
+            }
+            assert_ne!(shape(&session, 0, 0), before[0], "seed {seed}: the re-rolled row did not change");
+            (1..3).any(|t| shape(&session, 0, t) != before[t])
+        });
+        assert!(carried, "no seed in 0..12 saw a melodic row answer a bass re-roll");
+    }
+
+    #[test]
+    fn a_reroll_asks_first_before_overwriting_a_track_this_panel_never_wrote() {
+        let mut session = session_with_two_boxes();
+        // Never generated: `written` is empty, so every destination is
+        // somebody else's until proven otherwise.
+        let mut panel = GeneratePanel { ctx: default_ctx_on(&session), ..GeneratePanel::default() };
+        let before: Vec<Vec<_>> = (0..6).map(|t| shape(&session, 0, t)).collect();
+
+        let bass = panel.ctx.parts[0].id;
+        assert!(!panel.reroll_now(bass, &mut session), "it must not report an edit it did not make");
+        assert!(panel.confirm.is_some(), "it should have raised the confirm dialog");
+        for track in 0..6 {
+            assert_eq!(shape(&session, 0, track), before[track], "a track was written without asking");
+        }
+    }
+
+    #[test]
+    fn a_reroll_bumps_only_its_own_rows_variation_and_never_the_seed() {
+        let mut session = session_with_two_boxes();
+        let mut panel = generated_panel(&mut session);
+        panel.ctx.seed_locked = false; // the case Generate would re-roll the seed in
+        let seed = panel.ctx.seed;
+
+        let chords = panel.ctx.parts[1].id;
+        panel.reroll_now(chords, &mut session);
+
+        assert_eq!(panel.ctx.seed, seed, "a re-roll moved the seed");
+        assert_eq!(panel.ctx.parts[1].variation, 1);
+        for (i, part) in panel.ctx.parts.iter().enumerate() {
+            if i != 1 {
+                assert_eq!(part.variation, 0, "row {i} was re-rolled too");
+            }
+        }
+    }
+
+    #[test]
+    fn a_reroll_with_nothing_on_below_it_says_so_rather_than_reporting_an_edit() {
+        let mut session = session_with_two_boxes();
+        let mut panel = generated_panel(&mut session);
+        // The last row switched off, the rest left on — so the plan itself
+        // still succeeds (`PlanError::NothingOn` would mask this) and the
+        // only reason there is nothing to write is that the apply set is
+        // empty. Silence here is exactly the dead-button feel this change
+        // exists to remove.
+        panel.ctx.parts.last_mut().expect("six rows").on = false;
+        let last = panel.ctx.parts.last().expect("six rows").id;
+
+        assert!(!panel.reroll_now(last, &mut session));
+        assert!(
+            matches!(&panel.status, Some(Status::Failed(why)) if why.contains("switched off")),
+            "expected a plain explanation, got {:?}",
+            matches!(&panel.status, Some(Status::Failed(_)))
+        );
     }
 
     #[test]

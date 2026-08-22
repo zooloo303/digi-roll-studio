@@ -233,6 +233,28 @@ mod tests {
     }
 
     #[test]
+    fn holds_every_genres_bassline_long_enough_to_join_up() {
+        // The JS's bass lengths made a line that read as short in every
+        // genre — notes stopping well inside the gap to the next trig — so
+        // `genres.rs` doubles them. Two things pinned here, because both
+        // were wrong before and neither is visible from a note count.
+        for genre in GenreId::ALL {
+            let profile = role_profile(genre, Role::Bass);
+            let (normal, ghost, _) = len_bounds(&profile.len);
+            // An ordinary note is at least half a step. Below that a
+            // bassline is a click track with pitches on it.
+            assert!(normal >= 0.5, "{genre:?}: normal length {normal}");
+            assert!(ghost <= normal, "{genre:?}: ghost {ghost} outlasts normal {normal}");
+            // The anchor on the 1 is never shorter than the notes around
+            // it: three genres' anchors used to be, once the ordinary
+            // lengths came up.
+            if let Some(anchor) = profile.anchor_len {
+                assert!(anchor >= normal, "{genre:?}: anchor {anchor} shorter than normal {normal}");
+            }
+        }
+    }
+
+    #[test]
     fn holds_dnbs_anchor_note_on_the_1() {
         let part = generate(GenreId::Dnb, 6, 2, 20, 2);
         let first = part.notes.iter().find(|n| n.step == 0).unwrap();
