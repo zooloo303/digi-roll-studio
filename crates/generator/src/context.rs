@@ -466,7 +466,7 @@ mod tests {
         // And each is still a register the roll can draw a full window of —
         // `window_for` pulls an octave too high back down, which would make
         // a raise silently do nothing.
-        for (i, &oct) in octaves.iter().enumerate() {
+        for &oct in &octaves {
             let (lo, hi) = crate::theory::window_for(24, i32::from(oct));
             assert_eq!(lo, 12 * i32::from(oct), "octave {oct} was pulled back down");
             assert!(hi - lo >= 12);

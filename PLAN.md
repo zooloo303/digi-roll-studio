@@ -65,18 +65,27 @@ digi-roll's hardware-verified behaviour rather than the port's own output.
 ### Still open
 
 - **`protocol::copy_track` has no caller.** Ported 2026-08-19; nothing in `core`
-  or `app` reaches it, so no UI can copy a track. The last item in Phase 6.
+  or `app` reaches it. This is the **box-to-box** copy — the in-app whole-track
+  copy exists and is bound to Shift+C/Shift+V in the TRACKS grid
+  (`core::track_clip`), so what is missing is copying between two boxes' payloads,
+  not copying a track. The last item in Phase 6.
 - **The track headers are short of §5's own words**: no level meter, no port
   shown, no device colour inherited by the tracks.
 - **Song mode does not exist.** `Scene` has no `chain` field. Phase 12.
 - **Crash-safety.** Saving is manual; there is no autosave, so a crash takes the
   session.
-- **Packaging.** No app bundle yet — it runs from a checkout.
+- **MIDI import reads only the first note-bearing track**, and cannot offset it.
+  The reporting half is fixed; "first track wins" needs a track chooser.
+- **Paste has no caller.** `edit_ops::place_clipboard` is complete and reachable
+  from nothing, because pasted notes land at the playhead and the playhead cannot
+  be moved. The playhead is the prerequisite, and its own open question is what a
+  drag means under polymeter.
 
 **Honest summary:** a verified protocol foundation; a sequencer that has driven
 two real boxes in sync; read, write and restore all proven on hardware from the
-app's own buttons; a session that saves and reopens. What is missing is surface
-and shipping, not seams.
+app's own buttons; a session that saves and reopens; and installers for macOS and
+Windows that people have installed and run. What is missing is surface, not
+seams.
 
 **Banks are cut rather than outstanding**, decided 2026-08-18.
 
@@ -413,6 +422,13 @@ The elements:
      free to be discovered without taking anything away.
   4. **A chord is one trig with several notes**, per `js/chords.js` — never
      several trigs.
+- **The Generate panel** — genre, key, bars, progression, seed, and a row per
+  part with its role, destination, density and register. The three melodic rows
+  default to bass C3–C5, chords C5–C7 and lead C6–up, **an octave above the
+  design's own figures**: those put a generated part low enough that every run
+  wanted transposing up by hand, and the window heights are untouched, so this
+  moved the floor rather than the range. A row's ↻ re-rolls that row and whatever
+  answers it below.
 - **Transport** — play/stop/continue, tempo, swing, FILL, panic, clock
   master/slave.
 
@@ -453,6 +469,15 @@ cross-compile audit (2026-08-19, §8), and three rounds of tester feedback on th
 MVP1 candidate (2026-08-20) — the last of which found the only bug in this project
 so far that could be *heard*: the transport reading 174 BPM while the boxes played
 120. `DEVELOPMENT.md` lesson 5 is that bug's general form.
+
+Then packaging and three releases: the `.dmg` and the Inno installer, built by CI
+off a version tag and left as a draft (2026-08-21, v0.1.0); Techno as a fifth
+genre (v0.1.1); and **v0.1.2, which is the first release shaped entirely by a
+stretch of real use rather than by a phase** — the roll's zoom, the generator's
+registers lifted an octave, every genre's basslines roughly doubled in length,
+and ↻ made to do the thing its tooltip had always claimed. `DEVELOPMENT.md`
+lesson 7 has the zoom and the ↻; both are that lesson's shape, and the ↻ is a
+form of it this project had not seen.
 
 **The decisions worth carrying forward**, each of which changed the shape of the
 thing rather than a line of it:
@@ -558,8 +583,9 @@ needs no system dependencies and no box. This section is the separate register o
 what has actually met a DT2 and a DN2, because a green suite cannot say. Every
 entry below was recorded on a DT2 at OS 1.15B (build 0070) and a DN2 at OS 1.10D
 (build 0049). Both boxes moved to 1.15C (0071) and 1.10E (0050) on 2026-08-21;
-the fetch-edit-write round trip was re-run on the new OSes that day, and the last
-entry below is that run. Nothing else here has been.
+the fetch-edit-write round trip was re-run on the new OSes that day, and every
+entry dated 2026-08-21 or later is on those builds. Nothing earlier has been
+re-run on them.
 
 ### What has touched a box
 
@@ -587,6 +613,15 @@ entry below is that run. Nothing else here has been.
   first box any WinMM build has met, and the answer to §8's open question.
 - **Both installers, from a user's side** — 2026-08-21. The `.dmg` installs and
   the app opens and runs; the Windows setup `.exe` likewise.
+- **"Read patch names", against a box that answered** — 2026-08-22, closing the
+  last item this section had open. The named-slot path shipped dry-green on
+  2026-08-20 by a deliberate call, with four failure modes covered by fakes and
+  the live read covered by nothing; a real box has now answered a kit fetch the
+  way `PatternIo`'s fake does. **Which of the two boxes was not recorded**, so
+  what this closes is "a box answers" rather than "both do" — see below.
+- **v0.1.2 in real use** — 2026-08-22. The registers, the longer basslines and ↻
+  were all reported from a stretch of playing rather than from a test, which is
+  how the three of them came to be the release.
 
 ### What has not
 
@@ -594,8 +629,9 @@ entry below is that run. Nothing else here has been.
   larger of the two payloads has only ever gone out over CoreMIDI. See §8.
 - **Linux**, beyond the observation that the chunking is correct for ALSA.
 - **`copy_track`** — it has no caller, so nothing can drive it.
-- **"Read patch names"** against a box, since the named-slot path landed
-  2026-08-20.
+- **"Read patch names" on the *second* box.** One box answered on 2026-08-22 and
+  the other has not been tried, so `NotThisBox` and the DT2/DN2 difference in kit
+  layout are still fake-only.
 
 ### Not verified on a screen
 
@@ -606,21 +642,34 @@ was 15.3% of the window, a velocity bar that rendered as flat colour, and a hove
 box that never appeared. None of those failed a test at any point.
 
 Phases 9, 10 and 11 each had their screen list opened and closed the same day,
-which is the turnaround to aim for. What is carried forward as still owed a look:
+which is the turnaround to aim for.
 
-- The Session panel's close-guard modal, and the Backups list's `Export…`.
+**A sweep on 2026-08-22 closed the backlog this list had accumulated**, and it is
+recorded as a sweep rather than as seven checks because that is what it was —
+Neil's words were that he had eyeballed everything in the UI and was "fairly
+sure", then named seven things: the zoom, the basslines, the melodic registers,
+the pencil at 20x20, the ⓘ tooltip, the Session panel, and "Read patch names".
+So **both ends of the zoom range** (0.5x, where a row is six pixels and the
+velocity bar's one-pixel floor already failed once, through 4x under an
+eighty-pixel step column), **the pencil**, **the ⓘ's tooltip against the right
+edge of a 320px column**, and **the Session panel's close-guard modal and the
+Backups list's `Export…`** are all closed. The hedge is kept on purpose: a sweep
+is weaker evidence than an itemised check, and it is the right strength of claim
+for what happened.
+
+What is carried forward as still owed a look:
+
 - Whether a brightness ramp is distinguishable at 12 px.
 - The three roll gestures announced *only* by a cursor icon — velocity,
   micro-timing and duplicate. `pass_cursor` can prove the roll **asked** for an
-  icon, not that the platform drew one.
-- **Both ends of the zoom range**, which are a look and nothing else. At 0.5x a
-  row is six pixels and a note's rect is under five, so the velocity ramp and the
-  one-pixel bar floor are back in the case that already failed once here — check
-  a note at velocity 3 there, not just that the grid draws. At 4x, that the key
-  column's C labels and the trig lane below still line up with a step column
-  eighty pixels wide. And that the readout, the hover box and the chord ghost are
-  all still positioned on the note they belong to at both ends: every one of them
-  is placed from `Grid`, which is the argument that they will be, not evidence.
+  icon, not that the platform drew one. The pencil is confirmed and these are
+  not: the pencil is an image this app uploads, and these are names it hands the
+  platform.
+- **The three states a sweep cannot walk into**, which is why they survive it: a
+  note at velocity 3 at 0.5x zoom, the hover readout on an idle pointer over a
+  note carrying both a PROB and a COND on the top row, and the track-cell
+  tooltip's never-fetched branch — the one that must say "no patch read from the
+  box" and must never present a track name as a sound name.
 - The tooltip that reads "1 notes", left deliberately.
 
 **A verification note should say whether a control was looked at or driven** —

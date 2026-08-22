@@ -301,10 +301,28 @@ anywhere the grid is built. And the tell was in the prose rather than the code �
 a verification list asking someone to look at a state the app could not be put
 into.
 
+**And a fourth form on 2026-08-22, which is the least visible of the four and
+the one this lesson had not seen before: a control that has a caller, and whose
+caller does nothing.** A part row's ↻ in the Generate panel was wired, drawn,
+hovered and tooltipped — and its handler bumped a variation counter and returned.
+It wrote no music, changed nothing on screen, and said nothing, while the tooltip
+promised the action in the present tense. Every previous sighting in this lesson
+was a *seam* missing between two layers, which is at least a hole of a shape you
+can look for; this one had the seam and an inert body behind it, so from the
+layer above — and from any test asserting the counter moved — it read as finished.
+**"Is it called?" is the wrong question one time in four. The question is what the
+call does, and a tooltip written in the present tense is a claim the code has to
+answer.** ↻ now generates that row and whatever answers it below, straight into
+the session.
+
 Still waiting: **`copy_track`** (needs a destination and somewhere to put its
 `warnings`) and **the clipboard** — `place_clipboard`, `ClipNote` and
-`clipboard_anchor` are complete, tested and called by nothing, and the seam they
-want is a caret the roll does not record.
+`clipboard_anchor` are complete, tested and called by nothing. The seam they want
+was a caret the roll does not record; since 2026-08-19 it is **the playhead**,
+which pasted notes land at, and that made a *movable* playhead the prerequisite
+rather than the other way round. So this one is not waiting on a caller — it is
+waiting on a `TransportCommand::Locate` that does not exist and on an answer for
+what dragging a playhead means when every track has its own length.
 
 ### 8. A green suite says nothing about what can be seen
 
