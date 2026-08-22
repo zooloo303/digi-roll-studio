@@ -287,6 +287,20 @@ carries was drawn nowhere at all. **A ported function that names the control it
 is for, and has no caller, is a missing button — the doc comment is the report.**
 The two buttons are now wired and pressed by tests.
 
+**And a third time, the same shape as Phase 9's, found by someone asking for the
+feature the field was already named after (2026-08-22).** `PianoRoll::zoom` was
+`pub`, initialised to 1.0, and multiplied into the grid's cell size on every
+frame since the roll shipped — and **nothing in the app, or in any test, ever
+wrote it**. So the roll drew one size, `PLAN.md` §9 had an open screen check
+about "the smallest zoom the roll draws" that no gesture could reach, and the
+whole of the arithmetic that would make a zoom work was there and idle. Two
+things generalise beyond lesson 7's usual form: **a field that is `pub` and never
+written is the same finding as a function with no caller**, and it is *less*
+visible, because the field is read every frame and so it looks alive from
+anywhere the grid is built. And the tell was in the prose rather than the code —
+a verification list asking someone to look at a state the app could not be put
+into.
+
 Still waiting: **`copy_track`** (needs a destination and somewhere to put its
 `warnings`) and **the clipboard** — `place_clipboard`, `ClipNote` and
 `clipboard_anchor` are complete, tested and called by nothing, and the seam they

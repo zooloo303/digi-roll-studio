@@ -89,7 +89,7 @@ use digi_protocol::pattern::{length_byte_to_steps, steps_to_length_byte};
 use digi_protocol::params::auditable_params_for;
 use eframe::egui::{self, Color32, Ui};
 
-use crate::ui::pianoroll::PianoRoll;
+use crate::ui::pianoroll::{PianoRoll, ZOOM_MAX, ZOOM_MIN};
 use crate::ui::plocklane::{self, describe_lane};
 use crate::ui::session::{Chooser, NativeChooser};
 use crate::ui::tracks::Selection;
@@ -353,6 +353,10 @@ impl EditPanel {
             .show(ui, |ui| {
                 out.edited |= self.notes_group(ui, session, selection, roll, &selected);
                 ui.add_space(10.0);
+                // **No `out.edited`, deliberately.** See `view_group`: the zoom is
+                // the only control in this panel that does not change the music.
+                self.view_group(ui, roll);
+                ui.add_space(10.0);
                 out.edited |= self.pattern_group(ui, session, selection, roll, &track_name, swing);
                 ui.add_space(10.0);
                 out.edited |= self.plock_group(ui, session, selection, device);
@@ -491,6 +495,49 @@ impl EditPanel {
         }
 
         changed
+    }
+
+    /// VIEW: how big the roll draws a step, which is the other half of the
+    /// wheel gesture in `pianoroll.rs`.
+    ///
+    /// **It returns nothing, where every other group in this panel returns
+    /// whether it changed something.** A zoom is not an edit: reporting one would
+    /// mark the session unsaved, open a history step and re-snapshot the engine
+    /// for looking closer at a bar. That is the distinction `Wheel::Aimed` draws
+    /// in the roll, and it is the reason this group's signature is the odd one
+    /// out rather than an oversight.
+    ///
+    /// **Why the panel carries it at all**, when cmd+wheel over the grid is the
+    /// gesture anyone would reach for first: because `PianoRoll::zoom` sat there
+    /// for eleven phases, multiplied into the grid on every frame, with nothing
+    /// in the app able to move it — `DEVELOPMENT.md` lesson 7, and lesson 7's
+    /// answer is a control, not a comment. A modifier-and-wheel that nothing on
+    /// screen names is also the shape lesson 8 warns about: this is where the
+    /// number lives, and KEYS & GESTURES below names the gesture.
+    ///
+    /// **The slider's number is percent, not the multiple the roll stores.** So
+    /// typing 200 into the value box means 200%, which is what the box's own
+    /// formatter shows — `slider_row`'s doc comment flags exactly this trap, and
+    /// PROB solved it the same way. The rounding is on the way *in*, so what is
+    /// stored is what is drawn rather than a display rounded off a value that
+    /// kept its fraction.
+    fn view_group(&mut self, ui: &mut Ui, roll: &mut PianoRoll) {
+        super::section_header(ui, "VIEW", None);
+        let mut zoom_pct = zoom_percent(roll.zoom());
+        let zoom_hover = "How big the roll draws a step. Cmd-scroll or pinch over the grid \
+             does the same and holds the cell under the pointer still; this grows it \
+             from step 1. Nothing here reaches the box \u{2014} it is what you see, not \
+             what plays.";
+        if tooltip_slider_row(
+            ui,
+            "Zoom",
+            &mut zoom_pct,
+            zoom_range(),
+            |v| format!("{}%", v.round() as i32),
+            zoom_hover,
+        ) {
+            roll.set_zoom(zoom_from_percent(zoom_pct));
+        }
     }
 
     /// PATTERN: swing, duplicate bar, clear.
@@ -1029,6 +1076,41 @@ fn paint_dashed_rect(painter: &egui::Painter, rect: egui::Rect, colour: Color32)
     }
 }
 
+/// The VIEW slider's number, and the zoom it means.
+///
+/// **Percent, not the multiple the roll stores**, so the digits typed into the
+/// value box mean what the box's own formatter prints. `super::slider_row`'s doc
+/// comment flags exactly this trap — its `DragValue` parses with egui's default
+/// parser, which knows nothing about a `%` suffix — and the PROB row solved it
+/// the same way. Store the multiple and "200" would arrive as 200x, clamped to
+/// 4x, while the box went on saying 400%.
+///
+/// **Rounded on the way in**, so what is stored is what is drawn rather than a
+/// display rounded off a value that kept its fraction. That is Phase 9's
+/// velocity slider in miniature, and the clamp on `PianoRoll::set_zoom` is the
+/// same lesson's other half.
+fn zoom_from_percent(percent: f32) -> f32 {
+    percent.round() / 100.0
+}
+
+/// The inverse, and what the slider's range is built out of so the track's ends
+/// cannot drift from the roll's clamp.
+fn zoom_percent(zoom: f32) -> f32 {
+    zoom * 100.0
+}
+
+/// The VIEW slider's track, in the percent its number is in.
+///
+/// **A function so the range is reachable from a test**, rather than two
+/// literals inline in the widget call. `PianoRoll::set_zoom` clamps to the same
+/// two constants, and a track wider than that clamp gives a handle that can be
+/// dragged to a number the roll refuses; a track narrower than it makes part of
+/// the roll's own range unreachable. Either way it is one rule written twice,
+/// which `DEVELOPMENT.md` lesson 5 says will be forgotten in one of them.
+fn zoom_range() -> std::ops::RangeInclusive<f32> {
+    zoom_percent(ZOOM_MIN)..=zoom_percent(ZOOM_MAX)
+}
+
 /// The NOTES section's caption: which selection state a control's number
 /// belongs to, since Velocity in particular is a readout as much as it is a
 /// control. Pure so it can be checked without a `Ui` — see the tests below.
@@ -1106,7 +1188,9 @@ fn in_the_roll(ui: &mut Ui) {
 /// counts exactly what is drawn, rather than a hand-maintained number that can
 /// drift from the list under it.
 ///
-/// **This counts eight, not the original mock's eighteen.** The mock's
+/// **This counts nine, not the original mock's eighteen.** (Eight until zoom
+/// landed — the count is the array's length, so this sentence is the only place
+/// that has to be edited by hand.) The mock's
 /// "IN THE ROLL" block enumerated mouse *and* keyboard shortcuts as separate
 /// lines; this app's version of that block (see the top-of-file doc comment's
 /// history) already condensed them into eight named gestures plus one
@@ -1132,6 +1216,12 @@ const ROLL_GESTURES: &[(&str, &str)] = &[
     ("Copy", "Alt-drag a note or a selection. Alt-click deletes instead."),
     ("Select", "Cmd-drag empty space to band-select; shift-click to add or drop one."),
     ("Delete", "Right-click a note, or press Delete with a selection."),
+    (
+        "Zoom",
+        "Cmd-scroll or pinch over the grid. The cell under the pointer stays \
+         where it is, so you zoom into what you are looking at; the VIEW slider \
+         above sets the same number from the panel.",
+    ),
 ];
 
 fn gesture_count() -> usize {
@@ -1548,12 +1638,37 @@ mod tests {
     }
 
     #[test]
+    fn the_zoom_sliders_ends_are_the_rolls_own_clamp_and_its_number_is_percent() {
+        // **Two statements of one rule the moment they can disagree**
+        // (`DEVELOPMENT.md` lesson 5): a slider that could ask for a zoom
+        // `set_zoom` refuses would sit with its handle at one end and its number
+        // saying something else, and a slider that could not reach the range's
+        // ends would make part of the roll's own clamp unreachable.
+        let range = zoom_range();
+        assert_eq!(zoom_from_percent(*range.start()), ZOOM_MIN, "the track's low end");
+        assert_eq!(zoom_from_percent(*range.end()), ZOOM_MAX, "and its high end");
+
+        // Which the roll then keeps, rather than clamping the slider's own ends
+        // away under it.
+        let mut roll = PianoRoll::default();
+        for end in [*range.start(), *range.end()] {
+            roll.set_zoom(zoom_from_percent(end));
+            assert_eq!(zoom_percent(roll.zoom()), end, "the slider reaches {end}%, and no further");
+        }
+
+        // And a value a drag can actually land on: the number shown is the
+        // number stored, to the percent.
+        assert_eq!(zoom_from_percent(137.4), 1.37);
+        assert!((zoom_percent(1.37) - 137.0).abs() < 1e-3);
+    }
+
+    #[test]
     fn the_shortcut_count_matches_what_the_reference_actually_lists() {
         // The KEYS & GESTURES row's hint is this number, not a hand-typed one —
         // so a gesture added to or removed from `ROLL_GESTURES` cannot silently
         // leave the hint saying something else.
         assert_eq!(gesture_count(), ROLL_GESTURES.len());
-        assert_eq!(gesture_count(), 8, "see this const's own doc comment if this changes");
+        assert_eq!(gesture_count(), 9, "see this const's own doc comment if this changes");
     }
 
     #[test]

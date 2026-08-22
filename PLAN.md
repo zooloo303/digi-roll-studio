@@ -384,9 +384,15 @@ The elements:
   `js/triglane.js`.
 - **P-lock lane strip** — ported from `js/plocklane.js`, with the parameter
   tables, the pool reader and the audition path under it.
-- **The Edit panel** — velocity, length and PROB; swing, duplicate bar, clear;
-  the lane list; MIDI file import and export; undo and redo. Every gesture at the
-  top of `js/pianoroll.js` is ported.
+- **The Edit panel** — velocity, length and PROB; the roll's zoom; swing,
+  duplicate bar, clear; the lane list; MIDI file import and export; undo and
+  redo. Every gesture at the top of `js/pianoroll.js` is ported.
+- **Zoom on the roll**, which the JS has no equivalent of — it scrolls a `div`
+  and the browser sizes it. Cmd/ctrl+wheel or a trackpad pinch over the grid,
+  0.5x to 4x, **holding the cell under the pointer still**; the Edit panel's VIEW
+  slider is the same number from the panel. `PianoRoll::zoom` was a field the
+  grid had multiplied by since the roll shipped with nothing able to move it off
+  1.0 — `DEVELOPMENT.md` lesson 7's second half.
 - **The Harmony panel, the tinted rows and chord draw**, from `js/chords.js`. The
   key is on the session rather than in the panel, because the generator reads it
   and because it is saved. The roll gained three marks with it: the scale wash,
@@ -607,6 +613,14 @@ which is the turnaround to aim for. What is carried forward as still owed a look
 - The three roll gestures announced *only* by a cursor icon — velocity,
   micro-timing and duplicate. `pass_cursor` can prove the roll **asked** for an
   icon, not that the platform drew one.
+- **Both ends of the zoom range**, which are a look and nothing else. At 0.5x a
+  row is six pixels and a note's rect is under five, so the velocity ramp and the
+  one-pixel bar floor are back in the case that already failed once here — check
+  a note at velocity 3 there, not just that the grid draws. At 4x, that the key
+  column's C labels and the trig lane below still line up with a step column
+  eighty pixels wide. And that the readout, the hover box and the chord ghost are
+  all still positioned on the note they belong to at both ends: every one of them
+  is placed from `Grid`, which is the argument that they will be, not evidence.
 - The tooltip that reads "1 notes", left deliberately.
 
 **A verification note should say whether a control was looked at or driven** —

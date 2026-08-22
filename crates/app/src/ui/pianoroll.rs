@@ -40,6 +40,21 @@
 //   right-click a note      -> delete it
 //   Delete / Backspace      -> delete every selected note
 //
+// ## The wheel, which is none of the above
+//
+// The JS roll has no wheel gestures at all — it lives in a scrolling `div` and
+// lets the browser do it — so these three are this app's own, and they share one
+// input:
+//
+//   wheel                   -> scroll the rows; shift for the columns
+//   alt+wheel (chord draw)   -> cycle the chord inversion, aiming under the ghost
+//   cmd/ctrl+wheel or pinch  -> zoom, holding the cell under the pointer still
+//
+// They are tried in that order of specificity in `ui`, and each one that spends
+// the frame's delta stops the next from spending it again. `zoom` had been a
+// field the grid multiplied by since the roll shipped, with nothing in the app
+// able to move it off 1.0.
+//
 // ## Two places this deliberately parts from the JS's ordering
 //
 // **The right edge always resizes.** `js/pianoroll.js` tests its modifiers before
@@ -162,6 +177,24 @@ const TOP_PITCH: u8 = 84;
 const CELL_W: f32 = 20.0;
 const CELL_H: f32 = 12.0;
 
+/// How far the roll zooms, as a multiple of [`CELL_W`] and [`CELL_H`]: half-size
+/// 10x6 cells at the bottom, quadruple 80x48 ones at the top.
+///
+/// **Both ends are a look rather than an argument, and `PLAN.md` §9 has them.**
+/// The floor is where a note's rect (0.8 of a row) and the one-pixel floor under
+/// its velocity bar have to share five pixels — whether the brightness ramp is
+/// still readable there is `DEVELOPMENT.md` lesson 8's kind of question and no
+/// test here can answer it. The ceiling is a bar and a half across a laptop,
+/// which is as far in as a micro-timing nudge needs to be visible and no
+/// further.
+///
+/// Public because the Edit panel's VIEW slider is the control that shows the
+/// number, and a slider whose range disagreed with [`PianoRoll::set_zoom`]'s
+/// clamp would be two statements of one rule — `DEVELOPMENT.md` lesson 5.
+pub const ZOOM_MIN: f32 = 0.5;
+/// The other end of [`ZOOM_MIN`]'s range.
+pub const ZOOM_MAX: f32 = 4.0;
+
 /// How wide the right-edge grab zone is, from `js/pianoroll.js`. It is invisible
 /// target, so the roll switches the cursor over it — a seven-pixel gesture
 /// nothing announces is a gesture nobody finds.
@@ -195,7 +228,23 @@ enum Wheel {
 const TRACKPAD_NOTCH: f32 = 40.0;
 
 pub struct PianoRoll {
-    pub zoom: f32,
+    /// The cell size, as a multiple of [`CELL_W`]/[`CELL_H`], between
+    /// [`ZOOM_MIN`] and [`ZOOM_MAX`].
+    ///
+    /// **It was `pub`, and nothing in the app ever wrote it** — the grid has
+    /// multiplied by it since the roll shipped, always by 1.0. That is
+    /// `DEVELOPMENT.md` lesson 7's second half, the one `Note::velocity` was in
+    /// until Phase 9: a field with no control is as invisible from above as a
+    /// function with no caller, and harder to notice because every test passes a
+    /// value in.
+    ///
+    /// **Private now, so the clamp cannot be somebody else's job.** Phase 9's
+    /// velocity slider is the reason — it clamped what it *drew* and not what it
+    /// stored, and a zoom is the worse version of that bug: [`Grid::step_at`]
+    /// divides by `cell.x`, so a zero would turn every hit test in this file
+    /// into an infinity. Written through [`PianoRoll::set_zoom`], which clamps,
+    /// or by [`PianoRoll::zoom_by`], which clamps.
+    zoom: f32,
     pub scroll_x: f32,
     pub scroll_y: f32,
     /// The selected trigs, by note id — the JS's `this.selected`, which is a
@@ -637,20 +686,35 @@ impl PianoRoll {
         // field moved — and reporting one would mark the session unsaved for holding
         // alt and twitching a finger.
         let mut changed = wheel == Wheel::Cycled;
+        // **Three gestures want this one wheel, and a held modifier is what tells
+        // them apart**: alt aims the chord (above), cmd/ctrl zooms, a bare wheel
+        // scrolls. Tried in that order, and **whichever takes the frame's delta
+        // stops the next from spending it again** — the same rule `Wheel::Aimed`
+        // states for the chord aim, one layer out. Without it a flick at
+        // [`ZOOM_MAX`] would scroll the roll away from the cell it was trying to
+        // magnify.
         if wheel == Wheel::Ignored
+            && !self.wheel_zoom(ui, &response, rect)
             && (response.hovered()
                 || ui.rect_contains_pointer(lane_rect)
                 || ui.rect_contains_pointer(strip_rect))
         {
-            self.scroll(ui, band);
+            self.scroll(ui);
         }
+        // **The scroll bound is applied here, after the gesture and before the
+        // grid, and nowhere else.** It is a function of the cell size, so a zoom
+        // moves it — and the Edit panel's slider can move the zoom without ever
+        // holding a [`Band`] to measure it against. One owner rather than one
+        // rule restated in every writer of these three fields, which is
+        // `DEVELOPMENT.md` lesson 5.
+        self.clamp_scroll(band);
 
         let grid = Grid {
             origin: Pos2 {
                 x: rect.min.x + KEY_W + self.scroll_x,
                 y: rect.min.y + self.scroll_y,
             },
-            cell: Vec2 { x: CELL_W * self.zoom, y: CELL_H * self.zoom },
+            cell: self.cell(),
             band,
         };
 
@@ -768,7 +832,10 @@ impl PianoRoll {
     /// Wheel scrolls the roll. Shift-wheel scrolls it sideways, as every DAW
     /// does; without this the roll opens on a fixed window of pitches and there
     /// is no way to reach the rest.
-    fn scroll(&mut self, ui: &Ui, band: Band) {
+    ///
+    /// **The bound belongs to [`Self::clamp_scroll`]**, which `ui` applies once a
+    /// frame for every writer of these fields rather than here for one of them.
+    fn scroll(&mut self, ui: &Ui) {
         let delta = ui.input(|i| i.smooth_scroll_delta);
         if delta == Vec2::ZERO {
             return;
@@ -778,10 +845,111 @@ impl PianoRoll {
         } else {
             (delta.x, delta.y)
         };
-        let cell_h = CELL_H * self.zoom;
-        let cell_w = CELL_W * self.zoom;
-        self.scroll_x = (self.scroll_x + dx).clamp(-(COLS as f32 * cell_w), 0.0);
-        self.scroll_y = (self.scroll_y + dy).clamp(-(band.rows() as f32 * cell_h), 0.0);
+        self.scroll_x += dx;
+        self.scroll_y += dy;
+    }
+
+    /// The cell size the grid is currently drawn at. **One expression rather than
+    /// the three copies of `CELL_W * self.zoom` this replaced** — the scroll
+    /// bound, the grid and the hit test all measure in cells, and a zoom that
+    /// reached two of the three would put drawing and hit-testing back into the
+    /// disagreement [`Grid`] exists to prevent.
+    fn cell(&self) -> Vec2 {
+        Vec2 { x: CELL_W * self.zoom, y: CELL_H * self.zoom }
+    }
+
+    /// How far the view may be scrolled: from the whole of the content pushed off
+    /// the top-left, to step 0 and the band's top row against the corner. In
+    /// pixels, so it moves with the zoom.
+    fn clamp_scroll(&mut self, band: Band) {
+        let cell = self.cell();
+        self.scroll_x = self.scroll_x.clamp(-(COLS as f32 * cell.x), 0.0);
+        self.scroll_y = self.scroll_y.clamp(-(band.rows() as f32 * cell.y), 0.0);
+    }
+
+    /// **Cmd/ctrl+wheel over the grid zooms it, and a trackpad pinch does the
+    /// same** — what every DAW binds, and the reason the wheel had to be shared
+    /// three ways. Returns whether the gesture was a zoom.
+    ///
+    /// ## Why `zoom_delta` rather than the wheel events
+    ///
+    /// [`Self::wheel_inversion`] counts raw [`egui::Event::MouseWheel`]s because
+    /// it drives a four-way cycle and needs a notch to be one step. This wants
+    /// the opposite — a continuous factor — and egui 0.36 has already computed
+    /// it: `InputOptions::zoom_modifier` is `COMMAND` by default, and a wheel
+    /// event carrying it is turned into `zoom_factor_delta` as
+    /// `(scroll_zoom_speed * delta).exp()` while **`smooth_scroll_delta` is set
+    /// to zero for that frame** (`egui-0.36.1/src/input_state/mod.rs` ~461).
+    /// Three things follow, and the last is the one worth knowing:
+    ///
+    /// - The scroll below is already inert under cmd, so the two cannot both run
+    ///   on one flick. The `&&` in `ui` says so out loud anyway, because a pinch
+    ///   arrives as [`egui::Event::Zoom`] and does *not* zero the scroll delta.
+    /// - A pinch on a Mac trackpad and a ctrl+wheel from a mouse land on the same
+    ///   field, so this gesture ships on both for free.
+    /// - **It is exponential, so the frame smoothing cannot change the answer.**
+    ///   A mouse notch arrives spread over several frames; the factors multiply
+    ///   where the deltas add, so `exp(a)*exp(b) == exp(a+b)` and the flick is
+    ///   worth the same whether egui delivers it in one frame or six. An additive
+    ///   step per frame would have zoomed by however many frames the machine
+    ///   managed.
+    ///
+    /// Gated on `hovered`, because `zoom_delta` is the *window's* input and not
+    /// this widget's: without it a cmd+wheel anywhere in the app — over the
+    /// tracks pane, over a panel's slider — would zoom the roll underneath it.
+    fn wheel_zoom(&mut self, ui: &Ui, response: &egui::Response, rect: Rect) -> bool {
+        if !response.hovered() {
+            return false;
+        }
+        let delta = ui.input(|i| i.zoom_delta());
+        if delta == 1.0 {
+            return false;
+        }
+        // The pointer, in the grid's own coordinates. `hover_pos` is `Some`
+        // whenever `hovered` is, so the centre is a fallback for a pinch that
+        // arrives on the frame the pointer left; the cell it holds still is then
+        // the middle of the view rather than one under nothing.
+        let anchor = response
+            .hover_pos()
+            .map(|pos| Vec2 { x: pos.x - (rect.min.x + KEY_W), y: pos.y - rect.min.y })
+            .unwrap_or_else(|| Vec2 { x: rect.width() / 2.0, y: rect.height() / 2.0 });
+        self.zoom_by(delta, anchor);
+        // **Taken even when the zoom did not move.** That is the clamp's case,
+        // and it is `Wheel::Aimed`'s distinction again: the frame's delta has
+        // been spent, so the caller must not hand it to `scroll` as well.
+        true
+    }
+
+    /// Multiply the cell size by `delta`, keeping whatever is under `anchor`
+    /// under it. Returns whether the zoom moved.
+    ///
+    /// `anchor` is measured from **the grid's own top-left corner** — where step
+    /// 0 of the band's top row sits at rest — rather than from the panel or the
+    /// screen, which is what lets this be arithmetic: no `Rect`, no `Ui`, and a
+    /// test that can state the invariant directly.
+    ///
+    /// **A view change is not an edit**, so nothing here reports one. The roll's
+    /// `ui` returns whether the caller has something to save, and a zoom would
+    /// mark the session unsaved and re-snapshot the engine for looking closer at
+    /// it — the same reason `Wheel::Aimed` exists.
+    fn zoom_by(&mut self, delta: f32, anchor: Vec2) -> bool {
+        let wanted = (self.zoom * delta).clamp(ZOOM_MIN, ZOOM_MAX);
+        // **The factor that was achieved, not the one that was asked for.** The
+        // two differ at either end of the range, and anchoring on the asked-for
+        // one would slide the view sideways while the cell size stayed exactly
+        // where it was: a gesture that only moves the roll is worse than one that
+        // does nothing at all.
+        let factor = wanted / self.zoom;
+        if factor == 1.0 {
+            return false;
+        }
+        self.zoom = wanted;
+        // A content point sits `anchor - scroll` pixels into the grid, and that
+        // distance scales with the cell size. The scroll takes up the difference,
+        // so the point lands back under `anchor`.
+        self.scroll_x = anchor.x - (anchor.x - self.scroll_x) * factor;
+        self.scroll_y = anchor.y - (anchor.y - self.scroll_y) * factor;
+        true
     }
 
     fn paint_grid(
@@ -2097,6 +2265,27 @@ impl PianoRoll {
     /// was handed. Found by a deliberate bug that failed nothing.
     pub fn set_default_velocity(&mut self, velocity: u8) {
         self.default_velocity = clamp_velocity(i32::from(velocity));
+    }
+
+    /// The multiple of [`CELL_W`]/[`CELL_H`] the grid is drawn at. What the Edit
+    /// panel's VIEW slider reads, and the only place the number is ever shown.
+    pub fn zoom(&self) -> f32 {
+        self.zoom
+    }
+
+    /// Clamped to [`ZOOM_MIN`]..=[`ZOOM_MAX`] **here rather than by the slider**,
+    /// for the reason on the field and on [`Self::set_default_velocity`]: a
+    /// control that clamps its display is not a control that clamps its value.
+    ///
+    /// **The scroll is left alone**, so a slider zoom grows the grid from step 0
+    /// of the band's top row while the wheel's holds the cell under the pointer
+    /// still. That is not an omission — the wheel has a pointer over the grid to
+    /// anchor on and a panel three hundred pixels to the left does not, and
+    /// picking a cell for it to hold would be inventing an intent. Either way the
+    /// view stays in bounds: `ui` clamps the scroll every frame, which is why
+    /// this needs no `Band` and the panel needs to know nothing about one.
+    pub fn set_zoom(&mut self, zoom: f32) {
+        self.zoom = zoom.clamp(ZOOM_MIN, ZOOM_MAX);
     }
 
     /// Forget the selection. Called when the track under the roll is replaced
@@ -4783,5 +4972,357 @@ mod tests {
         assert_eq!(track.notes.len(), 1);
         assert_eq!(track.notes[0].pitch, 61, "no snapping, ever");
     }
+
+    // --- zoom -----------------------------------------------------------------
+
+    /// The `Grid` `ui` builds, for a roll sitting in [`TEST_RECT`]. **A second
+    /// copy of that origin arithmetic, on purpose**: a zoom test has to observe
+    /// where a cell is *drawn*, and asserting on `scroll_x` alone would pass on a
+    /// roll whose scroll and cell size had both moved the wrong way. It reads
+    /// through the real [`Grid::x_of_step`] and [`Grid::y_of_pitch`] so the
+    /// arithmetic under test is the frame's own.
+    fn grid_of(roll: &PianoRoll, band: Band) -> Grid {
+        Grid {
+            origin: Pos2 {
+                x: TEST_RECT.min.x + KEY_W + roll.scroll_x,
+                y: TEST_RECT.min.y + roll.scroll_y,
+            },
+            cell: roll.cell(),
+            band,
+        }
+    }
+
+    const FULL_BAND: Band = Band { lo: PITCH_MIN, hi: PITCH_MAX };
+
+    /// **The invariant the whole gesture exists for**: whatever is under the
+    /// pointer is still under it afterwards. Without it, zooming in on a bar
+    /// throws that bar off the side of the window and you chase the music with
+    /// the scroll wheel.
+    ///
+    /// The anchor is deliberately **not** the grid's origin. At the origin
+    /// `anchor - scroll` is zero and the anchored scroll collapses to `0 * factor`
+    /// — every way of getting this arithmetic wrong gives the right answer there,
+    /// which is `DEVELOPMENT.md` lesson 4's shape: a fixture that makes two
+    /// different rules agree.
+    #[test]
+    fn a_zoom_holds_what_is_under_the_pointer_where_it_was_drawn() {
+        let mut roll = PianoRoll::default();
+        // Twelve columns along, and — with the opening `scroll_y` — seventeen rows
+        // down, so both anchors land on a cell edge and the assertion can name a
+        // whole step and a real pitch rather than a fraction of one.
+        let anchor = Vec2 { x: 12.0 * CELL_W, y: 60.0 };
+        let pitch = FULL_BAND.hi - 17;
+        let before = grid_of(&roll, FULL_BAND);
+        let (x, y) = (before.x_of_step(12.0), before.y_of_pitch(pitch));
+
+        assert!(roll.zoom_by(2.0, anchor), "a zoom inside the range moves");
+        assert_eq!(roll.zoom, 2.0);
+
+        let after = grid_of(&roll, FULL_BAND);
+        assert!((after.x_of_step(12.0) - x).abs() < 1e-3, "step 12 stayed at {x}");
+        assert!((after.y_of_pitch(pitch) - y).abs() < 1e-3, "the row stayed at {y}");
+        // And the cells really did grow, or the test above would pass on a
+        // function that did nothing at all.
+        assert_eq!(after.cell, Vec2 { x: CELL_W * 2.0, y: CELL_H * 2.0 });
+    }
+
+    /// The range holds, **and the anchor still holds with it** — which is the
+    /// half that is easy to get wrong. The scroll has to be moved by the factor
+    /// the cell size actually took, not by the one the gesture asked for: anchor
+    /// on a delta of 100 while the zoom stops at 4 and the view slides off while
+    /// the grid stays exactly as it was, a gesture that does nothing except lose
+    /// your place.
+    #[test]
+    fn a_zoom_stops_at_the_range_and_holds_its_anchor_there() {
+        let anchor = Vec2 { x: 12.0 * CELL_W, y: 60.0 };
+        let pitch = FULL_BAND.hi - 17;
+
+        for delta in [100.0, 0.001] {
+            let mut roll = PianoRoll::default();
+            let before = grid_of(&roll, FULL_BAND);
+            let (x, y) = (before.x_of_step(12.0), before.y_of_pitch(pitch));
+
+            assert!(roll.zoom_by(delta, anchor));
+            let wanted = if delta > 1.0 { ZOOM_MAX } else { ZOOM_MIN };
+            assert_eq!(roll.zoom, wanted, "a delta of {delta} stopped at the range");
+
+            let after = grid_of(&roll, FULL_BAND);
+            assert!(
+                (after.x_of_step(12.0) - x).abs() < 1e-3,
+                "step 12 stayed at {x} at the clamp, not at {}",
+                after.x_of_step(12.0)
+            );
+            assert!((after.y_of_pitch(pitch) - y).abs() < 1e-3, "the row stayed at {y} too");
+        }
+    }
+
+    /// A second flick at the end of the range does **nothing**, rather than
+    /// re-anchoring on a factor of 1 that floating point has rounded to 0.9999.
+    /// The gesture is held down for whole seconds at a time; a per-frame drift of
+    /// a pixel is a roll that walks away while you lean on the wheel.
+    #[test]
+    fn a_zoom_past_the_end_of_the_range_moves_nothing_at_all() {
+        let mut roll = PianoRoll::default();
+        roll.set_zoom(ZOOM_MAX);
+        roll.scroll_x = -400.0;
+        roll.scroll_y = -200.0;
+
+        assert!(!roll.zoom_by(2.0, Vec2 { x: 240.0, y: 60.0 }), "nothing left to give");
+        assert_eq!(roll.zoom, ZOOM_MAX);
+        assert_eq!((roll.scroll_x, roll.scroll_y), (-400.0, -200.0), "and the view did not drift");
+    }
+
+    /// **Clamped at the setter, not at the control.** The Edit panel's slider is
+    /// ranged to the same two constants, so this is the belt to that braces — and
+    /// the one that matters, per `set_default_velocity`'s own history: Phase 9's
+    /// velocity slider clamped what it drew and not what it stored, and a zoom of
+    /// zero is the worse version of that bug because `Grid::step_at` divides by
+    /// the cell width.
+    #[test]
+    fn set_zoom_clamps_rather_than_trusting_whatever_wrote_it() {
+        let mut roll = PianoRoll::default();
+
+        roll.set_zoom(0.0);
+        assert_eq!(roll.zoom(), ZOOM_MIN);
+        assert!(roll.cell().x > 0.0, "a cell with width, so the hit test is not an infinity");
+        assert!(grid_of(&roll, FULL_BAND).step_at(300.0).is_finite());
+
+        roll.set_zoom(99.0);
+        assert_eq!(roll.zoom(), ZOOM_MAX);
+    }
+
+    /// The scroll bound is in pixels, so it is a function of the cell size — and
+    /// one function, in one place, because `ui` applies it for every writer of
+    /// these fields. A zoom out that left the old bound in place would strand the
+    /// view below the last row, on empty background.
+    #[test]
+    fn the_scroll_bound_moves_with_the_zoom() {
+        let mut roll = PianoRoll::default();
+        roll.scroll_y = -100_000.0;
+        roll.clamp_scroll(FULL_BAND);
+        let full = -(FULL_BAND.rows() as f32 * CELL_H);
+        assert_eq!(roll.scroll_y, full, "the whole band, at 1x");
+
+        roll.set_zoom(0.5);
+        roll.clamp_scroll(FULL_BAND);
+        assert_eq!(roll.scroll_y, full / 2.0, "half the pixels at half the zoom");
+    }
+
+    /// One headless frame through the whole of [`PianoRoll::ui`] — geometry,
+    /// wheel chain and all, which `pass` deliberately bypasses by handing
+    /// `interact` a `Grid` of the test's own.
+    ///
+    /// `modifiers` is announced ahead of the frame's events for the same reason
+    /// `pass_with` announces it: `RawInput` has no modifiers field.
+    fn frame(
+        ctx: &egui::Context,
+        roll: &mut PianoRoll,
+        track: &mut Track,
+        modifiers: egui::Modifiers,
+        events: Vec<egui::Event>,
+    ) -> bool {
+        let mut changed = false;
+        let mut all = vec![egui::Event::ModifiersChanged(modifiers)];
+        all.extend(events);
+        let input = egui::RawInput {
+            events: all,
+            screen_rect: Some(TEST_RECT),
+            ..Default::default()
+        };
+        let mut harmony = Harmony::default();
+        let mut output = ctx.run_ui(input, |ui| {
+            changed = roll.ui(ui, track, None, &mut harmony);
+        });
+        output.textures_delta.clear();
+        changed
+    }
+
+    /// A mouse wheel, in the shape `egui-winit` actually pushes for one:
+    /// `Event::MouseWheel` in `Line` units carrying the modifiers winit was
+    /// tracking (`egui-winit-0.36.1/src/lib.rs` ~961).
+    ///
+    /// **The modifiers on the event are the ones that matter, not the frame's.**
+    /// egui reads `zoom_modifier` off the wheel event itself
+    /// (`InputState::update`, ~461), so a `ModifiersChanged` without them here
+    /// would be a test proving nothing about the real gesture — which is
+    /// `ui::tracks`' Cmd+C lesson in a new costume.
+    fn wheel(lines: f32, modifiers: egui::Modifiers) -> egui::Event {
+        egui::Event::MouseWheel {
+            unit: egui::MouseWheelUnit::Line,
+            delta: Vec2 { x: 0.0, y: lines },
+            phase: egui::TouchPhase::Move,
+            modifiers,
+        }
+    }
+
+    /// Somewhere inside the roll's own rect — above the trig lane, right of the
+    /// key column.
+    const OVER_GRID: Pos2 = Pos2 { x: KEY_W + 300.0, y: 200.0 };
+
+    /// **The gesture, end to end, through the input the platform sends.**
+    ///
+    /// Two frames because egui hit-tests against the previous pass's layout, so
+    /// the wheel has to arrive on a frame where the roll's rect is already known
+    /// — otherwise `hovered` is false and the roll declines the wheel, which
+    /// fails by doing nothing at all.
+    #[test]
+    fn cmd_wheel_over_the_grid_zooms_it_and_a_bare_wheel_scrolls_instead() {
+        let ctx = egui::Context::default();
+        let mut roll = PianoRoll::default();
+        let mut track = Track::new(0, TrackKind::Audio);
+
+        frame(&ctx, &mut roll, &mut track, egui::Modifiers::COMMAND, vec![egui::Event::PointerMoved(OVER_GRID)]);
+        let opened_at = roll.zoom();
+        frame(&ctx, &mut roll, &mut track, egui::Modifiers::COMMAND, vec![wheel(1.0, egui::Modifiers::COMMAND)]);
+        assert!(
+            roll.zoom() > opened_at,
+            "cmd+wheel up zoomed in: {opened_at} -> {}",
+            roll.zoom()
+        );
+
+        // The same wheel with nothing held scrolls and leaves the zoom alone.
+        //
+        // **On a second `Context`, and that is not tidiness.** egui smooths a
+        // mouse notch across frames, so a flick's leftover sits in the
+        // *context's* `WheelState` — with the modifiers it arrived under — and is
+        // spent a fraction at a time on the frames after it. Sharing the context
+        // here zoomed this roll by the previous gesture's residue and failed the
+        // assertion below, which is the honest behaviour of a wheel and a
+        // dishonest fixture: one gesture, one cold start.
+        let cold = egui::Context::default();
+        let mut plain = PianoRoll::default();
+        let opened_at = plain.scroll_y;
+        frame(&cold, &mut plain, &mut track, egui::Modifiers::NONE, vec![egui::Event::PointerMoved(OVER_GRID)]);
+        frame(&cold, &mut plain, &mut track, egui::Modifiers::NONE, vec![wheel(1.0, egui::Modifiers::NONE)]);
+        assert_eq!(plain.zoom(), 1.0, "a bare wheel is not a zoom");
+        assert!(plain.scroll_y > opened_at, "it scrolled instead");
+    }
+
+    /// A trackpad pinch, which arrives as `Event::Zoom(delta.exp())` rather than
+    /// as a wheel (`egui-winit-0.36.1/src/lib.rs` ~537) and lands on the same
+    /// field. So the gesture ships on a mouse and a trackpad from one
+    /// implementation — and this is the deterministic half of the pair above,
+    /// since a pinch is not smoothed across frames.
+    ///
+    /// **And the frame reports no change**, which is the claim that keeps a zoom
+    /// out of the undo stack and off the unsaved-changes flag.
+    #[test]
+    fn a_pinch_over_the_grid_zooms_it_and_is_not_an_edit() {
+        let ctx = egui::Context::default();
+        let mut roll = PianoRoll::default();
+        let mut track = Track::new(0, TrackKind::Audio);
+        track.notes = vec![Note::new(4.0, TOP_PITCH, 1.0, 100, 0.0)];
+
+        frame(&ctx, &mut roll, &mut track, egui::Modifiers::NONE, vec![egui::Event::PointerMoved(OVER_GRID)]);
+        let changed = frame(
+            &ctx,
+            &mut roll,
+            &mut track,
+            egui::Modifiers::NONE,
+            vec![egui::Event::Zoom(2.0)],
+        );
+
+        assert_eq!(roll.zoom(), 2.0, "a pinch of 2x is a zoom of 2x");
+        assert!(!changed, "looking closer at a bar is not an edit of it");
+    }
+
+    /// **The zoom reaches the grid the frame actually hit-tests with**, which is
+    /// the claim every other test here can't see: they build their own [`Grid`]
+    /// from `roll.cell()`, so a `ui` that zoomed the field and went on handing
+    /// `interact` a 20x12 grid would pass all of them — the roll would zoom in
+    /// its own head and draw and click at one size for ever. That is
+    /// `DEVELOPMENT.md` lesson 5's shape, one geometry read in two places, and
+    /// the only witness is what a click *lands on*.
+    ///
+    /// So the numbers here are the point: at 2x the cell is 40x24, and the same
+    /// pointer position that means step 6 and pitch 76 at rest means step 3 and
+    /// pitch 86. `set_zoom` rather than a pinch, because it leaves the scroll
+    /// alone and the expected cell can then be arithmetic anyone can check.
+    #[test]
+    fn a_click_lands_on_the_cell_the_zoom_puts_under_it() {
+        let ctx = egui::Context::default();
+        let mut roll = PianoRoll::default();
+        let mut track = Track::new(0, TrackKind::Audio);
+        // Three zoomed columns along the grid, and ten zoomed rows below the
+        // opening `scroll_y` of -144.
+        let pos = Pos2 { x: KEY_W + 3.0 * CELL_W * 2.0 + 5.0, y: 100.0 };
+
+        roll.set_zoom(2.0);
+        frame(&ctx, &mut roll, &mut track, egui::Modifiers::NONE, vec![]);
+        frame(
+            &ctx,
+            &mut roll,
+            &mut track,
+            egui::Modifiers::NONE,
+            vec![egui::Event::PointerMoved(pos), button(pos, true)],
+        );
+        frame(&ctx, &mut roll, &mut track, egui::Modifiers::NONE, vec![button(pos, false)]);
+
+        assert_eq!(track.notes.len(), 1, "a click on an empty cell still draws one note");
+        assert_eq!(track.notes[0].step, 3.0, "step 3 at 2x, where the same pixel is step 6 at 1x");
+        assert_eq!(track.notes[0].pitch, 86, "and pitch 86, where that pixel is pitch 76 at 1x");
+    }
+
+    /// **A frame that carries both a zoom and a scroll spends it once.**
+    ///
+    /// This is the case the `&&` in `ui` is for, and it had to be built by hand
+    /// because the obvious gesture cannot reach it: egui zeroes
+    /// `smooth_scroll_delta` for a wheel event carrying the zoom modifier, so
+    /// cmd+wheel alone leaves nothing for `scroll` to find and a plant on that
+    /// guard would fail no test at all — `DEVELOPMENT.md` lesson 6's first
+    /// answer, construct the case, rather than its third. A **pinch** does not
+    /// zero it: `Event::Zoom` arrives on its own path, so two fingers that
+    /// pinch *and* slide put a real delta on both fields in one frame. The roll
+    /// must then zoom and not also scroll, or the music slides out from under
+    /// the fingers magnifying it.
+    ///
+    /// Two contexts, because egui's wheel smoothing outlives a frame and the
+    /// residue would reach the other roll.
+    #[test]
+    fn a_pinch_that_arrives_with_a_scroll_zooms_and_does_not_also_scroll() {
+        let mut track = Track::new(0, TrackKind::Audio);
+        let mut with_wheel = PianoRoll::default();
+        let mut alone = PianoRoll::default();
+
+        for (ctx, roll, events) in [
+            (egui::Context::default(), &mut alone, vec![egui::Event::Zoom(2.0)]),
+            (
+                egui::Context::default(),
+                &mut with_wheel,
+                vec![egui::Event::Zoom(2.0), wheel(1.0, egui::Modifiers::NONE)],
+            ),
+        ] {
+            frame(&ctx, roll, &mut track, egui::Modifiers::NONE, vec![egui::Event::PointerMoved(OVER_GRID)]);
+            frame(&ctx, roll, &mut track, egui::Modifiers::NONE, events);
+        }
+
+        assert_eq!(alone.zoom(), 2.0);
+        assert_eq!(with_wheel.zoom(), 2.0, "the pinch is the same pinch");
+        // The zoom moves the scroll itself, to hold its anchor — so the claim is
+        // not "the scroll did not move" but "it moved by the zoom and by nothing
+        // else", which is what the pinch on its own measures.
+        assert_eq!(
+            with_wheel.scroll_y, alone.scroll_y,
+            "the wheel in the same frame was not spent a second time as a scroll"
+        );
+    }
+
+    /// The zoom is the *window's* input in egui, not this widget's: without the
+    /// hover gate, cmd+wheel over a panel's slider — or over the trig lane — would
+    /// zoom the roll underneath it.
+    #[test]
+    fn a_cmd_wheel_that_is_not_over_the_grid_leaves_the_roll_alone() {
+        let ctx = egui::Context::default();
+        let mut roll = PianoRoll::default();
+        let mut track = Track::new(0, TrackKind::Audio);
+        // In the trig lane's strip, which the roll's own rect stops above.
+        let in_the_lane = Pos2 { x: KEY_W + 300.0, y: TEST_RECT.max.y - 4.0 };
+
+        frame(&ctx, &mut roll, &mut track, egui::Modifiers::COMMAND, vec![egui::Event::PointerMoved(in_the_lane)]);
+        frame(&ctx, &mut roll, &mut track, egui::Modifiers::COMMAND, vec![wheel(1.0, egui::Modifiers::COMMAND)]);
+
+        assert_eq!(roll.zoom(), 1.0, "the pointer was not on the grid");
+    }
+
 }
 
