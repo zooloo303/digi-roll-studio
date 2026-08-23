@@ -158,9 +158,9 @@ mod tests {
         let busy: HashSet<u32> = kick.notes.iter().map(|n| n.step).collect();
         let hat_profile = role_profile(GenreId::House, Role::ClosedHat);
         let hat = generate_drums(&ctx, &hat_profile, 100, &mut rng_for(2, "hat"), &busy);
-        // House hats sit on 0,2,4,... and the kick sits on 0,4,8,12 — they
-        // are expected to overlap on the downbeats, which they may only do
-        // if `avoid` truly is 0.
+        // At full density the House hat now takes all sixteen steps and the
+        // kick sits on 0,4,8,12, so the two are expected to overlap on every
+        // downbeat — which they may only do if `avoid` truly is 0.
         assert!(hat.notes.iter().any(|n| busy.contains(&n.step)));
     }
 
@@ -177,21 +177,127 @@ mod tests {
     }
 
     #[test]
-    fn a_rimshot_never_takes_a_beat_and_a_ride_only_takes_eighths() {
-        // The two voices added to fill gaps rather than mark them: a rimshot
-        // is off-beat by construction (every `weights[n % 4 == 0]` is 0), and
-        // a ride is an eighth-note voice, so neither may land on a step its
-        // table forbids however high the density goes.
+    fn a_rimshot_never_takes_a_beat() {
+        // A rimshot fills gaps rather than marking them: it is off-beat by
+        // construction (every `weights[n % 4 == 0]` is 0), so it may not
+        // land on a beat however high the density goes. This used to also
+        // assert that a ride only ever took eighths — see
+        // `a_texture_voice_reaches_full_sixteenths_at_full_density` for why
+        // that half is now the opposite of what the ride is for.
         for genre in GenreId::ALL {
             let ctx = ctx_for(genre, 7, 2);
             let rim = generate_drums(&ctx, &role_profile(genre, Role::Rimshot), 100, &mut rng_for(7, "rim"), &HashSet::new());
             for n in &rim.notes {
                 assert!(n.step % 4 != 0, "{genre:?} rimshot on beat step {}", n.step);
             }
-            let ride = generate_drums(&ctx, &role_profile(genre, Role::Ride), 100, &mut rng_for(7, "ride"), &HashSet::new());
-            for n in &ride.notes {
-                assert!(n.step % 2 == 0, "{genre:?} ride off the eighth grid at step {}", n.step);
+        }
+    }
+
+    #[test]
+    fn a_texture_voice_reaches_full_sixteenths_at_full_density() {
+        // Neil, 2026-08-22: "either the generator needs a shaker, or it
+        // would seem i couldn't find a way to make hi-hat / shaker type
+        // patterns with 16th notes". Both were true — there was no shaker,
+        // and House/Electro closed hats plus every genre's ride had their
+        // odd `weights` slots zeroed, which `rhythm_for` treats as
+        // unreachable rather than unlikely. This is the pin on the answer.
+        //
+        // It is an exact assertion, not a statistical one: one bar at
+        // density 100 asks `trigs_per_bar.1` = 16 trigs of a candidate list
+        // that is now exactly 16 long, and `sample_weighted` returns every
+        // usable item when asked for at least as many as it holds. So a
+        // texture voice must produce all sixteen steps, every genre, every
+        // seed. Zero a slot again and this fails immediately.
+        for genre in GenreId::ALL {
+            for voice in [Role::ClosedHat, Role::Ride, Role::Shaker] {
+                let profile = role_profile(genre, voice);
+                assert_eq!(profile.trigs_per_bar.1, 16, "{genre:?}/{voice:?} cannot be asked for sixteenths");
+                assert!(
+                    profile.weights.iter().all(|&w| w > 0.0),
+                    "{genre:?}/{voice:?} has an unreachable step in its weight table"
+                );
+                for seed in 0..4u32 {
+                    let ctx = ctx_for(genre, seed, 1);
+                    let part = generate_drums(&ctx, &profile, 100, &mut rng_for(seed, "sixteenths"), &HashSet::new());
+                    let steps: HashSet<u32> = part.notes.iter().map(|n| n.step).collect();
+                    assert_eq!(steps.len(), 16, "{genre:?}/{voice:?} seed {seed} got {} steps, not sixteenths", steps.len());
+                }
             }
+        }
+    }
+
+    #[test]
+    fn a_texture_voice_still_sounds_like_eighths_at_the_sparse_end() {
+        // The other half of the bargain. Opening the odd slots would be a
+        // regression if it made a low-density hat scatter across the
+        // sixteenth grid, so the off-sixteenths are stocked at about a tenth
+        // of an eighth's weight and at density 0 the eighths must still
+        // clearly dominate.
+        //
+        // The bound has a reference point rather than being a number picked
+        // to fit: a table with *no* eighth preference measures 0.50 — the
+        // Techno and DnB closed hats, whose odd slots weigh as much as their
+        // even ones, come out at 0.50 and 0.53. So 0.50 is what "scattered"
+        // looks like, 1.00 is what the old zeroed tables looked like, and
+        // 0.65 is the line for "eighths dominate". Everything under test
+        // today clears it with room (0.74 to 0.89), the lowest being the
+        // Techno shaker, which deliberately carries double the off-sixteenth
+        // weight so it reaches its full grid early on the slider.
+        //
+        // Which voices this applies to is read off the tables rather than
+        // listed here, because some texture voices are *meant* to be
+        // near-even sixteenths — a DnB closed hat is the genre, not a
+        // defect. A table whose off-sixteenths carry at least half the
+        // weight of its eighths is making that claim and is not what this
+        // test is about. `checked` guards the obvious failure mode of a
+        // derived filter: if a retune ever made every table near-even, this
+        // would quietly assert nothing.
+        let mut checked = 0;
+        for genre in GenreId::ALL {
+            for voice in [Role::ClosedHat, Role::Ride, Role::Shaker] {
+                let profile = role_profile(genre, voice);
+                let mean = |steps: [usize; 8]| steps.iter().map(|&i| profile.weights[i]).sum::<f64>() / 8.0;
+                let evens = mean([0, 2, 4, 6, 8, 10, 12, 14]);
+                let odds = mean([1, 3, 5, 7, 9, 11, 13, 15]);
+                if odds >= evens * 0.5 {
+                    continue;
+                }
+                checked += 1;
+
+                let (mut total, mut on_eighths) = (0usize, 0usize);
+                for seed in 0..8u32 {
+                    let ctx = ctx_for(genre, seed, 2);
+                    let part = generate_drums(&ctx, &profile, 0, &mut rng_for(seed, "sparse"), &HashSet::new());
+                    total += part.notes.len();
+                    on_eighths += part.notes.iter().filter(|n| n.step % 2 == 0).count();
+                }
+                let share = on_eighths as f64 / total as f64;
+                assert!(share > 0.65, "{genre:?}/{voice:?} sparse hits only {share:.2} on the eighth grid");
+            }
+        }
+        // Twelve of the fifteen today: five rides, five shakers, and the
+        // House and Electro closed hats. The other three are the
+        // deliberately near-even tables — the DnB, Breaks and Techno closed
+        // hats, which could already play sixteenths before any of this.
+        assert!(checked >= 10, "only {checked} eighth-weighted texture voices left to check");
+    }
+
+    #[test]
+    fn the_shaker_is_a_drum_voice_like_any_other() {
+        // The shaker was added as the kit's dedicated sixteenth-note voice.
+        // Everything else about it is deliberately unremarkable — it takes
+        // the same `generate_drums` path as a kick — so the only thing to
+        // pin beyond the shared `DRUM_VOICES` sweeps above is that it really
+        // is in that list, and really is quieter than the kit's spine.
+        assert!(Role::Shaker.is_drum_voice());
+        assert!(Role::DRUM_VOICES.contains(&Role::Shaker));
+        for genre in GenreId::ALL {
+            let shaker = role_profile(genre, Role::Shaker);
+            let kick = role_profile(genre, Role::Kick);
+            assert!(
+                shaker.velocity.accent < kick.velocity.accent,
+                "{genre:?} shaker hits as hard as the kick"
+            );
         }
     }
 

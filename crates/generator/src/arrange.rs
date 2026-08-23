@@ -69,6 +69,7 @@ fn generate_for_role(ctx: &ResolvedContext, role: Role, octave: u8, density: u8,
         | Role::ClosedHat
         | Role::OpenHat
         | Role::Ride
+        | Role::Shaker
         | Role::Tom => generate_drums(ctx, &profile, density, rng, busy),
     }
 }

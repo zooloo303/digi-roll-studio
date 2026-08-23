@@ -80,7 +80,9 @@ impl GenreId {
 /// its own rhythm. Four voices shipped first (kick, snare, closed and open
 /// hat); clap, rimshot, ride and tom were added on Neil's ask the same week,
 /// and cost nothing but their weight tables precisely *because* a voice is
-/// only a rhythm.
+/// only a rhythm. Shaker joined them 2026-08-22, for the same reason and at
+/// the same price: it is the kit's dedicated sixteenth-note voice, the one
+/// thing the eight before it could not be asked for.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Role {
@@ -94,6 +96,7 @@ pub enum Role {
     ClosedHat,
     OpenHat,
     Ride,
+    Shaker,
     Tom,
 }
 
@@ -101,7 +104,7 @@ impl Role {
     /// Melodic first, then the drum voices in kit order — which is the order
     /// the panel's role picker draws, so a kick sits next to a snare rather
     /// than next to whatever was added last.
-    pub const ALL: [Self; 11] = [
+    pub const ALL: [Self; 12] = [
         Self::Bass,
         Self::Chords,
         Self::Lead,
@@ -112,6 +115,7 @@ impl Role {
         Self::ClosedHat,
         Self::OpenHat,
         Self::Ride,
+        Self::Shaker,
         Self::Tom,
     ];
 
@@ -119,7 +123,7 @@ impl Role {
     /// [`generate_for_role`](crate::arrange) reads this split to decide
     /// whether a part needs an octave and a key at all.
     pub const MELODIC: [Self; 3] = [Self::Bass, Self::Chords, Self::Lead];
-    pub const DRUM_VOICES: [Self; 8] = [
+    pub const DRUM_VOICES: [Self; 9] = [
         Self::Kick,
         Self::Snare,
         Self::Clap,
@@ -127,6 +131,7 @@ impl Role {
         Self::ClosedHat,
         Self::OpenHat,
         Self::Ride,
+        Self::Shaker,
         Self::Tom,
     ];
 
@@ -146,12 +151,13 @@ impl Role {
             Self::ClosedHat => "closed_hat",
             Self::OpenHat => "open_hat",
             Self::Ride => "ride",
+            Self::Shaker => "shaker",
             Self::Tom => "tom",
         }
     }
 
     /// What the panel labels it — `js/gen/context.js`'s `ROLE_LABELS`, plus
-    /// the eight drum voices it never had.
+    /// the nine drum voices it never had.
     pub fn label(self) -> &'static str {
         match self {
             Self::Bass => "Bass",
@@ -164,6 +170,7 @@ impl Role {
             Self::ClosedHat => "Closed hat",
             Self::OpenHat => "Open hat",
             Self::Ride => "Ride",
+            Self::Shaker => "Shaker",
             Self::Tom => "Tom",
         }
     }
@@ -230,6 +237,16 @@ const DRUM_GHOST_PROB: ConditionRecipe = ConditionRecipe::ProbGhost { chance: 0.
 const DRUM_ALT_BARS: ConditionRecipe = ConditionRecipe::AltBar { chance: 0.15, keys: &["1:2", "2:2"] };
 const DRUM_EVERY_FOURTH: ConditionRecipe = ConditionRecipe::EveryFourth { chance: 0.12, keys: &["3:4", "4:4"] };
 const DRUM_FILL_EXTRA: ConditionRecipe = ConditionRecipe::Fill { chance: 0.2, mode: FillMode::On };
+// The texture tier's own four, every one a shade under the colour tier's.
+// A sixteenth-note voice fires four times as many trigs per bar as an
+// off-beat open hat, so an identical *per-trig* chance buys four times the
+// locks — which is how opening the hats to sixteenths first pushed the
+// whole kit's lock rate above the melodic roles'. These keep the sprinkle a
+// sprinkle by the count, not just by the rate.
+const DRUM_TEXTURE_GHOST_PROB: ConditionRecipe = ConditionRecipe::ProbGhost { chance: 0.18, range: (70, 92) };
+const DRUM_TEXTURE_WEAK_PROB: ConditionRecipe = ConditionRecipe::ProbWeak { chance: 0.1, range: (82, 96) };
+const DRUM_TEXTURE_ALT_BARS: ConditionRecipe = ConditionRecipe::AltBar { chance: 0.08, keys: &["1:2", "2:2"] };
+const DRUM_TEXTURE_EVERY_FOURTH: ConditionRecipe = ConditionRecipe::EveryFourth { chance: 0.07, keys: &["3:4", "4:4"] };
 
 /// Spine tier — Kick, Snare, Clap. Must be there on the first pass, so the
 /// only recipe is `ProbWeak`, which never touches an accented trig. Never
@@ -240,10 +257,21 @@ const DRUM_FILL_EXTRA: ConditionRecipe = ConditionRecipe::Fill { chance: 0.2, mo
 /// adding a recipe there; the silence is the design working.
 const DRUM_SPINE_RECIPE: &[ConditionRecipe] = &[DRUM_WEAK_PROB];
 
-/// Colour tier — Rimshot, ClosedHat, OpenHat, Ride. These carry ornament,
-/// not the pulse, so they can afford to lose a hit: a hat that thins on
-/// alternate bars is the point, not a defect.
+/// Colour tier — Rimshot and OpenHat. These carry ornament, not the pulse,
+/// so they can afford to lose a hit: a hat that thins on alternate bars is
+/// the point, not a defect. Both are sparse by construction (an open hat
+/// only reaches the four "and"s), which is what lets the chances here stay
+/// as high as they are.
 const DRUM_COLOUR_RECIPE: &[ConditionRecipe] = &[DRUM_GHOST_PROB, DRUM_WEAK_PROB, DRUM_ALT_BARS, DRUM_EVERY_FOURTH];
+
+/// Texture tier — ClosedHat, Ride, Shaker. The colour tier's intent at a
+/// quarter of its chances, because these are the three voices whose density
+/// slider now runs all the way to sixteenths and a texture is not a texture
+/// if it flickers. Split out 2026-08-22 rather than retuning
+/// `DRUM_COLOUR_RECIPE`: a rimshot and a shaker want genuinely different
+/// doses, and the sparse voices' numbers were already right.
+const DRUM_TEXTURE_RECIPE: &[ConditionRecipe] =
+    &[DRUM_TEXTURE_GHOST_PROB, DRUM_TEXTURE_WEAK_PROB, DRUM_TEXTURE_ALT_BARS, DRUM_TEXTURE_EVERY_FOURTH];
 
 /// Fill tier — Tom. The weight tables already call it "fill material,
 /// weighted to the back half of the bar", so this is the one voice built to
@@ -402,6 +430,36 @@ pub fn genre_profile(id: GenreId) -> GenreProfile {
 /// The same is true of `conditions`: see `DRUM_SPINE_RECIPE`/
 /// `DRUM_COLOUR_RECIPE`/`DRUM_FILL_RECIPE`'s doc comments for the tiering
 /// and why the spine never carries `AltBar`.
+///
+/// # Reaching sixteenths
+///
+/// A `weights` slot of `0.0` is not "unlikely", it is *unreachable*:
+/// `rhythm::rhythm_for` drops any step whose weight is `<= 0.0` before it
+/// samples, so a table with zeroed odd slots caps the density slider at
+/// eighths however far it is pushed. That is deliberate for a voice whose
+/// whole identity is the off-beat (OpenHat sits on the "and"s and nowhere
+/// else), and was a bug for the voices meant to be a texture — House and
+/// Electro closed hats, and every genre's ride, could not play sixteenths
+/// at all until 2026-08-22.
+///
+/// The fix, and the pattern to copy for any future texture voice: stock the
+/// off-sixteenths at roughly a *tenth* of an eighth's weight and set
+/// `trigs_per_bar`'s upper bound to 16.
+///
+/// A tenth looks brutal and is not. `rng::sample_weighted` is
+/// Efraimidis–Spirakis (`key = U^(1/w)`), which draws each slot with
+/// probability *proportional* to its weight — it does not rank the heavy
+/// slots ahead of the light ones and work down. So the weight ratio sets
+/// the eighth/sixteenth *mix* directly: stocking the odd slots at a quarter
+/// still put a third of a sparse hat on the sixteenth grid, which is not a
+/// house hat. A tenth holds the sparse end near nine-tenths eighths, and
+/// costs nothing at the top of the slider, where the draw asks for all 16
+/// candidates and therefore returns all 16 whatever their weights. Full
+/// sixteenths at density 100 are guaranteed rather than likely — which is
+/// what `parts::drums`'s
+/// `a_texture_voice_reaches_full_sixteenths_at_full_density` pins, and
+/// `a_texture_voice_still_sounds_like_eighths_at_the_sparse_end` pins the
+/// other end.
 fn drum_profile(
     weights: [f64; 16],
     trigs_per_bar: (u32, u32),
@@ -777,7 +835,7 @@ pub fn role_profile(id: GenreId, role: Role) -> RoleProfile {
             (10, 16),
             LenProfile::Plain { normal: 0.25, ghost: Some(0.125), max: 0.5 },
             Velocity { accent: 95, normal: 80, ghost: 55 },
-            DRUM_COLOUR_RECIPE,
+            DRUM_TEXTURE_RECIPE,
         ),
         (GenreId::Dnb, Role::OpenHat) => drum_profile(
             // The off-beat "and"s — steps 2, 6, 10, 14.
@@ -791,11 +849,22 @@ pub fn role_profile(id: GenreId, role: Role) -> RoleProfile {
             // Steady eighths with the beats favoured — a ride is the hat's
             // job played longer and quieter, so the table is the closed hat's
             // shape thinned to the "and"s and the length doubled.
-            [0.7, 0.0, 0.5, 0.0, 0.6, 0.0, 0.5, 0.0, 0.7, 0.0, 0.5, 0.0, 0.6, 0.0, 0.5, 0.0],
-            (5, 8),
+            [0.7, 0.07, 0.5, 0.07, 0.6, 0.07, 0.5, 0.07, 0.7, 0.07, 0.5, 0.07, 0.6, 0.07, 0.5, 0.07],
+            (5, 16),
             LenProfile::Plain { normal: 0.5, ghost: Some(0.25), max: 1.0 },
             Velocity { accent: 88, normal: 74, ghost: 52 },
-            DRUM_COLOUR_RECIPE,
+            DRUM_TEXTURE_RECIPE,
+        ),
+        (GenreId::Dnb, Role::Shaker) => drum_profile(
+            // Eighths on the pulse with whispered sixteenths between them —
+            // a DnB shaker's job is to fill the space the syncopated kick
+            // leaves, not to argue with it, so the "e" and "a" sit far under
+            // `rhythm::GHOST_WEIGHT` and come out as ghosts.
+            [0.65, 0.06, 0.5, 0.06, 0.6, 0.06, 0.5, 0.06, 0.65, 0.06, 0.5, 0.06, 0.6, 0.06, 0.5, 0.06],
+            (6, 16),
+            LenProfile::Plain { normal: 0.25, ghost: Some(0.125), max: 0.5 },
+            Velocity { accent: 78, normal: 66, ghost: 46 },
+            DRUM_TEXTURE_RECIPE,
         ),
         (GenreId::Dnb, Role::Tom) => drum_profile(
             // Fill material, weighted to the back half of the bar so it reads
@@ -847,7 +916,7 @@ pub fn role_profile(id: GenreId, role: Role) -> RoleProfile {
             (10, 16),
             LenProfile::Plain { normal: 0.25, ghost: Some(0.125), max: 0.5 },
             Velocity { accent: 92, normal: 78, ghost: 52 },
-            DRUM_COLOUR_RECIPE,
+            DRUM_TEXTURE_RECIPE,
         ),
         (GenreId::Breaks, Role::OpenHat) => drum_profile(
             [0.0, 0.0, 0.5, 0.0, 0.0, 0.0, 0.6, 0.0, 0.0, 0.0, 0.5, 0.0, 0.0, 0.0, 0.6, 0.0],
@@ -859,11 +928,22 @@ pub fn role_profile(id: GenreId, role: Role) -> RoleProfile {
         (GenreId::Breaks, Role::Ride) => drum_profile(
             // Eighths, which the genre's `swung(0.1)` groove then pushes late
             // — the ride is where that shuffle is most audible.
-            [0.7, 0.0, 0.55, 0.0, 0.6, 0.0, 0.55, 0.0, 0.7, 0.0, 0.55, 0.0, 0.6, 0.0, 0.55, 0.0],
-            (5, 8),
+            [0.7, 0.07, 0.55, 0.07, 0.6, 0.07, 0.55, 0.07, 0.7, 0.07, 0.55, 0.07, 0.6, 0.07, 0.55, 0.07],
+            (5, 16),
             LenProfile::Plain { normal: 0.5, ghost: Some(0.25), max: 1.0 },
             Velocity { accent: 86, normal: 72, ghost: 50 },
-            DRUM_COLOUR_RECIPE,
+            DRUM_TEXTURE_RECIPE,
+        ),
+        (GenreId::Breaks, Role::Shaker) => drum_profile(
+            // The "a" outweighs the "e", which is what a shuffle *is* on a
+            // sixteenth grid: the second half of each beat leans late, so as
+            // the slider fills in the sixteenths the "a"s arrive first. The
+            // genre's `swung(0.1)` groove then pushes them later still.
+            [0.65, 0.05, 0.5, 0.09, 0.6, 0.05, 0.5, 0.09, 0.65, 0.05, 0.5, 0.09, 0.6, 0.05, 0.5, 0.09],
+            (6, 16),
+            LenProfile::Plain { normal: 0.25, ghost: Some(0.125), max: 0.5 },
+            Velocity { accent: 76, normal: 64, ghost: 45 },
+            DRUM_TEXTURE_RECIPE,
         ),
         (GenreId::Breaks, Role::Tom) => drum_profile(
             // A funk tom answers the kick's syncopation, so this leans on the
@@ -914,11 +994,16 @@ pub fn role_profile(id: GenreId, role: Role) -> RoleProfile {
             DRUM_COLOUR_RECIPE,
         ),
         (GenreId::Electro, Role::ClosedHat) => drum_profile(
-            [0.8, 0.0, 0.6, 0.0, 0.8, 0.0, 0.6, 0.0, 0.8, 0.0, 0.6, 0.0, 0.8, 0.0, 0.6, 0.0],
-            (6, 8),
+            // Eighths at the bottom of the slider, sixteenths at the top:
+            // the off-sixteenths are stocked at a *tenth* of an eighth's
+            // weight, which is what it costs to keep the sparse end sounding
+            // like electro — see `drum_profile`'s "Reaching sixteenths" for
+            // why a tenth and not the quarter this first shipped as.
+            [0.8, 0.08, 0.6, 0.08, 0.8, 0.08, 0.6, 0.08, 0.8, 0.08, 0.6, 0.08, 0.8, 0.08, 0.6, 0.08],
+            (6, 16),
             LenProfile::Plain { normal: 0.25, ghost: Some(0.125), max: 0.5 },
             Velocity { accent: 96, normal: 80, ghost: 55 },
-            DRUM_COLOUR_RECIPE,
+            DRUM_TEXTURE_RECIPE,
         ),
         (GenreId::Electro, Role::OpenHat) => drum_profile(
             [0.0, 0.0, 0.5, 0.0, 0.0, 0.0, 0.5, 0.0, 0.0, 0.0, 0.5, 0.0, 0.0, 0.0, 0.5, 0.0],
@@ -930,11 +1015,22 @@ pub fn role_profile(id: GenreId, role: Role) -> RoleProfile {
         (GenreId::Electro, Role::Ride) => drum_profile(
             // Flat eighths, no beat emphasis: electro's pulse comes from the
             // kick, and a ride that also accented the beats would double it.
-            [0.6, 0.0, 0.6, 0.0, 0.6, 0.0, 0.6, 0.0, 0.6, 0.0, 0.6, 0.0, 0.6, 0.0, 0.6, 0.0],
-            (5, 8),
+            [0.6, 0.06, 0.6, 0.06, 0.6, 0.06, 0.6, 0.06, 0.6, 0.06, 0.6, 0.06, 0.6, 0.06, 0.6, 0.06],
+            (5, 16),
             LenProfile::Plain { normal: 0.5, ghost: Some(0.25), max: 1.0 },
             Velocity { accent: 84, normal: 72, ghost: 50 },
-            DRUM_COLOUR_RECIPE,
+            DRUM_TEXTURE_RECIPE,
+        ),
+        (GenreId::Electro, Role::Shaker) => drum_profile(
+            // Machine-flat: every eighth carries the same weight and every
+            // off-sixteenth the same as every other, so the texture fills in
+            // evenly rather than shuffled. Electro's swing is zero
+            // (`straight()`), and the shaker is where that shows.
+            [0.6, 0.07, 0.6, 0.07, 0.6, 0.07, 0.6, 0.07, 0.6, 0.07, 0.6, 0.07, 0.6, 0.07, 0.6, 0.07],
+            (6, 16),
+            LenProfile::Plain { normal: 0.25, ghost: Some(0.125), max: 0.5 },
+            Velocity { accent: 74, normal: 63, ghost: 45 },
+            DRUM_TEXTURE_RECIPE,
         ),
         (GenreId::Electro, Role::Tom) => drum_profile(
             // The 808 tom run: three steps, each later and heavier than the
@@ -980,11 +1076,15 @@ pub fn role_profile(id: GenreId, role: Role) -> RoleProfile {
             DRUM_COLOUR_RECIPE,
         ),
         (GenreId::House, Role::ClosedHat) => drum_profile(
-            [0.7, 0.0, 0.7, 0.0, 0.7, 0.0, 0.7, 0.0, 0.7, 0.0, 0.7, 0.0, 0.7, 0.0, 0.7, 0.0],
-            (6, 8),
+            // Flat eighths, plus the off-sixteenths the slider can now climb
+            // into — see Electro's closed hat for why they are stocked so
+            // light. A house hat at full sixteenths is a ride-out, which is
+            // exactly what the top of the slider should be for.
+            [0.7, 0.08, 0.7, 0.08, 0.7, 0.08, 0.7, 0.08, 0.7, 0.08, 0.7, 0.08, 0.7, 0.08, 0.7, 0.08],
+            (6, 16),
             LenProfile::Plain { normal: 0.25, ghost: Some(0.125), max: 0.5 },
             Velocity { accent: 94, normal: 78, ghost: 54 },
-            DRUM_COLOUR_RECIPE,
+            DRUM_TEXTURE_RECIPE,
         ),
         (GenreId::House, Role::OpenHat) => drum_profile(
             // The classic house off-beat open hat.
@@ -997,11 +1097,22 @@ pub fn role_profile(id: GenreId, role: Role) -> RoleProfile {
         (GenreId::House, Role::Ride) => drum_profile(
             // Eighths under the shuffle — the genre's `swung(0.14)` groove
             // pushes every odd step late, and the ride carries that.
-            [0.6, 0.0, 0.5, 0.0, 0.6, 0.0, 0.5, 0.0, 0.6, 0.0, 0.5, 0.0, 0.6, 0.0, 0.5, 0.0],
-            (5, 8),
+            [0.6, 0.06, 0.5, 0.06, 0.6, 0.06, 0.5, 0.06, 0.6, 0.06, 0.5, 0.06, 0.6, 0.06, 0.5, 0.06],
+            (5, 16),
             LenProfile::Plain { normal: 0.5, ghost: Some(0.25), max: 1.0 },
             Velocity { accent: 86, normal: 72, ghost: 50 },
-            DRUM_COLOUR_RECIPE,
+            DRUM_TEXTURE_RECIPE,
+        ),
+        (GenreId::House, Role::Shaker) => drum_profile(
+            // House's shuffle carrier — the same late-leaning "a" as Breaks
+            // but more pronounced, because `swung(0.14)` is the deepest
+            // groove any genre here ships and the shaker is the voice dense
+            // enough to make it audible.
+            [0.65, 0.04, 0.5, 0.1, 0.6, 0.04, 0.5, 0.1, 0.65, 0.04, 0.5, 0.1, 0.6, 0.04, 0.5, 0.1],
+            (6, 16),
+            LenProfile::Plain { normal: 0.25, ghost: Some(0.125), max: 0.5 },
+            Velocity { accent: 76, normal: 64, ghost: 45 },
+            DRUM_TEXTURE_RECIPE,
         ),
         (GenreId::House, Role::Tom) => drum_profile(
             // Sparse and entirely off the beat: with a kick on all four, a
@@ -1059,7 +1170,7 @@ pub fn role_profile(id: GenreId, role: Role) -> RoleProfile {
             (12, 16),
             LenProfile::Plain { normal: 0.25, ghost: Some(0.125), max: 0.5 },
             Velocity { accent: 92, normal: 78, ghost: 52 },
-            DRUM_COLOUR_RECIPE,
+            DRUM_TEXTURE_RECIPE,
         ),
         (GenreId::Techno, Role::OpenHat) => drum_profile(
             // The off-beat open hat, same slot as House's — the "and" of
@@ -1074,11 +1185,26 @@ pub fn role_profile(id: GenreId, role: Role) -> RoleProfile {
             // Flat, quiet eighths with no beat emphasis — a metallic texture
             // under the loop rather than a voice of its own, the same
             // reasoning as Electro's ride.
-            [0.5, 0.0, 0.5, 0.0, 0.5, 0.0, 0.5, 0.0, 0.5, 0.0, 0.5, 0.0, 0.5, 0.0, 0.5, 0.0],
-            (5, 8),
+            [0.5, 0.05, 0.5, 0.05, 0.5, 0.05, 0.5, 0.05, 0.5, 0.05, 0.5, 0.05, 0.5, 0.05, 0.5, 0.05],
+            (5, 16),
             LenProfile::Plain { normal: 0.5, ghost: Some(0.25), max: 1.0 },
             Velocity { accent: 80, normal: 68, ghost: 48 },
-            DRUM_COLOUR_RECIPE,
+            DRUM_TEXTURE_RECIPE,
+        ),
+        (GenreId::Techno, Role::Shaker) => drum_profile(
+            // The off-sixteenths carry twice the weight of any other genre's:
+            // a techno shaker should arrive at its relentless full grid early
+            // on the slider, because that grid *is* the genre. That is done
+            // with the weights and not by raising `trigs_per_bar`'s floor —
+            // a floor of eight asks for every eighth in the bar, and the
+            // draw then has to reach into the light odd slots to fill the
+            // last of them, which scatters the sparse end instead of
+            // pulsing. Six leaves it room.
+            [0.6, 0.12, 0.55, 0.12, 0.6, 0.12, 0.55, 0.12, 0.6, 0.12, 0.55, 0.12, 0.6, 0.12, 0.55, 0.12],
+            (6, 16),
+            LenProfile::Plain { normal: 0.25, ghost: Some(0.125), max: 0.5 },
+            Velocity { accent: 74, normal: 64, ghost: 46 },
+            DRUM_TEXTURE_RECIPE,
         ),
         (GenreId::Techno, Role::Tom) => drum_profile(
             // Sparse and off the kick, same logic as House's: with the kick
