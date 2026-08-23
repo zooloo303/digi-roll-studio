@@ -122,7 +122,7 @@ pub fn parse_chord_token(token: &str) -> Result<ChordSlot, ChordParseError> {
     if let Some(colon) = rest.find(':') {
         let n: Result<u32, _> = rest[colon + 1..].parse();
         match n {
-            Ok(n) if n >= 1 && n <= MAX_CHORD_BARS => bars = n,
+            Ok(n) if (1..=MAX_CHORD_BARS).contains(&n) => bars = n,
             _ => {
                 return Err(ChordParseError(format!(
                     "\u{201c}{raw}\u{201d}: the bars after \u{201c}:\u{201d} must be a whole number 1\u{2013}{MAX_CHORD_BARS}"

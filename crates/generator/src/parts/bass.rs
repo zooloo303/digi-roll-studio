@@ -91,10 +91,13 @@ pub fn generate_bass(ctx: &ResolvedContext, profile: &RoleProfile, octave: u8, d
         // at most, and every value is snapped to the boxes' own LEN scale so
         // what the roll draws is what the hardware stores.
         let gap = gap_after(&trigs, i, total);
-        let want = if trig.step == 0 && profile.anchor_len.is_some() {
-            profile.anchor_len.unwrap().min(gap)
-        } else {
-            (if trig.ghost { len_ghost } else { len_normal }).min(gap).min(len_max)
+        // The anchor's own length when this is the anchor and the profile gives
+        // one; otherwise the ordinary length. One `match` rather than an
+        // `is_some()` guard and an `unwrap()` — same answer, and no unwrap on the
+        // generator's hot path for a future edit to get wrong.
+        let want = match profile.anchor_len.filter(|_| trig.step == 0) {
+            Some(anchor) => anchor.min(gap),
+            None => (if trig.ghost { len_ghost } else { len_normal }).min(gap).min(len_max),
         };
         let len = digi_core::snap_len_fine(want, f64::from(total - trig.step));
 

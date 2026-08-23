@@ -59,7 +59,7 @@ fn main() {
     let mut ok = 0usize;
 
     for input in inputs.iter().filter(|p| p.slug.is_some()) {
-        let slug = input.slug.as_deref().expect("filtered");
+        let slug = input.slug.expect("filtered");
         // A command-line override wins; otherwise fall back to this slug's
         // default. A box with neither is skipped rather than guessed at.
         let label = overrides

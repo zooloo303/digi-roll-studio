@@ -2,8 +2,40 @@
 members = ["crates/core", "crates/protocol", "crates/generator", "crates/engine", "crates/midi", "crates/app"]
 resolver = "2"
 
+# Clippy's own settings, applied by every crate through `[lints] workspace = true`.
+#
+# **Installed and first run on 2026-08-23**, which is late enough that it found
+# things in code four months old — and late enough to be worth writing down what
+# it is allowed to have an opinion about. It caught one deny-level lint
+# (`absurd_extreme_comparisons` in `midi::device`, where a `u16 >= 0xffff` read as
+# a range guard and could only mean an overflow guard) and about forty warnings.
+#
+# The three below are switched off **workspace-wide and deliberately**, because
+# each one asks for a change this codebase does not want:
+#
+# * `type_complexity` — eleven hits, nine of them a test's own `Vec<(String, u8,
+#   usize, Vec<..>)>` fixture row. A `type` alias per fixture buys a name nobody
+#   reads and one more hop between a test and what it is asserting on.
+# * `too_many_arguments` — the UI panels take a session, a selection, a roll, a
+#   history and two port lists because the shell owns all six and a panel owns
+#   none of them. Bundling them into a struct to satisfy a count would be a
+#   struct that exists only for the count. Three functions already carried a
+#   local `#[allow]` for this before clippy could check it.
+# * `manual_is_multiple_of` — `step % 2 == 0` is what a reader of swing code
+#   expects, and `is_multiple_of` is newer than most of the people who will read
+#   it.
+#
+# Everything else is left at its default, and the exceptions are per-site
+# `#[allow]`s carrying their reason — see `protocol::sevenbit` (§7 rule 3),
+# `protocol::pattern::micro_steps_to_byte` and `generator::motif` (both: `clamp`
+# would propagate a NaN the `.min().max()` chain absorbs), and `generator::rng`.
+[workspace.lints.clippy]
+type_complexity = "allow"
+too_many_arguments = "allow"
+manual_is_multiple_of = "allow"
+
 [workspace.package]
-version = "0.1.2"
+version = "0.1.3"
 edition = "2021"
 rust-version = "1.95"   # set by egui/eframe 0.36
 license = "GPL-3.0-or-later"

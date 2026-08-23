@@ -169,15 +169,15 @@ mod tests {
     fn a_lane_sends_its_parameter_at_the_steps_it_holds() {
         let cut = lane(Some("filter.cutoff"), None, Some("DT2"), &[(0, 0), (1, 64), (2, 127)]);
         assert_eq!(
-            shape(&plock_messages_for_step(&[cut.clone()], 0, "DT2")),
+            shape(&plock_messages_for_step(std::slice::from_ref(&cut), 0, "DT2")),
             [("FLTR CUTOFF", Some((1, 20)), Some(74), 0, 0)]
         );
         assert_eq!(
-            shape(&plock_messages_for_step(&[cut.clone()], 1, "DT2")),
+            shape(&plock_messages_for_step(std::slice::from_ref(&cut), 1, "DT2")),
             [("FLTR CUTOFF", Some((1, 20)), Some(74), 64, 8192)]
         );
         assert_eq!(
-            shape(&plock_messages_for_step(&[cut.clone()], 2, "DT2")),
+            shape(&plock_messages_for_step(std::slice::from_ref(&cut), 2, "DT2")),
             [("FLTR CUTOFF", Some((1, 20)), Some(74), 127, 16256)]
         );
         // A step the lane has no lock on sends nothing at all — not a value of
@@ -211,8 +211,8 @@ mod tests {
         // DN2 on CC 90 would move something else entirely; the DN2's pan is 89,
         // and the DT2's 89 is Volume.
         let dt2_pan = lane(Some("amp.pan"), None, Some("DT2"), &[(0, 100)]);
-        assert!(plock_messages_for_step(&[dt2_pan.clone()], 0, "DN2").is_empty());
-        assert!(!has_auditable_lanes(&[dt2_pan.clone()], "DN2"));
+        assert!(plock_messages_for_step(std::slice::from_ref(&dt2_pan), 0, "DN2").is_empty());
+        assert!(!has_auditable_lanes(std::slice::from_ref(&dt2_pan), "DN2"));
         // ...and it is not that the parameter is unknown on a DN2. It is known,
         // under the same name, at a different number. Refusing is a choice.
         assert!(!plock_messages_for_step(&[dt2_pan], 0, "DT2").is_empty());
@@ -221,7 +221,7 @@ mod tests {
     #[test]
     fn a_lane_with_no_device_kind_is_meaningless_and_silent() {
         let orphan = lane(Some("filter.cutoff"), None, None, &[(0, 64)]);
-        assert!(plock_messages_for_step(&[orphan.clone()], 0, "DT2").is_empty());
+        assert!(plock_messages_for_step(std::slice::from_ref(&orphan), 0, "DT2").is_empty());
         assert!(!has_auditable_lanes(&[orphan], "DT2"));
     }
 
@@ -231,7 +231,7 @@ mod tests {
         // is simply no CC to audition it on, and inventing one would move a knob
         // nobody asked for.
         let raw = lane(None, Some(0x2A), Some("DT2"), &[(0, 40000)]);
-        assert!(plock_messages_for_step(&[raw.clone()], 0, "DT2").is_empty());
+        assert!(plock_messages_for_step(std::slice::from_ref(&raw), 0, "DT2").is_empty());
         assert!(!has_auditable_lanes(&[raw], "DT2"));
     }
 

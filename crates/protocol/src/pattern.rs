@@ -10,6 +10,15 @@
 //! own reverse engineering: the note-trig record pool (hardware-verified) and the
 //! entire DN2 mapping.
 
+// **Clippy is off for three cosmetic lints in this file, per PLAN.md §7 rule 3.**
+// A redundant cast, a `.get(0)`, and an indexed loop over a byte range: all three
+// suggestions are behaviour-identical and all three are refused for the reason
+// `sevenbit` refuses its own three. This is a byte-for-byte port pinned against
+// hardware captures, and keeping its shape is what makes it diffable against the
+// JS when a capture disagrees. Rule 3 does not extend past the decode/encode
+// internals, so these are named rather than blanket.
+#![allow(clippy::unnecessary_cast, clippy::get_first, clippy::needless_range_loop)]
+
 use std::collections::{BTreeMap, HashMap};
 
 pub const TRIG_ENABLED: u16 = 0x0001;
@@ -64,6 +73,17 @@ pub fn micro_byte_to_steps(v: u8) -> f64 {
 /// Rounds halves toward +∞, which is what JS `Math.round` does. Rust's
 /// `f64::round` rounds halves *away from zero*, so the two disagree at exactly
 /// −n.5 ticks — the kind of silent one-tick deviation rule 3 exists to prevent.
+///
+/// **The `.max().min()` chain is not a worse spelling of `clamp`, and clippy is
+/// wrong here.** They differ on `NaN`: `f64::max` and `f64::min` return the
+/// non-`NaN` operand, so a `NaN` arriving in `micro` comes out of this chain as
+/// −23 ticks — a real byte, at the bottom of the range. `f64::clamp` propagates
+/// `NaN` instead, and `NaN as i16` saturates to 0, so the same input would
+/// silently become *no offset at all* while looking like a deliberate one.
+/// Neither is a value anybody wants, but one of them is a trig 23 ticks early
+/// and the other is a trig that reads as untouched. `micro` is `f64` arithmetic
+/// off a UI drag, and this function is on the write path to a box.
+#[allow(clippy::manual_clamp)]
 pub fn micro_steps_to_byte(micro: f64) -> u8 {
     let ticks = (micro * 24.0 + 0.5).floor();
     (ticks.max(-23.0).min(23.0) as i16 as i8) as u8

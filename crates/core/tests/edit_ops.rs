@@ -442,7 +442,16 @@ fn the_micro_window_is_narrower_than_the_byte_the_box_stores() {
     // that rots: the box holds ±23/24 of a step and the gesture reaches ±0.49,
     // which is 11 ticks of the 23 available. A note imported carrying more keeps
     // it — nothing in this module touches an existing value.
-    assert!(MICRO_MAX < 23.0 / 24.0);
+    //
+    // **Clippy calls this a constant assertion, and it is — that is the job.**
+    // Both sides are constants, so it can only fail when somebody edits one of
+    // them, which is precisely the day this test is for. `DEVELOPMENT.md` lesson 2
+    // is about the opposite case, a committed witness nothing asserts on; this is
+    // the witness.
+    #[allow(clippy::assertions_on_constants)]
+    {
+        assert!(MICRO_MAX < 23.0 / 24.0);
+    }
     let imported = Note::new(4.0, 60, 1.0, 100, 20.0 / 24.0);
     assert_eq!(imported.micro, 20.0 / 24.0, "an import is not clamped by the gesture's window");
 }

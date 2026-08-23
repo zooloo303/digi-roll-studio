@@ -432,6 +432,7 @@ enum Status {
     Failed(String),
 }
 
+#[derive(Default)]
 pub struct GeneratePanel {
     ctx: GenContext,
     confirm: Option<GeneratePlan>,
@@ -452,17 +453,6 @@ pub struct GeneratePanel {
     reference_visible: bool,
 }
 
-impl Default for GeneratePanel {
-    fn default() -> Self {
-        Self {
-            ctx: GenContext::default(),
-            confirm: None,
-            status: None,
-            written: HashSet::new(),
-            reference_visible: false,
-        }
-    }
-}
 
 impl GeneratePanel {
     pub fn ui(&mut self, ui: &mut Ui, session: &mut Session) -> Outcome {
@@ -1414,6 +1404,10 @@ mod tests {
         // The three drum rows are below the lead but answer nothing — every
         // voice generates with `avoid: 0.0` — so a lead re-roll must leave
         // them alone rather than rewrite them with identical music.
+        // Indexed rather than zipped on purpose: `track` is the track *number*,
+        // it is what the assertion message has to name, and `before` is indexed
+        // by the same number. Zipping would rename the one thing being asserted.
+        #[allow(clippy::needless_range_loop)]
         for track in 3..6 {
             assert_eq!(shape(&session, 0, track), before[track], "a drum row was rewritten for nothing");
         }
@@ -1467,6 +1461,9 @@ mod tests {
         let bass = panel.ctx.parts[0].id;
         assert!(!panel.reroll_now(bass, &mut session), "it must not report an edit it did not make");
         assert!(panel.confirm.is_some(), "it should have raised the confirm dialog");
+        // Indexed for the reason the other loop in this file is: `track` is the
+        // number the failure message has to print.
+        #[allow(clippy::needless_range_loop)]
         for track in 0..6 {
             assert_eq!(shape(&session, 0, track), before[track], "a track was written without asking");
         }
@@ -1534,11 +1531,13 @@ mod tests {
     #[test]
     fn a_plan_refuses_two_on_rows_aimed_at_the_same_track() {
         let session = session_with_two_boxes();
-        let mut ctx = GenContext::default();
-        ctx.parts = vec![
-            aimed(&session, 0, Role::Bass, 0),
-            aimed(&session, 0, Role::Chords, 0),
-        ];
+        let ctx = GenContext {
+            parts: vec![
+                aimed(&session, 0, Role::Bass, 0),
+                aimed(&session, 0, Role::Chords, 0),
+            ],
+            ..GenContext::default()
+        };
         let err = plan_generate(&ctx, &session).err().expect("expected a refusal");
         assert!(matches!(err, PlanError::Collision(_)), "{err:?}");
     }

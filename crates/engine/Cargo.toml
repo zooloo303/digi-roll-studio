@@ -12,3 +12,6 @@ rust-version.workspace = true
 # `digi_protocol` line is what enforces it.
 digi_core = { path = "../core" }
 digi_midi = { path = "../midi" }
+
+[lints]
+workspace = true

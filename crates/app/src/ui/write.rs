@@ -1196,7 +1196,7 @@ mod tests {
         // dialog is where `safe_write_track` expects it to be said. Compared
         // against `write_impact_lines` itself, so a change there cannot leave
         // this dialog quietly saying the old thing.
-        let f = Facts { swing: Some(65), box_swing: Some(50).unwrap(), ..facts() };
+        let f = Facts { swing: Some(65), box_swing: 50, ..facts() };
         let lines = confirm_lines(&f);
         for line in write_impact_lines(&ImpactArgs {
             label: f.label,

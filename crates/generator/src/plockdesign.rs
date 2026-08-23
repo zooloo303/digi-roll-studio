@@ -31,6 +31,16 @@ fn clamp_midi(v: f64) -> i32 {
     (v.round() as i32).clamp(MIDI_MIN, MIDI_MAX)
 }
 
+/// `v` held to 0..=1.
+///
+/// **`.max().min()` and not `clamp`, the last of the four sites that make this
+/// choice** — and the one every lane shape passes through, so it is the one that
+/// matters most. The two differ on `NaN`: this chain returns 0.0, a real value at
+/// the bottom of the range, while `clamp` would hand `NaN` on to
+/// `clamp_midi`, where `NaN.round() as i32` saturates to 0 and then clamps to
+/// `MIDI_MIN` — the same answer by accident, through two casts nobody would look
+/// at. `protocol::pattern::micro_steps_to_byte` has the full argument.
+#[allow(clippy::manual_clamp)]
 fn clamp01(v: f64) -> f64 {
     v.max(0.0).min(1.0)
 }
@@ -87,7 +97,12 @@ pub fn lane_shape(shape: LaneShape, t: f64, ctx: ShapeCtx) -> f64 {
 /// used, and how far each one travels. At 0 there are no lanes at all; at
 /// 100 every recipe in the profile is drawn over its full range.
 pub fn lanes_wanted(recipe_count: usize, motion: u32) -> usize {
-    let m = f64::from(motion).max(0.0).min(100.0);
+    // **Clamped as an integer, and this is the one place in the file where the
+    // `NaN` argument for `.min().max()` does not apply**: `motion` is a `u32`, so
+    // `f64::from` cannot produce a `NaN` and cannot produce a negative — the
+    // `.max(0.0)` this used to carry was dead on an unsigned value. Compare
+    // `clamp01`, whose input is real `f64` arithmetic and which keeps the chain.
+    let m = f64::from(motion.min(100));
     if m <= 0.0 {
         return 0;
     }
@@ -106,7 +121,8 @@ pub fn lane_values(recipe: &LaneRecipe, trigs: &[Trig], total: u32, motion: u32,
     let from = clamp_midi(f64::from(recipe.from));
     let to = clamp_midi(f64::from(recipe.to));
     let centre = f64::from(from + to) / 2.0;
-    let depth = f64::from(motion).max(0.0).min(100.0) / 100.0;
+    // Integer clamp, for the reason `lanes_wanted` gives: `motion` is a `u32`.
+    let depth = f64::from(motion.min(100)) / 100.0;
 
     // The random walk is one shared series across the lane, so `wander`
     // reads as one hand moving rather than as noise per step.

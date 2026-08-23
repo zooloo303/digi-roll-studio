@@ -459,7 +459,7 @@ impl Grid {
         // cast that saturates would turn a click far above the roll into pitch 0.
         (0.0..=127.0)
             .contains(&pitch)
-            .then(|| pitch as u8)
+            .then_some(pitch as u8)
             .filter(|p| self.band.contains(*p))
     }
 
@@ -5097,8 +5097,7 @@ mod tests {
     /// view below the last row, on empty background.
     #[test]
     fn the_scroll_bound_moves_with_the_zoom() {
-        let mut roll = PianoRoll::default();
-        roll.scroll_y = -100_000.0;
+        let mut roll = PianoRoll { scroll_y: -100_000.0, ..PianoRoll::default() };
         roll.clamp_scroll(FULL_BAND);
         let full = -(FULL_BAND.rows() as f32 * CELL_H);
         assert_eq!(roll.scroll_y, full, "the whole band, at 1x");

@@ -72,7 +72,7 @@ fn main() {
     let mut clean = 0usize;
 
     for input in inputs.iter().filter(|p| p.slug.is_some()) {
-        let slug = input.slug.as_deref().expect("filtered");
+        let slug = input.slug.expect("filtered");
         let label = overrides
             .iter()
             .find(|(frag, _)| input.name.contains(frag.as_str()))

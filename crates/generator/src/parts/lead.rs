@@ -104,7 +104,9 @@ pub fn generate_lead(ctx: &ResolvedContext, profile: &RoleProfile, octave: u8, d
         Some(m) => (m.notes, m.window),
         None => ((3, 5), 8),
     };
-    let window = motif_window.max(2).min(16) as u32;
+    // Integers, so this one really is `clamp` — unlike the four `f64` chains in
+    // `motif` and `protocol::pattern`, which keep `.min().max()` on purpose.
+    let window = motif_window.clamp(2, 16) as u32;
     let phrases = (total / window).max(1);
 
     let motif = make_motif(

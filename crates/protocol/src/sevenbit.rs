@@ -7,6 +7,22 @@
 //!
 //! Ported from elk-herd's `src/ByteArray/SevenBit.elm` — BSD-2-Clause, © mzero.
 //! See `CREDITS.md`.
+//!
+//! # Why clippy is switched off in here
+//!
+//! **PLAN.md §7 rule 3: do not "improve" the hardware-verified encode/decode
+//! internals.** Clippy asks for three changes in this file — `div_ceil` for the
+//! group count, an iterator instead of indexing `wire`, and a cast it can see is
+//! redundant — and all three are behaviour-identical *today*, which is exactly
+//! what makes them tempting and exactly why they are refused. This is a
+//! line-by-line port of the Elm, it is pinned against twelve real hardware
+//! captures, and the shape being the same shape as the original is the property
+//! that lets the two be diffed by eye when a capture ever disagrees. A tidier
+//! loop that is wrong is worth less than an ugly loop that is right.
+//!
+//! Rule 3 is about the *encode/decode internals*, so this allow does not travel:
+//! it names the three lints and stays in this file.
+#![allow(clippy::manual_div_ceil, clippy::needless_range_loop, clippy::unnecessary_cast)]
 
 pub fn encode7(data: &[u8]) -> Vec<u8> {
     let groups = (data.len() + 6) / 7;

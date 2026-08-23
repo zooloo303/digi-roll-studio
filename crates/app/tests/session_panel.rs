@@ -411,7 +411,10 @@ fn a_box_whose_port_is_back_is_not_reported_as_lost() {
     script.borrow_mut().open_answers.push(Some(path));
 
     let mut s = default_session();
-    assert!(p.open(&mut s, &[port.clone()], &[port]));
+    // One list, handed to both ends: the port is an input *and* an output here,
+    // which is what the clone used to say less directly.
+    let ports = [port];
+    assert!(p.open(&mut s, &ports, &ports));
     assert!(p.lost_ports().is_empty(), "the port is there, so nothing was lost");
 }
 

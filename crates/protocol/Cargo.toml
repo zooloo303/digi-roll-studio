@@ -10,3 +10,6 @@ serde = { version = "1", features = ["derive"] }
 # The backup stash's index.json — the metadata a restore list shows that the
 # `.syx` bytes don't cheaply give. Already in the workspace lockfile via `core`.
 serde_json = "1"
+
+[lints]
+workspace = true

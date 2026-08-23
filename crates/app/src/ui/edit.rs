@@ -1339,7 +1339,7 @@ fn clear_source(session: &mut Session, selection: Selection) {
 /// touched is the least surprising one.
 fn length_of(session: &Session, selection: Selection, selected: &[u32]) -> f64 {
     crate::ui::tracks::track(session, selection)
-        .and_then(|t| t.notes.iter().filter(|n| selected.contains(&n.id)).next_back())
+        .and_then(|t| t.notes.iter().rfind(|n| selected.contains(&n.id)))
         .map(|n| n.len)
         .unwrap_or(1.0)
 }
@@ -1356,7 +1356,7 @@ fn trim(len: f64) -> String {
 /// `length_of` has one job — but it is what a test asserts against.
 #[cfg(test)]
 fn last_selected<'a>(track: &'a Track, selected: &[u32]) -> Option<&'a digi_core::Note> {
-    track.notes.iter().filter(|n| selected.contains(&n.id)).next_back()
+    track.notes.iter().rfind(|n| selected.contains(&n.id))
 }
 
 #[cfg(test)]

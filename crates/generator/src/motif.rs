@@ -92,6 +92,17 @@ pub fn make_motif(rng: &mut Rng, opts: MakeMotifOpts) -> Vec<MotifNote> {
             // Mostly steps, occasionally a leap — and pulled back toward the
             // centre when the walk has wandered, so a motif keeps a shape
             // instead of drifting.
+            //
+            // **Two of these arms return `1` and clippy would like them merged.
+            // Do not merge them by reordering.** They are two different reasons
+            // to go up — forced back toward the centre, and a coin flip — and the
+            // coin flip *draws from the rng*. Any rewrite that changes when
+            // `chance` is called changes how many numbers this walk consumes, and
+            // every seeded pattern in every genre comes out different: the seed
+            // is the promise this generator makes. `||` short-circuits and would
+            // preserve the draw, but it also hides that the two cases are
+            // unrelated, so the arms stay separate and the lint stays off.
+            #[allow(clippy::if_same_then_else)]
             let dir = if deg > opts.spread {
                 -1
             } else if deg < -opts.spread {
@@ -104,6 +115,11 @@ pub fn make_motif(rng: &mut Rng, opts: MakeMotifOpts) -> Vec<MotifNote> {
             deg += dir * if chance(rng, 0.25) { 2 } else { 1 };
         }
         let next = chosen_steps.get(i + 1).map(|(s, _)| *s).unwrap_or(opts.window);
+        // `.min().max()` rather than `clamp`, for the reason
+        // `protocol::pattern::micro_steps_to_byte` gives at length: the two differ
+        // on `NaN`, and this chain absorbs one into a legal note length where
+        // `clamp` would carry it into `MotifNote::len` and out to a box.
+        #[allow(clippy::manual_clamp)]
         let len = (f64::from(next) - f64::from(step)).min(4.0).max(0.5);
         out.push(MotifNote { step, deg, len });
     }
@@ -161,6 +177,11 @@ pub fn develop_motif(motif: &[MotifNote], variant: MotifVariant, window: u32, rn
 /// decides how far the rest travel: low keeps repeating and transposing,
 /// high reaches for inversions, retrogrades and displacement.
 pub fn motif_plan(rng: &mut Rng, phrases: u32, looseness: f64) -> Vec<MotifVariant> {
+    // `.max().min()` and not `clamp`, the third instance of the same argument:
+    // this chain turns a `NaN` looseness into 0.0 (all near variants), where
+    // `clamp` would carry it into every weight comparison below and pick by
+    // accident. See `protocol::pattern::micro_steps_to_byte`.
+    #[allow(clippy::manual_clamp)]
     let loose = looseness.max(0.0).min(100.0) / 100.0;
     let near: [(MotifVariant, f64); 3] =
         [(MotifVariant::Repeat, 3.0), (MotifVariant::Transpose, 3.0), (MotifVariant::Sparse, 1.0)];
@@ -192,6 +213,11 @@ pub fn motif_plan(rng: &mut Rng, phrases: u32, looseness: f64) -> Vec<MotifVaria
 /// passing notes, which Stage 3's lead generator adds. Ordered by step so
 /// what survives still reads as the motif.
 pub fn thin_motif(motif: &[MotifNote], density: f64, rng: &mut Rng) -> Vec<MotifNote> {
+    // `.max().min()`, for the third time in this file and the same reason: a
+    // `NaN` density becomes 0.0 here — thin everything — where `clamp` would
+    // leave it `NaN` and every comparison below would answer false, keeping
+    // everything. See `protocol::pattern::micro_steps_to_byte`.
+    #[allow(clippy::manual_clamp)]
     let keep_all = density.max(0.0).min(100.0) / 100.0;
     if motif.len() <= 1 {
         return motif.to_vec();
@@ -233,7 +259,7 @@ mod tests {
         let weights = dnb_lead_weights();
         for seed in 0..30u32 {
             let m = make_motif(&mut Rng::new(seed), MakeMotifOpts { notes: (3, 5), window: 8, weights: &weights, spread: 2 });
-            assert!(m.len() >= 1 && m.len() <= 5);
+            assert!(!m.is_empty() && m.len() <= 5);
             for n in &m {
                 assert!(n.step < 8);
                 assert!(n.len > 0.0);

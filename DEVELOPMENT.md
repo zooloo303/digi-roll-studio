@@ -15,12 +15,39 @@ That is the whole reason this file exists.
 
 ```sh
 cargo build --release
-cargo test --workspace          # no system dependencies, no hardware
+cargo test --workspace              # no system dependencies, no hardware
+cargo clippy --workspace --all-targets   # clean as of 2026-08-23; keep it that way
 cargo run -p digi_roll_studio
 ```
 
 The protocol suites read `.syx` captures from `crates/protocol/tests/fixtures/`,
 committed so the tests run anywhere.
+
+**Clippy is part of the loop as of 2026-08-23**, and it was installed late enough
+to be worth saying what it is for here. It runs clean, which is the only state in
+which it is worth running at all: forty warnings nobody triages is forty warnings
+that hide the forty-first. The settled policy is in the root `Cargo.toml` —
+three lints allowed workspace-wide with reasons, everything else at its default —
+and every exception beyond those three is a per-site `#[allow]` carrying its
+argument in a comment.
+
+Two things that first run established, both worth keeping in mind before
+"fixing" anything it reports:
+
+- **It found one real defect**, `absurd_extreme_comparisons` in `midi::device`:
+  `next_msg_id >= 0xffff` on a `u16`, which reads as a range guard and can only
+  mean an overflow guard. The behaviour was right and the code said something
+  else — and the same two lines were copied into a test that claimed to mirror
+  them, which is lesson 5 again. Now one `next_msg_id` function that both call.
+- **Several of its suggestions would change behaviour.** `.min().max()` on `f64`
+  is not a worse spelling of `clamp`: the two disagree on `NaN`, and four sites
+  here rely on the chain *absorbing* one — see
+  `protocol::pattern::micro_steps_to_byte`, which is on the write path to a box.
+  `PLAN.md` §7 rule 3 covers the rest: `protocol::sevenbit` and
+  `protocol::pattern` refuse three cosmetic lints each, because a byte-for-byte
+  port's shape is what makes it diffable against the JS when a capture disagrees.
+  **A lint is an opinion, and this codebase has already argued the other side in
+  writing.**
 
 **Where expected values come from.** Every phase so far derived them from the JS
 original ([digi-roll](https://github.com/zooloo303/digi-roll)) *before* writing
@@ -430,6 +457,38 @@ back in 1 KB pieces and does not reassemble them — which would have shredded e
 pattern read — except `midi::sysex_stream` already accumulates F0…F7 across
 callbacks because *ALSA* does the same thing. That was written for a platform
 nobody here runs either, and it is the only reason the read path needed no work.
+
+### 10. A new feature's tests are where the *old* feature's bugs come out
+
+Song mode (2026-08-22) needed no change to how a box moves onto a pattern — a row
+names a scene, and `commit_scene` had been switching scenes since Phase 4. So the
+walker's first test that switched between two patterns whose same-numbered track
+carried a different SCALE was not testing `commit_scene` at all. It failed anyway,
+and the bug was four months old: a cursor's deadline was `next_step ×
+step_seconds`, which reads the *incoming* pattern's step length off the *outgoing*
+pattern's step count. A 2x track switching onto a 1x one four steps in put the
+incoming pattern's step 1 at eight steps — half a bar of silence, in pattern mode,
+reachable by clicking the scene pill.
+
+**Nothing in the scene tests could have caught it, because every one of them
+switched between patterns whose tracks were at the same SCALE.** The fixtures were
+built to test switching, so they varied the thing under test and held the rest
+still — which is what a good fixture does, and exactly why the gap survived. Song
+mode found it by switching scenes for a different reason: it does it constantly,
+against whatever the rows happen to name.
+
+The lesson is not "write more tests". It is that **a feature built on top of an
+existing one is the first thing that ever uses that one at volume**, so the hour
+after a new suite goes green is the cheapest hour there will ever be for finding
+what the old suite was holding still. Both halves are now pinned: the song test
+that found it, and a scene test in pattern mode that states it without a song
+anywhere near it.
+
+The corollary is about where the fix went. The tempting repair was to special-case
+the SCALE change inside `commit_scene`. What it actually needed was a second field
+— `TrackCursor::origin_at`, *when* this pattern started, beside `origin`'s *which
+step* — because the counter was only ever half a position. A bug that wants a
+special case usually wants a missing field.
 
 ---
 

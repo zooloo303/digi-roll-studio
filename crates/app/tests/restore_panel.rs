@@ -60,7 +60,7 @@ fn tmp_stash(tag: &str) -> Stash {
 /// payloads go on and come off a box.
 fn store(stash: &Stash, index: u8, kind: &str, second: u32) -> StashEntry {
     let at = Timestamp { second, ..NOW };
-    let file = pattern_kit_file("digitakt2", family("digitakt2"), index, &vec![0u8; 64], kind, at);
+    let file = pattern_kit_file("digitakt2", family("digitakt2"), index, &[0u8; 64], kind, at);
     stash
         .stash(
             &file,
@@ -221,7 +221,7 @@ fn one_boxs_block_never_offers_another_boxs_capture() {
     // A Digitone II backup in the same store — which is what the store looks like
     // the moment anyone writes to both boxes.
     let theirs =
-        pattern_kit_file("digitone2", family("digitone2"), 0, &vec![0u8; 64], "backup", NOW);
+        pattern_kit_file("digitone2", family("digitone2"), 0, &[0u8; 64], "backup", NOW);
     stash.stash(&theirs, &BackupContext::default()).expect("a writable directory");
 
     let ctx = egui::Context::default();

@@ -15,3 +15,6 @@ digi_protocol = { path = "../protocol" }
 # pkg-config. It is not pure Rust (PLAN.md §3 says so and is wrong); the point
 # is that the backends ship with the OS. SysEx in and out are fully supported.
 midir = "0.11"
+
+[lints]
+workspace = true

@@ -258,14 +258,14 @@ pub fn channel_note(channel_1_based: u16) -> Option<(&'static str, &'static str)
 }
 
 /// The track `selection` names, in the pattern its device plays right now.
-pub fn track<'a>(session: &'a Session, selection: Selection) -> Option<&'a Track> {
+pub fn track(session: &Session, selection: Selection) -> Option<&Track> {
     let device = session.devices.get(selection.device)?;
     session.current_pattern(device.id)?.track(selection.track)
 }
 
 /// The same track, to edit. Resolved through the scene rather than remembered,
 /// so switching scene moves the roll onto the pattern that is now playing.
-pub fn track_mut<'a>(session: &'a mut Session, selection: Selection) -> Option<&'a mut Track> {
+pub fn track_mut(session: &mut Session, selection: Selection) -> Option<&mut Track> {
     let device = session.devices.get(selection.device)?.id;
     let slot = session.slot_in_scene(session.current_scene, device)?.slot();
     session.device_mut(device)?.pattern_mut(slot)?.track_mut(selection.track)
@@ -528,7 +528,9 @@ fn step_density(track: &Track) -> Vec<bool> {
         return Vec::new();
     }
     let len = track.length_steps as f64;
-    let n = (track.length_steps as usize).min(16).max(1);
+    // Integers, so `clamp` and `.min().max()` are the same thing — unlike the two
+    // `f64` chains that keep their `#[allow]`.
+    let n = (track.length_steps as usize).clamp(1, 16);
     let mut on = vec![false; n];
     for note in &track.notes {
         let idx = ((note.step / len) * n as f64).floor().clamp(0.0, (n - 1) as f64) as usize;

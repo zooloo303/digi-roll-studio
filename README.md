@@ -49,7 +49,7 @@ socket. The checkbox is at the bottom of BOXES.
 |---|---|
 | SysEx seven-bit, framing, pattern decode/encode | ported and **verified** against real DT2/DN2 captures |
 | Trig conditions, p-lock lanes, pattern settings | ported both directions, against the committed captures |
-| Core model | several boxes, 16 tracks each, scenes — `PLAN.md` §2 |
+| Core model | several boxes, 16 tracks each, scenes, and a song of scenes — `PLAN.md` §2 |
 | Safe write | all five rules as one function, and **run on hardware** — one track of one slot, from the app's own button, verified byte-identical on a DT2 and a DN2 |
 | Backups and restore | a local store of the last 50 patterns overwritten, plus 10 pre-restore snapshots; a store failure aborts the write. **A restore has been run on both boxes**, byte-identical |
 | MIDI I/O | on `midir`; enumeration, identity handshake, dump reads and writes, all **run against both boxes** |
@@ -59,7 +59,7 @@ socket. The checkbox is at the bottom of BOXES.
 | Harmony | key, scales, chord draw with a ghost, harmonise. A four-note chord written to a box and fetched back intact |
 | Generator | seeded, nine modules, per-genre; a six-row arrangement has played and been synced to both boxes byte-identical |
 | Copy-track | ported, translating p-lock lanes between boxes by parameter name — **no caller yet**, so no UI can copy a track |
-| Song mode | **not built** — `Scene` has no `chain` field. A point release |
+| Song mode | rows of scenes with play count, length, mute and an END row, plus the `LST` trig condition it makes answerable. **Nothing in it has met a box or a screen yet** — `PLAN.md` §9 has the list. Per-row tempo is deliberately not built: the session has one clock |
 | Platforms | macOS and Windows are both **hardware-tested from their own installer** — on Windows a DN2 was auto-connected and written to; a DT2 has not met a Windows build. Linux is untested |
 
 **What is left before MVP1:** crash-safety — saving is manual, so a crash still

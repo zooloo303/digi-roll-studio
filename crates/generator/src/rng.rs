@@ -28,6 +28,11 @@ impl Rng {
     }
 
     /// The next draw, in `[0, 1)`.
+    // `next` is the name every caller in this crate already uses and the name the
+    // JS `rng()` has; it is not an `Iterator`, and making it one would hand out
+    // `map`/`take`/`collect` over an infinite deterministic stream, which is a
+    // much easier thing to misuse than a method that shares a name.
+    #[allow(clippy::should_implement_trait)]
     pub fn next(&mut self) -> f64 {
         self.a = self.a.wrapping_add(0x6d2b79f5);
         let t0 = self.a;

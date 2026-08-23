@@ -271,6 +271,14 @@ pub struct Harmony {
     pub chord: ChordSettings,
 }
 
+// **Written out rather than derived, and clippy is told so on purpose.** A derive
+// would produce these exact values today, which is what clippy has noticed — but
+// the values are a decision (untinted until asked, never a constraint), and this
+// is where that decision is recorded and where it would be changed. Deriving would
+// leave the comment attached to nothing. `TransportState` in `engine::transport`
+// makes the same call for the same reason, from the other direction: there the
+// derive would have been actively wrong.
+#[allow(clippy::derivable_impls)]
 impl Default for Harmony {
     fn default() -> Self {
         // C, no scale: the roll is untinted until someone chooses a key, which is

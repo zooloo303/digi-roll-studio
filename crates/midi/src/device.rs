@@ -224,6 +224,33 @@ fn plan_store(
 /// One received SysEx frame: the bytes exactly as the box sent them.
 type Frame = Vec<u8>;
 
+/// The first message id, and the one the counter comes back to.
+///
+/// elk-herd starts here to stay clear of Transfer's ids, and this is that number
+/// rather than a literal in three places — the constructor, the wrap, and the
+/// test that pins the wrap.
+const FIRST_MSG_ID: u16 = 20000;
+
+/// The id after `current`: one more, or back to [`FIRST_MSG_ID`] at the top of
+/// the range.
+///
+/// **A free function so the rule lives once.** It was two lines of arithmetic
+/// inside `take_msg_id` and the same two lines copied into a test that said it
+/// "mirrors `take_msg_id`" — which is `DEVELOPMENT.md` lesson 5 exactly: a copy
+/// can be right about a rule that has since changed. The test now calls this.
+///
+/// `checked_add` rather than `>= 0xffff`, which is what it said before and what
+/// clippy refuses: on a `u16` that comparison can only mean `== u16::MAX`, so it
+/// read as guarding a range when it was guarding an overflow. Same ids, in the
+/// same order — the behaviour is elk-herd's and is not up for renegotiation.
+fn next_msg_id(current: u16) -> u16 {
+    match current.checked_add(1) {
+        Some(next) => next,
+        None => FIRST_MSG_ID,
+    }
+}
+
+
 /// A dump message as received, keeping the original bytes. An unknown box's
 /// version bytes and framing are evidence, so captures keep the box's own
 /// encoding rather than a re-encoding of the payload.
@@ -291,8 +318,7 @@ impl ElektronDevice {
             conn_out,
             rx,
             _conn_in: conn_in,
-            // elk-herd starts here to stay clear of Transfer's ids.
-            next_msg_id: 20000,
+            next_msg_id: FIRST_MSG_ID,
             identity: None,
             port_name,
         })
@@ -300,7 +326,7 @@ impl ElektronDevice {
 
     fn take_msg_id(&mut self) -> u16 {
         let id = self.next_msg_id;
-        self.next_msg_id = if self.next_msg_id >= 0xffff { 20000 } else { self.next_msg_id + 1 };
+        self.next_msg_id = next_msg_id(id);
         id
     }
 
@@ -584,12 +610,15 @@ mod tests {
 
     #[test]
     fn msg_ids_advance_and_wrap_clear_of_transfers_range() {
-        // Mirrors `take_msg_id` without needing a port to exist.
-        let mut next: u16 = 0xffff;
-        let id = next;
-        next = if next >= 0xffff { 20000 } else { next + 1 };
-        assert_eq!(id, 0xffff);
-        assert_eq!(next, 20000);
+        // `take_msg_id`'s own arithmetic, called rather than copied: this test
+        // used to restate it and could therefore have gone on passing about a
+        // rule the real counter no longer followed.
+        assert_eq!(next_msg_id(FIRST_MSG_ID), FIRST_MSG_ID + 1);
+        assert_eq!(next_msg_id(0xfffe), 0xffff);
+        // The top of the range comes back to the start, not to zero — an id
+        // below `FIRST_MSG_ID` is Transfer's to use.
+        assert_eq!(next_msg_id(0xffff), FIRST_MSG_ID);
+        assert!(next_msg_id(0xffff) >= FIRST_MSG_ID);
     }
 
     // --- the write path -------------------------------------------------------

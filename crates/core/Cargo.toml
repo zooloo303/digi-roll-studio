@@ -17,3 +17,6 @@ serde_json = "1"
 # core never parses a byte, per PLAN.md §3. The dependency is acyclic: protocol
 # knows nothing of core.
 digi_protocol = { path = "../protocol" }
+
+[lints]
+workspace = true

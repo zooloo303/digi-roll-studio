@@ -9,3 +9,6 @@ rust-version.workspace = true
 serde = { version = "1", features = ["derive"] }
 digi_core = { path = "../core" }
 digi_protocol = { path = "../protocol" }
+
+[lints]
+workspace = true

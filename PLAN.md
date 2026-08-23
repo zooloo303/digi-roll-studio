@@ -71,7 +71,11 @@ digi-roll's hardware-verified behaviour rather than the port's own output.
   not copying a track. The last item in Phase 6.
 - **The track headers are short of §5's own words**: no level meter, no port
   shown, no device colour inherited by the tracks.
-- **Song mode does not exist.** `Scene` has no `chain` field. Phase 12.
+- ~~**Song mode does not exist.**~~ Built 2026-08-22: `core::song`, the walker in
+  `Scheduler`, and the rail's fifth panel. **Nothing in it has met a box or a
+  screen** — see §9, which is where that gap is the whole point. What is knowingly
+  left out is ROW TEMPO (§2's argument) and syncing a song back to a box's own
+  song slots, which is the next session's work.
 - **Crash-safety.** Saving is manual; there is no autosave, so a crash takes the
   session.
 - **MIDI import reads only the first note-bearing track**, and cannot offset it.
@@ -131,6 +135,22 @@ pub struct Scene {
     pub slots: HashMap<DeviceId, PatternRef>,   // bank + pattern index per box
 }
 
+/// The arrangement: rows of scenes, played in order. `Session::song` is an
+/// `Option`, so a project written before song mode loads and saves unchanged.
+pub struct Song {
+    pub name: String,
+    pub rows: Vec<SongRow>,      // up to 99, as the box's SONG ROW range is
+    pub end: EndAction,          // Loop | Stop — the box's END row
+}
+
+pub struct SongRow {
+    pub label: String,           // LABEL: Intro, Verse, Fill, or a pattern name
+    pub scene: usize,            // PTN — a scene, not a pattern. See below
+    pub repeats: u16,            // ROW PLAY COUNT
+    pub length_steps: Option<u16>,          // ROW LENGTH; None = the scene's cycle
+    pub muted_tracks: BTreeMap<DeviceId, u32>,  // ROW MUTE, a mask per box
+}
+
 pub struct Pattern {
     pub name: String,
     pub swing: u8,               // 50..=80. Per pattern — re-times this box's tracks
@@ -168,6 +188,32 @@ Decisions behind that shape:
   box, so the DT2 and DN2 can swing differently and write-back stays a
   byte-for-byte match. Note the consequence: `Pattern` has no `tempo_bpm`, but
   the DT2/DN2 pattern struct *does* (`pattern.tempo_offset`) — see §7 rule 8.
+- **A song row names a scene, not a pattern.** On the box a row names one
+  pattern on one box; a scene here is already one pattern per box chosen
+  together, so a row that names a scene moves the DT2 and the DN2 at the same
+  boundary and needs no second pattern-resolution path. `Scheduler::commit_scene`
+  stays the only thing in the app that moves a box onto a pattern.
+- **ROW LENGTH counts reference steps — 1/16 at 1x, session-wide** — because the
+  box has one length per pattern and this app has per-track lengths and per-track
+  SCALE. `None` means *the scene's own cycle*, which is a per-track fact once
+  SCALE is involved and so is answered by the engine
+  (`scheduler::scene_cycle_seconds`) rather than written into the model. An
+  untouched row therefore behaves exactly like a queued scene change, and a
+  shortened one cuts every track mid-pattern, which is what a fill row is.
+- **ROW MUTE substitutes for the pattern's own mute, and does not stack with
+  it.** A row can silence a track the pattern plays *and* sound one the pattern
+  mutes. A box absent from the mask inherits — a third state, and not the same as
+  a mask of zero, which is a user who has unmuted everything on that row and
+  means it. Solo is not part of the substitution: it is the desk, not the
+  arrangement.
+- **ROW TEMPO is not modelled, and the SONG panel shows the session tempo as a
+  read-only report instead.** The engine dates every event from one start instant
+  as `next_step × step_seconds`, so moving `bpm` mid-run rescales the whole
+  timeline retroactively; per-row BPM needs a piecewise tempo map through
+  `engine::time`, the scheduler's cursor deadlines and clock counter, and the
+  transport's elapsed→steps publish. That is a bigger job than the chaining, and
+  it would also fix the existing mid-play `SetTempo` rescale. Decided
+  2026-08-22 — the column is visibly inherited rather than missing.
 - **Scenes are how the boxes stay together.** Each box keeps its own slot bank,
   addressed the way the box addresses it. A scene names one slot per box;
   switching scene switches all of them at the next pattern boundary, which is how
@@ -294,6 +340,23 @@ sequencers side by side; it is one event queue whose entries carry a port.
   must not be fought over.
 - `midir` connections are one per port and events are batched per port per
   wake-up, so a tick is N sends, not N × tracks.
+- **A song row's boundary is taken in the same walk as the trigs and the queued
+  scene**, and after the queued scene, so a switch the user asked for and a row
+  boundary on the same instant leave the song in charge. A repeat of a row does
+  *not* re-commit its scene unless the row carries an explicit ROW LENGTH: a row
+  playing four times is four passes of one pattern, as on the box, so `1ST` fires
+  once — while a truncated row genuinely re-launches its patterns each repeat and
+  `1ST` genuinely fires again. `END: STOP` is recorded as a moment and the
+  transport turns it into the stop; the scheduler has no `Instant` and cannot stop
+  anything.
+- **A cursor is anchored to *when* its pattern started, not only to which step**
+  (`TrackCursor::origin_at`, 2026-08-22). A step's length is per track — SCALE —
+  so dating events as `next_step × step_seconds` read the incoming pattern's step
+  length off the outgoing pattern's step count: a 2x track switching onto a 1x one
+  four steps in put the incoming pattern's step 1 at eight steps, half a bar of
+  silence. **Pre-existing, and audible in pattern mode with nothing but the scene
+  pill involved** — found by a song-mode test, because song mode switches scenes
+  constantly.
 - **Scene change is a queued command**, taken at the next pattern boundary —
   for a session, the boundary of the *longest* track across all devices in the
   outgoing scene, so polymetric tracks are not cut mid-cycle. An "immediate"
@@ -324,7 +387,7 @@ RNG stays injectable so tests are deterministic.
 | `PRE` | not simulable | **simulated** — last conditional result on this track |
 | `NEI` | not simulable | **simulated** — last conditional result on track *n−1* **of the same device**; track 1 has no neighbour and plays |
 | `FILL` | no FILL button | **simulated** — a FILL toggle in the transport |
-| `LST` | unknowable | still unsimulated until pattern chaining exists |
+| `LST` | unknowable | **simulated in song mode** — the track's last pass before the row changes. Pattern mode has no answer and the trig plays |
 
 **Anything unsimulated plays, so the sequencer is never quieter than the box** —
 keep that rule.
@@ -359,9 +422,9 @@ rail │ tool panel │ PATTERNS │ SCENES │ Setup
 ```
 
 **Left is what you are composing, right is what you are composing on.** The rail
-holds the editing tools — Edit, Harmony, Generate, and Session, the only place
-this app can save what you have been doing — one panel open at a time, clicking
-the open one closing it. The right panel holds everything per-device: ports,
+holds the editing tools — Edit, Harmony, Generate, Song, and Session, the only
+place this app can save what you have been doing — one panel open at a time,
+clicking the open one closing it. The right panel holds everything per-device: ports,
 clock, identity, and the fetch/write-back, because a transfer is aimed at one
 box's slot and belongs beside that box rather than beside the notes.
 
@@ -387,6 +450,14 @@ The elements:
   inherited by its tracks is what would make the roll readable across boxes.
 - **Scenes pane** — the §2 scenes, showing which slot each box is on and what is
   queued.
+- **SONG panel** — the arrangement, in the two halves the box merges because it
+  has an encoder under each column and this has a mouse: `ROWS`, one monospace
+  line per row (playhead, number, label, scene, ×plays, length, mute mark), and
+  `ROW`, every field of the *selected* row with real controls. Clicking a row
+  selects it; the `▶` beside it moves the playhead — the box's `[UP]`/`[DOWN]`
+  are a selection, not a jump. The PTN/SONG mode pill is in the transport bar's
+  zone 5 beside the scene, and the same toggle is at the top of the panel: the
+  mode belongs beside PLAY and the arrangement belongs beside the rows.
 - **Piano roll** for the selected track. Ghosting the other tracks behind it is
   parked.
 - **Trig lane** under the roll — per-step PROB/FILL/COND, ported from
@@ -459,7 +530,7 @@ has the lessons; this is the order.
 | **9** | the Edit panel, and the last four roll gestures | ✅ 2026-08-18 — velocity reachable by hand for the first time |
 | **10** | the desk: Setup, auto-connect, mass send | ✅ 2026-08-18 |
 | **11** | the Harmony panel | ✅ 2026-08-19 — `js/chords.js` ported; a four-note chord written to a box and fetched back intact |
-| **12** | song mode: scene chaining | **not built** — `Scene` has no `chain` field. A point release |
+| **12** | song mode: scene chaining | ✅ 2026-08-22 — rows of scenes with play count, length, mute and END; `LST` simulable at last; **ROW TEMPO deliberately not built** (§2) |
 | **13** | pattern progress indicators, by track | ✅ 2026-08-19 |
 
 Then, all on hardware or on a screen rather than in a suite: the Setup-panel and
@@ -478,6 +549,30 @@ registers lifted an octave, every genre's basslines roughly doubled in length,
 and ↻ made to do the thing its tooltip had always claimed. `DEVELOPMENT.md`
 lesson 7 has the zoom and the ↻; both are that lesson's shape, and the ↻ is a
 form of it this project had not seen.
+
+**v0.1.3 (2026-08-23) is the phase release the list had been missing** — song
+mode, which is phase 12 and the last unbuilt phase in §6, plus the two things
+building it turned up. It is the first release in this repo written down *before*
+it was tagged rather than after, which is the correction v0.1.2's own entry asked
+for.
+
+- **Song mode**, §2's `Song` and the walker in `Scheduler`: rows of scenes with
+  ROW PLAY COUNT, ROW LENGTH, ROW MUTE and an END row, a SONG panel in the rail's
+  fifth slot, and the PTN/SONG pill in the transport bar. **Confirmed working by
+  Neil on 2026-08-23** — "pretty much exactly as expected" — which is this
+  project's own standard of evidence and the only kind §9 accepts. ROW TEMPO is
+  deliberately absent and the panel says so.
+- **`LST` stopped being unsimulable**, because a row knows when it ends. §4's
+  condition table had carried it as unsimulated "until pattern chaining exists"
+  since Phase 4.
+- **A four-month-old scene-switch bug**, found by a song-mode test and audible in
+  pattern mode: `TrackCursor::origin_at`. `DEVELOPMENT.md` lesson 10 is its
+  general form, and it is the lesson this release is actually about.
+- **Clippy, installed and clean** (2026-08-23) — one deny-level defect in
+  `midi::device`, about ten real tidy-ups, and eleven refusals that are now
+  written down as refusals rather than as warnings nobody reads. `DEVELOPMENT.md`
+  "Working on this" has the policy; the root `Cargo.toml` has the three
+  workspace-wide exceptions and their reasons.
 
 **The decisions worth carrying forward**, each of which changed the shape of the
 thing rather than a line of it:
@@ -656,6 +751,31 @@ edge of a 320px column**, and **the Session panel's close-guard modal and the
 Backups list's `Export…`** are all closed. The hedge is kept on purpose: a sweep
 is weaker evidence than an itemised check, and it is the right strength of claim
 for what happened.
+
+**Song mode is the whole of what 2026-08-22 added and none of it has been seen or
+heard.** It ships with 27 new tests across `core`, `engine` and the link, and that
+is exactly the evidence this section exists to discount. Owed, and itemised so it
+cannot be closed by a sweep:
+
+- **The SONG panel drawn at all**, at the tool panel's pinned 330px: the row
+  list's monospace columns lining up, `▶` in the playhead column (it renders in
+  the transport bar, so this is the same glyph in a new place), the painted
+  row-order arrows, and the 16-wide mute grid wrapping rather than clipping.
+- **A row list long enough to scroll** — the `ScrollArea` is capped at 190px and
+  99 rows is a real number.
+- **The pointer moving on hardware**: two boxes, a song of three rows, and the
+  playhead mark arriving when the boxes arrive rather than when the mouse does.
+- **`END: STOP` heard**, which is the one behaviour here that could be *heard*
+  going wrong — the transport stopping while a note is held is the failure a user
+  cannot fix from the UI, and `nothing_left_sounding` asserts it against a
+  recording sink rather than against a box.
+- **`LST` on a box**, against the same trig on the same pattern in song and
+  pattern mode. The rule that anything unsimulated plays means a mistake here is
+  a trig playing when it should not, which is quieter to notice than silence.
+- **The `TrackCursor::origin_at` fix in the case that found it**: a scene switch
+  between two patterns whose same-numbered track carries a different SCALE. A test
+  pins the second, and half a bar of silence is the kind of thing a test can pin
+  and an ear should confirm.
 
 What is carried forward as still owed a look:
 

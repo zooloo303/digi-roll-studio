@@ -508,14 +508,16 @@ mod tests {
         ctx.parts.remove(1); // drop the chords row
         assert_eq!(ctx.parts[0].id, bass_id);
         assert_eq!(ctx.parts[1].id, lead_id);
-        let mut new_part = new_part(Role::Chords, 5, 40, 4);
+        // `Part` is `Copy`, so this reads as the copy it is. The two lines that
+        // used to follow the asserts — a write to `variation` and a `let _`,
+        // there only to justify a `mut` the `clone()` had made necessary — went
+        // with it.
+        let new_part = new_part(Role::Chords, 5, 40, 4);
         let new_id = new_part.id;
-        ctx.parts.insert(0, new_part.clone());
+        ctx.parts.insert(0, new_part);
         assert_eq!(ctx.parts[0].id, new_id);
         assert_eq!(ctx.parts[1].id, bass_id);
         assert_eq!(ctx.parts[2].id, lead_id);
-        new_part.variation = 1; // silence an unused-mut style complaint on some toolchains
-        let _ = new_part;
     }
 
     #[test]
@@ -548,10 +550,14 @@ mod tests {
 
     #[test]
     fn switching_genre_keeps_what_is_yours() {
-        let mut before = GenContext::default();
-        before.seed = 777;
-        before.seed_locked = true;
-        before.feel = Feel { motion: 90, looseness: 5, humanize: 50 };
+        let mut before = GenContext {
+            seed: 777,
+            seed_locked: true,
+            feel: Feel { motion: 90, looseness: 5, humanize: 50 },
+            ..GenContext::default()
+        };
+        // These two stay pokes: they edit an element *inside* the defaulted
+        // `parts`, which an initializer cannot reach without rebuilding the row.
         before.parts[2].on = false;
         before.parts[2].density = 20;
         let after = before.for_genre(GenreId::Electro, false);
