@@ -14,6 +14,7 @@ use serde::{Deserialize, Serialize};
 use crate::chords::Harmony;
 use crate::device::{model_for_slug, Device, DeviceId, DeviceModel, PortEnd, PortRef};
 use crate::model::{ModelError, Pattern, Track};
+use crate::song::{Song, SongRow};
 
 /// A pattern slot, addressed the way the box addresses it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -186,6 +187,17 @@ pub struct Session {
     /// line `js/main.js` draws around its own snapshots.
     #[serde(default)]
     pub harmony: Harmony,
+    /// The arrangement: rows of scenes, played in order. `None` until somebody
+    /// builds one, which is what lets a project written before song mode load
+    /// unchanged and what makes "is there a song at all?" a single question the
+    /// transport can ask.
+    ///
+    /// Song mode is a *transport* setting rather than a field here, for the same
+    /// reason the sounding scene is: which arrangement exists is a property of
+    /// the session, and whether the engine is walking it is a property of the
+    /// engine. See `EngineLink::set_song_mode`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub song: Option<Song>,
 }
 
 impl Default for Session {
@@ -197,6 +209,7 @@ impl Default for Session {
             scenes: vec![Scene::new("Scene 1")],
             current_scene: 0,
             harmony: Harmony::default(),
+            song: None,
         }
     }
 }
@@ -225,6 +238,12 @@ impl Session {
         self.devices.retain(|d| d.id != id);
         for scene in &mut self.scenes {
             scene.slots.remove(&id);
+        }
+        // A song row's mute mask is per box, so it goes with the box. A re-added
+        // device gets a fresh id and would otherwise inherit the mutes of the one
+        // it replaced.
+        if let Some(song) = &mut self.song {
+            song.device_removed(id);
         }
     }
 
@@ -273,6 +292,13 @@ impl Session {
             self.current_scene -= 1;
         }
         self.current_scene = self.current_scene.min(self.scenes.len() - 1);
+        // Every song row above the hole shifts down with the list, and a row that
+        // named the scene that just went lands on the one that took its place.
+        // Left alone, a row would name a scene that no longer exists, and the
+        // song would stall at it.
+        if let Some(song) = &mut self.song {
+            song.scene_removed(index, self.current_scene);
+        }
         true
     }
 
@@ -320,6 +346,60 @@ impl Session {
             .max()
     }
 
+    /// The arrangement, if this session has one.
+    pub fn song(&self) -> Option<&Song> {
+        self.song.as_ref()
+    }
+
+    /// The arrangement, creating an empty one if there is none.
+    ///
+    /// The only thing that ever makes a song exist. `None` has to keep meaning
+    /// *nobody has built an arrangement*, so a read must never conjure one: that
+    /// is the difference between a project that saves a `song` key and one that
+    /// stays byte-identical to what a pre-song-mode build wrote.
+    pub fn song_mut(&mut self) -> &mut Song {
+        self.song.get_or_insert_with(Song::default)
+    }
+
+    /// A row of the arrangement.
+    pub fn song_row(&self, index: usize) -> Option<&SongRow> {
+        self.song.as_ref()?.row(index)
+    }
+
+    /// Which scene a song row plays, or `None` for a row naming a scene this
+    /// session does not have.
+    pub fn scene_of_row(&self, index: usize) -> Option<usize> {
+        let row = self.song_row(index)?;
+        (row.scene < self.scenes.len()).then_some(row.scene)
+    }
+
+    /// Add a row playing the scene being edited, taking each box's mute state
+    /// from the pattern it plays there — the box's "the row's mute state
+    /// initially reflects the pattern's mute state".
+    ///
+    /// Returns the new row's index, or `None` when the song is full.
+    pub fn add_song_row(&mut self, scene: usize) -> Option<usize> {
+        let mut row = SongRow::new(scene.min(self.scenes.len().saturating_sub(1)));
+        // Read the mutes before taking the song mutably: both borrow `self`.
+        let mutes: Vec<(DeviceId, Vec<bool>)> = self
+            .devices
+            .iter()
+            .filter_map(|d| {
+                let pattern = self.pattern_in_scene(row.scene, d.id)?;
+                Some((d.id, pattern.tracks().iter().map(|t| t.mute).collect()))
+            })
+            .collect();
+        for (device, muted) in mutes {
+            // Only when the pattern actually has something muted. A row that
+            // adopts an all-unmuted mask has stopped inheriting for no reason,
+            // and the panel would then show it as an override.
+            if muted.iter().any(|m| *m) {
+                row.adopt_mutes(device, muted);
+            }
+        }
+        self.song_mut().push(row)
+    }
+
     /// Solo is session-wide, not per device: soloing a DT2 track silences DN2
     /// tracks too, which is the only reading that makes sense at a mixing desk.
     pub fn any_solo(&self) -> bool {
@@ -333,13 +413,7 @@ impl Session {
     /// Whether a track sounds, given session-wide solo. Callers pass the track
     /// they are about to schedule.
     pub fn track_audible(&self, track: &Track) -> bool {
-        if track.mute {
-            return false;
-        }
-        if self.any_solo() {
-            return track.solo;
-        }
-        true
+        crate::song::audible(None, track, self.any_solo())
     }
 
     /// Every device's patterns match its model's track count, and every scene

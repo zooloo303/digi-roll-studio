@@ -71,6 +71,15 @@ pub enum TransportCommand {
     /// Stopped, there is no boundary to wait for and this takes effect at once,
     /// so that picking a scene to edit does what it looks like it does.
     SelectScene { scene: usize, immediate: bool },
+    /// Walk the song, or stop walking it — PLAN.md §6 phase 12.
+    ///
+    /// Entering starts at `row` and commits that row's scene at once rather than
+    /// queuing it: the song is now what decides which scene plays, and a pointer
+    /// naming a row that is not yet sounding would be the display lying. Leaving
+    /// commits nothing, so whatever the last row put up keeps playing.
+    SetSongMode { on: bool, row: usize },
+    /// Move the walk to a row. Ignored in pattern mode.
+    JumpToSongRow(usize),
     /// A new whole-session snapshot. One `Arc` for the entire session, not one
     /// per device, so the boxes can never pick up halves of an edit
     /// (PLAN.md §4).
@@ -151,6 +160,11 @@ impl JitterStats {
 /// a sentinel of 0 would be a real scene.
 pub const NO_SCENE: usize = usize::MAX;
 
+/// "The song is not playing" — same sentinel argument as [`NO_SCENE`]: row 0 is
+/// a real row, and the SONG panel has to be able to tell "on row 1" from "not
+/// walking the song at all", because one of those draws a playhead.
+pub const NO_ROW: usize = usize::MAX;
+
 /// What the engine publishes back for display.
 ///
 /// Atomics rather than a mutex, per PLAN.md §4: the engine thread must never
@@ -168,6 +182,14 @@ pub struct TransportState {
     pub playing_scene: AtomicUsize,
     /// The scene queued behind it, or [`NO_SCENE`].
     pub pending_scene: AtomicUsize,
+    /// The box's SONG POINTER: the row playing, or [`NO_ROW`] in pattern mode.
+    pub song_row: AtomicUsize,
+    /// Which pass of that row's ROW PLAY COUNT, 0-based.
+    pub song_repeat: AtomicUsize,
+    /// Whether the transport is walking the song at all. Not derivable from
+    /// `song_row`: song mode with an empty song has no row to be on and is still
+    /// song mode, and the panel says so rather than looking switched off.
+    pub song_mode: AtomicBool,
     /// One per port, indexed by [`PortId`].
     pub jitter: Vec<JitterStats>,
 }
@@ -183,6 +205,9 @@ impl Default for TransportState {
             active_notes: AtomicUsize::new(0),
             playing_scene: AtomicUsize::new(0),
             pending_scene: AtomicUsize::new(NO_SCENE),
+            song_row: AtomicUsize::new(NO_ROW),
+            song_repeat: AtomicUsize::new(0),
+            song_mode: AtomicBool::new(false),
             jitter: Vec::new(),
         }
     }
@@ -212,6 +237,18 @@ impl TransportState {
         match self.pending_scene.load(Ordering::Relaxed) {
             NO_SCENE => None,
             scene => Some(scene),
+        }
+    }
+
+    pub fn song_mode(&self) -> bool {
+        self.song_mode.load(Ordering::Relaxed)
+    }
+
+    /// The row playing and which pass of it, or `None` in pattern mode.
+    pub fn song_position(&self) -> Option<(usize, u16)> {
+        match self.song_row.load(Ordering::Relaxed) {
+            NO_ROW => None,
+            row => Some((row, self.song_repeat.load(Ordering::Relaxed) as u16)),
         }
     }
 }
@@ -363,6 +400,20 @@ impl EngineThread {
             }
 
             self.send_due(started_at);
+
+            // **`END: STOP`, taken here and not in the scheduler.** The scheduler
+            // has no `Instant` and cannot stop anything; it records the moment the
+            // song ran out and emits nothing past it. This is where the timeline
+            // reaching that moment becomes a stop — after `send_due`, so the last
+            // row's trigs and their note-offs are already on the wire.
+            if let Some(stop) = self.scheduler.song_stop_at() {
+                if elapsed >= stop {
+                    self.flush_stop();
+                    self.publish_scene();
+                    continue;
+                }
+            }
+
             self.publish(elapsed);
             self.park(started_at);
         }
@@ -436,6 +487,19 @@ impl EngineThread {
         self.state
             .pending_scene
             .store(self.scheduler.pending_scene().unwrap_or(NO_SCENE), Ordering::Relaxed);
+        // The song pointer travels with the scene, and for the same reason: in
+        // song mode the row is *what chose* the scene, so publishing one without
+        // the other would let the transport bar name a row and a scene that do
+        // not belong together.
+        self.state
+            .song_mode
+            .store(self.scheduler.song_mode(), Ordering::Relaxed);
+        let (row, repeat) = match self.scheduler.song_position() {
+            Some((row, repeat)) => (row, repeat as usize),
+            None => (NO_ROW, 0),
+        };
+        self.state.song_row.store(row, Ordering::Relaxed);
+        self.state.song_repeat.store(repeat, Ordering::Relaxed);
     }
 
     fn drain_commands(&mut self, rx: &Receiver<TransportCommand>) -> ControlFlow {
@@ -453,7 +517,7 @@ impl EngineThread {
         match cmd {
             TransportCommand::Start => {
                 self.flush_stop();
-                self.scheduler.rewind();
+                self.scheduler.rewind(&self.session);
                 self.queue.clear();
                 self.scheduled_to = 0.0;
                 self.started_at = Some(Instant::now());
@@ -462,6 +526,11 @@ impl EngineThread {
                 self.queue.append(&mut self.scratch);
             }
             TransportCommand::Continue => {
+                // A song that ran out under `END: STOP` has nothing to resume
+                // into: `song_stop_at` still stands, so this starts the thread,
+                // finds the timeline already past the stop and stops again. That
+                // is the honest answer — the set is over — and PLAY is what plays
+                // it again, clearing the stop through `rewind`.
                 if self.started_at.is_none() {
                     // Resume where the cursors are: back-date the start so the
                     // timeline the cursors already sit on stays continuous.
@@ -505,6 +574,17 @@ impl EngineThread {
                 );
                 self.publish_scene();
             }
+            TransportCommand::SetSongMode { on, row } => {
+                // From `scheduled_to`, not from zero: that is how far the queue
+                // has already been dated, and the same point a scene switch is
+                // measured against. Stopped, it is where a Continue would resume.
+                self.scheduler.set_song_mode(&self.session, on, row, self.scheduled_to);
+                self.publish_scene();
+            }
+            TransportCommand::JumpToSongRow(row) => {
+                self.scheduler.jump_to_row(&self.session, row, self.scheduled_to);
+                self.publish_scene();
+            }
             TransportCommand::Snapshot { session, mut ports } => {
                 self.session = session;
                 // **The tempo comes across with everything else, and for eleven
@@ -527,6 +607,17 @@ impl EngineThread {
                 // Cursors keep their `next_step`, so editing a note mid-play
                 // moves that note and nothing else.
                 self.scheduler.prepare(&self.session, &mut ports);
+                // **A song that has just come into existence starts being
+                // walked.** `prepare` can drop the walker — a song emptied under
+                // it has no row to be on — but it cannot start one, because it
+                // does not know what time it is. Song mode is a standing request,
+                // so the first snapshot that gives it something to walk is where
+                // that request is honoured: build a song with SONG lit and it
+                // plays, rather than needing the toggle pressed twice.
+                if self.scheduler.song_mode() && self.scheduler.song_position().is_none() {
+                    self.scheduler.jump_to_row(&self.session, 0, self.scheduled_to);
+                }
+                self.publish_scene();
             }
             TransportCommand::Quit => {}
         }

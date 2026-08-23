@@ -17,14 +17,15 @@
 use digi_core::device::DeviceId;
 use digi_core::model::{PLockLane, Pattern, Track};
 use digi_core::session::Session;
+use digi_core::song::{EndAction, SongRow};
 
 use crate::conditions::{should_play, CondHistory};
 use crate::event::{MidiMsg, PortId, PortTable, ScheduledEvent};
 use crate::notes::ActiveNotes;
 use crate::rng::Rng;
 use crate::time::{
-    clock_tick_seconds, note_duration_seconds, swing_offset_steps, track_step_seconds,
-    PLOCK_LEAD_SECONDS,
+    clock_tick_seconds, note_duration_seconds, step_seconds, swing_offset_steps,
+    track_step_seconds, PLOCK_LEAD_SECONDS,
 };
 
 /// Where one track has got to.
@@ -54,6 +55,18 @@ pub struct TrackCursor {
     /// Where the current pattern began, on the same absolute counter. Zero until
     /// a scene change moves it.
     pub origin: u64,
+    /// *When* the current pattern began, in seconds since the transport started.
+    ///
+    /// **Both halves are needed, and one of them was missing until 2026-08-22.**
+    /// A step's length is a per-track fact — SCALE — and it can differ between
+    /// the pattern a track is leaving and the one it is joining. Dating events as
+    /// `next_step × step_seconds` therefore reads the *new* pattern's step length
+    /// off the *old* pattern's step count: switch a 2x track onto a 1x one at
+    /// four steps in and the incoming pattern's step 1 lands at eight steps,
+    /// half a bar of silence after the switch. Anchoring the pattern to the
+    /// moment it started, and counting steps from there, is what makes a switch
+    /// land where it was taken whatever the two SCALEs are.
+    pub origin_at: f64,
 }
 
 impl TrackCursor {
@@ -61,6 +74,12 @@ impl TrackCursor {
     /// within a pattern that began at `origin`.
     fn elapsed_steps(&self) -> u64 {
         self.next_step.saturating_sub(self.origin)
+    }
+
+    /// When this track's `next_step` falls, before swing: the moment its pattern
+    /// started, plus however many of *this* pattern's steps have gone by.
+    fn step_time(&self, step_secs: f64) -> f64 {
+        self.origin_at + self.elapsed_steps() as f64 * step_secs
     }
 }
 
@@ -158,12 +177,53 @@ pub fn scene_cycle_seconds(session: &Session, scene: usize, bpm: f64) -> Option<
         })
 }
 
+/// How close two times have to be before they count as the same moment.
+///
+/// **A row boundary and the trig that lands on it are computed by different
+/// multiplications**, and floating point does not promise they agree to the last
+/// bit: a row of 7 steps played 3 times is `(7 · step) · 3`, while the trig that
+/// closes it is `21 · step`, and those can differ by an ULP. One nanosecond is
+/// several orders of magnitude larger than that error and several orders smaller
+/// than anything musical, so a comparison with this slack answers the question
+/// that was meant — *is this the boundary?* — rather than the question the
+/// arithmetic asked.
+///
+/// Without it the failures are small, silent and rare, which is the worst
+/// combination: one trig of the outgoing pattern leaking past a switch, or an
+/// `LST` that does not fire on the pass that was in fact the last.
+const TIE: f64 = 1e-9;
+
 /// A scene change that has been asked for and not yet taken.
 #[derive(Debug, Clone, Copy, PartialEq)]
 struct PendingScene {
     scene: usize,
     /// Seconds since the transport started, the moment the switch takes effect.
     at: f64,
+}
+
+/// Where the song has got to — PLAN.md §6 phase 12.
+///
+/// A song row names a scene, so the walker's whole job is *when* to commit the
+/// next one. It owns no cursors and no patterns: at a row boundary it calls
+/// [`Scheduler::commit_scene`], the same function the scene pill has always
+/// called, which is what keeps "how a box moves onto a pattern" in one place.
+///
+/// Every time here is seconds since the transport started, on the same timeline
+/// the cursors are dated against, so a row boundary competes for the earliest
+/// deadline in the event walk exactly as a queued scene does.
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct SongCursor {
+    row: usize,
+    /// Which pass of ROW PLAY COUNT this is, 0-based.
+    repeat: u16,
+    /// When this repeat began.
+    started_at: f64,
+    /// When this repeat ends. `f64::INFINITY` for a row whose scene has no
+    /// playable track — see [`Scheduler::begin_row`].
+    ends_at: f64,
+    /// When the *row* ends, every repeat included. What `LST` is measured
+    /// against: the last pass before the scene actually changes.
+    row_ends_at: f64,
 }
 
 /// The engine's playback state, between windows.
@@ -184,6 +244,16 @@ pub struct Scheduler {
     /// queue would mean nothing.
     scene: usize,
     pending: Option<PendingScene>,
+    /// Whether the transport is walking the session's song. Kept separately from
+    /// [`Scheduler::song`] because the two answer different questions: this is
+    /// what the user asked for and survives a song being emptied and refilled,
+    /// while `song` is a position that only exists while there is a row to be on.
+    song_mode: bool,
+    song: Option<SongCursor>,
+    /// When the song ran out under `END: STOP`. The scheduler cannot stop the
+    /// transport — it has no thread and no `Instant` — so it records the moment
+    /// and emits nothing past it; [`crate::transport`] turns that into the stop.
+    song_stop_at: Option<f64>,
     cursors: Vec<TrackCursor>,
     /// One per device, in `session.devices` order. Never shared between boxes:
     /// `NEI` is a physical neighbour on one machine.
@@ -220,6 +290,9 @@ impl Scheduler {
             send_clock: true,
             scene: 0,
             pending: None,
+            song_mode: false,
+            song: None,
+            song_stop_at: None,
             cursors: Vec::new(),
             histories: Vec::new(),
             device_ports: Vec::new(),
@@ -256,6 +329,169 @@ impl Scheduler {
         self.pending.map(|p| p.at)
     }
 
+    // ------------------------------------------------------------- song mode
+
+    /// Whether the transport is walking the song.
+    pub fn song_mode(&self) -> bool {
+        self.song_mode
+    }
+
+    /// The row playing and which pass of it — the box's SONG POINTER. `None` in
+    /// pattern mode, and for a song with no rows to be on.
+    pub fn song_position(&self) -> Option<(usize, u16)> {
+        self.song.map(|s| (s.row, s.repeat))
+    }
+
+    /// When the song ended under `END: STOP`, once it has.
+    pub fn song_stop_at(&self) -> Option<f64> {
+        self.song_stop_at
+    }
+
+    /// Enter or leave song mode, starting the walk at `row` from `at`.
+    ///
+    /// Entering commits that row's scene immediately rather than queuing it: the
+    /// song is now what decides which scene plays, and waiting a boundary to
+    /// start would leave the pointer naming a row that is not sounding. Leaving
+    /// commits nothing — whatever scene the last row put up keeps playing, which
+    /// is what makes SONG → PATTERN a way to stay on a section and jam over it.
+    pub fn set_song_mode(&mut self, session: &Session, on: bool, row: usize, at: f64) {
+        self.song_mode = on;
+        self.song_stop_at = None;
+        if on {
+            self.begin_row(session, row, at);
+        } else {
+            self.song = None;
+        }
+    }
+
+    /// Jump the walk to a row, from `at`. Ignored in pattern mode — a jump is
+    /// only meaningful against a pointer that exists.
+    pub fn jump_to_row(&mut self, session: &Session, row: usize, at: f64) {
+        if !self.song_mode {
+            return;
+        }
+        self.song_stop_at = None;
+        self.begin_row(session, row, at);
+    }
+
+    /// How long one repeat of `row` lasts.
+    ///
+    /// The two units ROW LENGTH can mean, and the reason `length_steps` is an
+    /// `Option` rather than a number with a default written into it: an explicit
+    /// length counts reference steps (1/16 at 1x, the grid the clock and the
+    /// position readout already run on), while `None` means the scene's own
+    /// cycle, which is a per-track fact once SCALE is involved and so can only be
+    /// answered by [`scene_cycle_seconds`].
+    fn row_seconds(&self, session: &Session, row: &SongRow) -> Option<f64> {
+        match row.length_steps {
+            Some(steps) => Some(steps as f64 * step_seconds(self.bpm)),
+            None => scene_cycle_seconds(session, row.scene, self.bpm),
+        }
+    }
+
+    /// Start a row: commit its scene, and work out when it and its repeats end.
+    ///
+    /// **A row whose scene has no playable track never ends.** `scene_cycle_
+    /// seconds` answers `None` for it, and the walker parks on it — `ends_at` is
+    /// infinity — rather than advancing. `queue_scene` takes the other branch in
+    /// the same situation (it commits at once, because there is no boundary worth
+    /// waiting for), and it can: it is asked once. A song asked to advance
+    /// through zero-length rows would advance through all of them in one pass and
+    /// then keep going, which is a spin rather than a silence.
+    fn begin_row(&mut self, session: &Session, row: usize, at: f64) {
+        let Some(song) = session.song() else {
+            self.song = None;
+            return;
+        };
+        if song.is_empty() {
+            self.song = None;
+            return;
+        }
+        let row = row.min(song.len() - 1);
+        let Some(r) = song.row(row) else {
+            self.song = None;
+            return;
+        };
+        let scene = r.scene;
+        let plays = r.plays();
+        let length = self.row_seconds(session, r).filter(|l| *l > 0.0);
+        // Committed even for a row naming a scene the session does not have:
+        // `commit_scene` ignores it and the previous scene keeps playing, which
+        // is the same refusal-to-guess `queue_scene` makes. The row still takes
+        // its turn, so the pointer and the sound agree about where the song is.
+        self.commit_scene(session, scene);
+        self.song = Some(SongCursor {
+            row,
+            repeat: 0,
+            started_at: at,
+            ends_at: length.map_or(f64::INFINITY, |l| at + l),
+            row_ends_at: length.map_or(f64::INFINITY, |l| at + l * plays as f64),
+        });
+    }
+
+    /// A row boundary has arrived: the next repeat, the next row, or the end.
+    ///
+    /// **A repeat of a row does not re-commit its scene unless the row is
+    /// truncated**, and that difference is the whole of how conditions behave in
+    /// song mode. `commit_scene` restarts every track at step 1 and clears the
+    /// condition history, so committing on every repeat would fire `1ST` four
+    /// times on a row that plays four times — where on the box that row is four
+    /// passes of one pattern, and `1ST` fires once. A row carrying an explicit
+    /// ROW LENGTH is the opposite case: it cuts the pattern short, so each repeat
+    /// genuinely re-launches it and `1ST` genuinely fires again.
+    fn advance_song(&mut self, session: &Session, at: f64) {
+        let Some(cursor) = self.song else { return };
+        let Some(song) = session.song() else {
+            self.song = None;
+            return;
+        };
+        // The song was edited under the walker and this row has gone. Back to the
+        // top rather than off the end.
+        let Some(row) = song.row(cursor.row) else {
+            self.begin_row(session, 0, at);
+            return;
+        };
+
+        let next_repeat = cursor.repeat + 1;
+        if next_repeat < row.plays() {
+            let truncated = row.length_steps.is_some();
+            let scene = row.scene;
+            let plays_left = (row.plays() - next_repeat) as f64;
+            // Recomputed rather than carried: the tempo can have moved, and so
+            // can the row.
+            let length = self.row_seconds(session, row).filter(|l| *l > 0.0);
+            if truncated {
+                self.commit_scene(session, scene);
+            }
+            self.song = Some(SongCursor {
+                row: cursor.row,
+                repeat: next_repeat,
+                started_at: at,
+                ends_at: length.map_or(f64::INFINITY, |l| at + l),
+                row_ends_at: length.map_or(f64::INFINITY, |l| at + l * plays_left),
+            });
+            return;
+        }
+
+        let next = cursor.row + 1;
+        if next < song.len() {
+            self.begin_row(session, next, at);
+            return;
+        }
+        match song.end {
+            EndAction::Loop => self.begin_row(session, 0, at),
+            // The transport does the stopping. Recorded rather than acted on
+            // because a scheduler that could stop the transport would need to
+            // know what time it is, which is the one thing this file does not.
+            EndAction::Stop => self.song_stop_at = Some(at),
+        }
+    }
+
+    /// The row playing, for the mute mask and for `LST`.
+    fn current_row<'a>(&self, session: &'a Session) -> Option<&'a SongRow> {
+        session.song()?.row(self.song?.row)
+    }
+
     /// The pattern a device plays in the scene that is sounding.
     fn pattern<'a>(&self, session: &'a Session, device: DeviceId) -> Option<&'a Pattern> {
         session.pattern_in_scene(self.scene, device)
@@ -282,10 +518,10 @@ impl Scheduler {
     /// rather than an id past the end of the connections, which would be a track
     /// sending to the wrong box.
     pub fn prepare(&mut self, session: &Session, ports: &mut PortTable) {
-        let previous: Vec<(DeviceId, usize, u64, u64)> = self
+        let previous: Vec<(DeviceId, usize, u64, u64, f64)> = self
             .cursors
             .iter()
-            .map(|c| (c.device, c.track, c.next_step, c.origin))
+            .map(|c| (c.device, c.track, c.next_step, c.origin, c.origin_at))
             .collect();
 
         self.cursors.clear();
@@ -318,11 +554,11 @@ impl Scheduler {
                     Some(name) => ports.get(name),
                     None => device_port,
                 };
-                let (next_step, origin) = previous
+                let (next_step, origin, origin_at) = previous
                     .iter()
-                    .find(|(d, t, _, _)| *d == device.id && *t == track_index)
-                    .map(|(_, _, s, o)| (*s, *o))
-                    .unwrap_or((0, 0));
+                    .find(|(d, t, _, _, _)| *d == device.id && *t == track_index)
+                    .map(|(_, _, s, o, a)| (*s, *o, *a))
+                    .unwrap_or((0, 0, 0.0));
                 self.cursors.push(TrackCursor {
                     device: device.id,
                     device_index,
@@ -331,17 +567,34 @@ impl Scheduler {
                     channel: track.channel,
                     next_step,
                     origin,
+                    origin_at,
                 });
+            }
+        }
+
+        // **The song can have been edited under the walker**, because a snapshot
+        // arrives whenever the user touches anything — including the row the
+        // pointer is on. A row index past the end would then be a boundary the
+        // walk keeps trying to take and a pointer naming a row that is not there.
+        //
+        // Clamped rather than restarted: an edit to row 7 must not send a set
+        // back to row 1. The times are left alone, so the current repeat plays
+        // out and `advance_song` picks up the edited song at the next boundary.
+        if let Some(cursor) = &mut self.song {
+            match session.song().filter(|s| !s.is_empty()) {
+                Some(song) => cursor.row = cursor.row.min(song.len() - 1),
+                None => self.song = None,
             }
         }
     }
 
     /// Rewind everything to the top and forget all history. Start does this;
     /// continue does not.
-    pub fn rewind(&mut self) {
+    pub fn rewind(&mut self, session: &Session) {
         for c in &mut self.cursors {
             c.next_step = 0;
             c.origin = 0;
+            c.origin_at = 0.0;
         }
         for h in &mut self.histories {
             h.clear();
@@ -350,6 +603,13 @@ impl Scheduler {
         // A queued switch does not survive a rewind: its boundary was a moment on
         // the timeline that is about to stop existing.
         self.pending = None;
+        // Nor does where the song had got to. Rewind means the top, and in song
+        // mode the top is row 1 — including after an `END: STOP`, which is the
+        // only way a stopped song ever plays again.
+        self.song_stop_at = None;
+        if self.song_mode {
+            self.begin_row(session, 0, 0.0);
+        }
     }
 
     /// Ask for a scene, taken at the next boundary of the scene that is playing.
@@ -412,8 +672,25 @@ impl Scheduler {
         if scene >= session.scenes.len() {
             return;
         }
+        // Read before the switch, because it is the *outgoing* pattern's SCALE
+        // that dates the moment the switch lands on.
+        let leaving = self.scene;
         self.scene = scene;
-        for cursor in &mut self.cursors {
+        for index in 0..self.cursors.len() {
+            // **Where the incoming pattern starts, in time.** The step the cursor
+            // is next due at keeps its moment: it was computed under the outgoing
+            // pattern's SCALE, and it is the grid point the switch lands on. The
+            // incoming pattern then counts its own steps from there, at its own
+            // SCALE — see [`TrackCursor::origin_at`] for what dating events off
+            // the raw step count did instead.
+            let outgoing = session
+                .pattern_in_scene(leaving, self.cursors[index].device)
+                .and_then(|p| p.track(self.cursors[index].track))
+                .map(|t| track_step_seconds(self.bpm, t.scale));
+            let cursor = &mut self.cursors[index];
+            if let Some(step_secs) = outgoing {
+                cursor.origin_at = cursor.step_time(step_secs);
+            }
             cursor.origin = cursor.next_step;
             // Channel and out port are the *pattern's*, so two scenes on one box
             // can route differently. The port table is the one already opened
@@ -468,7 +745,15 @@ impl Scheduler {
         plocks: &dyn PLockMap,
         out: &mut Vec<ScheduledEvent>,
     ) {
-        self.emit_clock(to, out);
+        // **Nothing is emitted past the end of a stopped song.** `END: STOP` is a
+        // moment on the timeline, and the transport only notices it once `elapsed`
+        // reaches it — up to a `LOOKAHEAD` later. Clamping the window here is what
+        // stops those 50 ms being filled with trigs and clock ticks from a song
+        // that has already finished.
+        let to = match self.song_stop_at {
+            Some(stop) => to.min(stop),
+            None => to,
+        };
 
         // Solo is session-wide (PLAN.md §2: soloing a DT2 track silences DN2
         // tracks too), and answering it walks every pattern — so it is answered
@@ -509,8 +794,35 @@ impl Scheduler {
             // the *incoming* scene — that trig is step 1 of the new pattern —
             // which is why the comparison is `<=` and not `<`.
             if let Some(pending) = self.pending {
-                if pending.at < to && next.is_none_or(|(_, deadline)| pending.at <= deadline) {
+                if pending.at < to
+                    && next.is_none_or(|(_, deadline)| pending.at - TIE <= deadline)
+                {
                     self.commit_scene(session, pending.scene);
+                    continue;
+                }
+            }
+
+            // **A row boundary is taken the same way, and for the same reason.**
+            // The song is not a second timeline running beside this one: a row
+            // ends at a point on the one timeline, and a trig landing exactly
+            // there belongs to the *incoming* row — step 1 of its pattern — so
+            // the comparison is `<=`, as the queued scene's is.
+            //
+            // After the queued scene, so a switch the user asked for and a row
+            // boundary falling on the same instant leave the song in charge: the
+            // scene the row commits is the one that plays. A song walking to a row
+            // it has just been overridden onto would be the pointer lying.
+            if let Some(song) = self.song {
+                if self.song_stop_at.is_none()
+                    && song.ends_at < to
+                    && next.is_none_or(|(_, deadline)| song.ends_at - TIE <= deadline)
+                {
+                    self.advance_song(session, song.ends_at);
+                    // `END: STOP` was the boundary. Nothing past it plays, and
+                    // the walk is how "past it" gets decided.
+                    if self.song_stop_at.is_some() {
+                        break;
+                    }
                     continue;
                 }
             }
@@ -519,9 +831,22 @@ impl Scheduler {
             self.step_cursor(session, index, deadline, any_solo, rng, plocks, out);
         }
 
+        // **Clock after the tracks, not before them**, so that a song ending
+        // inside this window clamps the ticks too. The walk is the only thing
+        // that can discover an `END: STOP`, and a stopped song must not be
+        // followed by 50 ms of clock still telling the boxes to run.
+        // `sort_events` below puts the ticks back where they belong.
+        let to = match self.song_stop_at {
+            Some(stop) => to.min(stop),
+            None => to,
+        };
+        self.emit_clock(to, out);
+
         // Note-offs whose deadline has arrived. After the tracks, so a note-on
         // scheduled in this same window is already in the table and a note that
-        // starts and ends inside one window still gets its off.
+        // starts and ends inside one window still gets its off. Anything left
+        // holding past a stop is released by [`Scheduler::stop`], which is where
+        // the transport goes next.
         self.active.drain_due(to, out);
 
         crate::event::sort_events(out);
@@ -568,7 +893,7 @@ impl Scheduler {
         let step_secs = track_step_seconds(self.bpm, track.scale);
         let step_in_pattern = cursor.elapsed_steps() % length;
         Some(
-            cursor.next_step as f64 * step_secs
+            cursor.step_time(step_secs)
                 + swing_offset_steps(pattern.swing, step_in_pattern) * step_secs,
         )
     }
@@ -586,8 +911,14 @@ impl Scheduler {
         out: &mut Vec<ScheduledEvent>,
     ) {
         let cursor = &self.cursors[index];
-        let (device_id, device_index, track_index, channel, step) =
-            (cursor.device, cursor.device_index, cursor.track, cursor.channel, cursor.elapsed_steps());
+        let (device_id, device_index, track_index, channel, step, origin_at) = (
+            cursor.device,
+            cursor.device_index,
+            cursor.track,
+            cursor.channel,
+            cursor.elapsed_steps(),
+            cursor.origin_at,
+        );
         // `cursor_deadline` answered `Some` for this index a moment ago, so every
         // one of these is present; the `let else`s are how that is stated rather
         // than assumed.
@@ -601,11 +932,35 @@ impl Scheduler {
 
         self.cursors[index].next_step += 1;
 
-        let audible = !track.mute && (!any_solo || track.solo);
+        // ROW MUTE, when a song is playing: the row's mask *substitutes* for the
+        // pattern's own `mute` rather than stacking with it, so a row can silence
+        // a track the pattern plays and sound one the pattern mutes. Solo is not
+        // part of the substitution — it is the desk, not the arrangement.
+        let row = self.current_row(session);
+        let row_mute = row.and_then(|r| r.mutes(device_id, track_index));
+        let audible = digi_core::song::audible(row_mute, track, any_solo);
+
         let step_secs = track_step_seconds(self.bpm, track.scale);
+
+        // **`LST` becomes answerable here, and only here.** PLAN.md §4 lists it
+        // as unsimulated "until pattern chaining exists": the browser could never
+        // know a pattern change was coming, and neither could this engine in
+        // pattern mode. In song mode the row knows when it ends, so the question
+        // is whether *this* pass of *this* track is the last one before the scene
+        // actually changes — which is a per-track answer, since a 16-step track
+        // and a 64-step one in the same scene are on different passes.
+        //
+        // Computed from the absolute step counter rather than from `deadline`,
+        // which carries this step's swing offset and would put the wrap a
+        // fraction of a step out.
+        let last_pass = self.song.map(|song| {
+            let wraps_at = origin_at + ((step / length + 1) * length) as f64 * step_secs;
+            wraps_at >= song.row_ends_at - TIE
+        });
+
         self.play_trig(
             track, track_index, device_id, device_index, port, channel, step % length,
-            step / length, deadline, step_secs, audible, rng, plocks, out,
+            step / length, last_pass, deadline, step_secs, audible, rng, plocks, out,
         );
     }
 
@@ -621,6 +976,9 @@ impl Scheduler {
         channel: u8,
         step_in_pattern: u64,
         loop_index: u64,
+        // Whether this is the track's last pass before the song's row changes.
+        // `None` in pattern mode, where `LST` stays unsimulated and so plays.
+        last_pass: Option<bool>,
         deadline: f64,
         step_secs: f64,
         audible: bool,
@@ -652,8 +1010,9 @@ impl Scheduler {
             .find(|n| n.step.round() as i64 == step_in_pattern as i64)
             .expect("checked by has_note");
 
-        let ctx =
+        let mut ctx =
             self.histories[device_index].context_for(track_index, loop_index, self.fill_active);
+        ctx.last_pass = last_pass;
         let outcome = should_play(
             trig.prob,
             trig.fill,

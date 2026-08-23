@@ -539,8 +539,10 @@ fn every_slot_either_box_has_fits_the_one_byte_a_dump_request_carries() {
 
 #[test]
 fn adding_a_device_gives_every_existing_scene_a_slot_for_it() {
-    let mut s = Session::default();
-    s.scenes = vec![Scene::new("One"), Scene::new("Two")];
+    let mut s = Session {
+        scenes: vec![Scene::new("One"), Scene::new("Two")],
+        ..Session::default()
+    };
     let id = s.add_device(Device::new("DT2", &DT2, 16));
     for scene in &s.scenes {
         assert_eq!(scene.slots.get(&id), Some(&PatternRef::new(0, 0)));
@@ -1148,4 +1150,149 @@ fn a_hand_picked_port_survives_the_project_file() {
 
     assert_eq!(unbound, vec![loaded.devices[0].id], "the input never was bound");
     assert_eq!(loaded.devices[0].io.output.as_ref().unwrap().name, "IAC Driver Bus 1");
+}
+
+// -------------------------------------------------------------- the song
+
+// Phase 12. A song is rows of *scenes*, so most of what a row has to survive is
+// the scene list moving under it — and a project written before song mode has to
+// keep loading, and keep saving byte-identically.
+
+#[test]
+fn a_session_starts_with_no_song_at_all() {
+    // `None` and not an empty song: "nobody has built an arrangement" is a state
+    // the transport asks about, and it is what keeps the project file unchanged.
+    assert!(dt2_and_dn2().song().is_none());
+}
+
+#[test]
+fn a_song_less_session_writes_no_song_key() {
+    let json = Project::new(dt2_and_dn2()).to_json().unwrap();
+    assert!(!json.contains("song"), "{json}");
+}
+
+#[test]
+fn a_project_written_before_song_mode_still_loads() {
+    // The same file a pre-Phase-12 build wrote: no `song` key anywhere.
+    let json = Project::new(dt2_and_dn2()).to_json().unwrap();
+    let loaded = Project::from_json(&json).unwrap().session;
+    assert!(loaded.song().is_none());
+}
+
+#[test]
+fn a_song_round_trips_through_the_project_file() {
+    let mut s = dt2_and_dn2();
+    let dt2 = s.devices[0].id;
+    s.add_scene("Chorus", Some(0));
+    s.song_mut().name = "Sad Song".into();
+    s.add_song_row(0).unwrap();
+    s.add_song_row(1).unwrap();
+    s.song_mut().row_mut(1).unwrap().label = "CHORUS".into();
+    s.song_mut().row_mut(1).unwrap().repeats = 4;
+    s.song_mut().row_mut(1).unwrap().length_steps = Some(32);
+    s.song_mut().row_mut(1).unwrap().set_mute(dt2, 5, true);
+    s.song_mut().end = digi_core::EndAction::Stop;
+
+    let json = Project::new(s.clone()).to_json().unwrap();
+    let loaded = Project::from_json(&json).unwrap().session;
+
+    assert_eq!(loaded.song, s.song);
+    let row = loaded.song_row(1).unwrap();
+    assert_eq!(row.label, "CHORUS");
+    assert_eq!(row.plays(), 4);
+    assert_eq!(row.length_steps, Some(32));
+    assert_eq!(row.mutes(dt2, 5), Some(true));
+    assert_eq!(loaded.song().unwrap().end, digi_core::EndAction::Stop);
+}
+
+#[test]
+fn saving_a_session_with_a_song_twice_produces_identical_bytes() {
+    // The `BTreeMap` argument, extended to a row's mute masks: a save that is not
+    // byte-stable makes every project file look edited.
+    let mut s = dt2_and_dn2();
+    let (dt2, dn2) = (s.devices[0].id, s.devices[1].id);
+    s.add_song_row(0).unwrap();
+    s.song_mut().row_mut(0).unwrap().set_mute(dn2, 2, true);
+    s.song_mut().row_mut(0).unwrap().set_mute(dt2, 9, true);
+
+    let a = Project::new(s.clone()).to_json_pretty().unwrap();
+    let b = Project::new(s).to_json_pretty().unwrap();
+    assert_eq!(a, b);
+}
+
+#[test]
+fn a_new_row_takes_its_mutes_from_the_pattern_it_plays() {
+    // The box's rule: "when selecting a pattern for the row, the row's mute state
+    // initially reflects the pattern's mute state".
+    let mut s = dt2_and_dn2();
+    let dt2 = s.devices[0].id;
+    let dn2 = s.devices[1].id;
+    s.device_mut(dt2).unwrap().pattern_mut(0).unwrap().track_mut(3).unwrap().mute = true;
+
+    let row = s.add_song_row(0).unwrap();
+    let row = s.song_row(row).unwrap();
+    assert_eq!(row.mutes(dt2, 3), Some(true));
+    assert_eq!(row.mutes(dt2, 4), Some(false));
+    // The DN2's pattern had nothing muted, so that box keeps inheriting rather
+    // than gaining a mask of zeroes the panel would draw as an override.
+    assert_eq!(row.mutes(dn2, 0), None);
+}
+
+#[test]
+fn removing_a_scene_carries_the_song_rows_with_it() {
+    let mut s = dt2_and_dn2();
+    s.add_scene("B", Some(0));
+    s.add_scene("C", Some(0));
+    s.add_song_row(0).unwrap();
+    s.add_song_row(1).unwrap();
+    s.add_song_row(2).unwrap();
+
+    assert!(s.remove_scene(1));
+    let scenes: Vec<usize> = s.song().unwrap().rows.iter().map(|r| r.scene).collect();
+    // Scene 2's row followed the list down; the row that named the scene that
+    // went landed on the one the session is now on, so no row names nothing.
+    assert_eq!(scenes, vec![0, 0, 1]);
+    assert!(s.song().unwrap().broken_rows(s.scenes.len()).is_empty());
+}
+
+#[test]
+fn removing_a_device_takes_its_row_mutes_with_it() {
+    let mut s = dt2_and_dn2();
+    let dt2 = s.devices[0].id;
+    s.add_song_row(0).unwrap();
+    s.song_mut().row_mut(0).unwrap().set_mute(dt2, 1, true);
+
+    s.remove_device(dt2);
+    // A re-added box gets a fresh id, so a left-behind mask could only ever be
+    // read by the wrong device.
+    assert_eq!(s.song_row(0).unwrap().mutes(dt2, 1), None);
+}
+
+#[test]
+fn a_row_mute_substitutes_for_the_patterns_mute_rather_than_stacking() {
+    let mut s = dt2_and_dn2();
+    let dt2 = s.devices[0].id;
+    s.device_mut(dt2).unwrap().pattern_mut(0).unwrap().track_mut(0).unwrap().mute = true;
+    let mut row = digi_core::SongRow::new(0);
+    // The row sounds a track the pattern mutes — a substitution, not a second
+    // mute stage.
+    row.set_mute(dt2, 0, false);
+
+    let track = s.device(dt2).unwrap().pattern(0).unwrap().track(0).unwrap();
+    assert!(digi_core::song::audible(row.mutes(dt2, 0), track, false));
+    assert!(!digi_core::song::audible(None, track, false));
+}
+
+#[test]
+fn a_row_mute_does_not_undo_a_solo() {
+    // Solo is the desk, not the arrangement (PLAN.md §2).
+    let mut s = dt2_and_dn2();
+    let dt2 = s.devices[0].id;
+    s.device_mut(dt2).unwrap().pattern_mut(0).unwrap().track_mut(1).unwrap().solo = true;
+    let mut row = digi_core::SongRow::new(0);
+    row.set_mute(dt2, 0, false);
+
+    let pattern = s.device(dt2).unwrap().pattern(0).unwrap();
+    assert!(!digi_core::song::audible(row.mutes(dt2, 0), pattern.track(0).unwrap(), true));
+    assert!(digi_core::song::audible(row.mutes(dt2, 1), pattern.track(1).unwrap(), true));
 }

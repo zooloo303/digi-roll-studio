@@ -18,12 +18,19 @@
 //! | `PRE` | not simulable | simulated — last condition result on this track |
 //! | `NEI` | not simulable | simulated — last condition result on track *n−1* of the same device |
 //! | `FILL` | no FILL button | simulated — the transport's FILL toggle |
-//! | `LST` | unknowable | still unsimulated, until pattern chaining exists |
+//! | `LST` | unknowable | simulated **in song mode** — the track's last pass before the row changes |
+//!
+//! `LST` was the fourth, and it stopped being unsimulable when song mode landed
+//! (PLAN.md §6 phase 12): a song row knows when it ends, so "is this the last
+//! pass of this track before the pattern changes" has an answer. In *pattern*
+//! mode it still has none — nothing knows whether the next scene switch is a bar
+//! away or an hour — so [`CondContext::last_pass`] is `None` there and the trig
+//! plays.
 //!
 //! **The rule that survives all of it: anything unsimulated plays**, so the
-//! sequencer is never quieter than the box. That covers `LST`, `PRE` before this
-//! track has evaluated any condition, `NEI` on track 1, and any condition string
-//! this build does not recognise.
+//! sequencer is never quieter than the box. That covers `LST` in pattern mode,
+//! `PRE` before this track has evaluated any condition, `NEI` on track 1, and
+//! any condition string this build does not recognise.
 //!
 //! `NEI` reads track *n−1* **of the same device**, never across boxes — a
 //! neighbour is a physical neighbour on one machine (PLAN.md §2).
@@ -43,7 +50,8 @@ pub enum CondKind {
     Nei,
     /// First pass of the pattern.
     First,
-    /// Last pass before a pattern change — unknowable without chaining.
+    /// Last pass before a pattern change. Unknowable in pattern mode; answered
+    /// in song mode, where the row says when the scene changes.
     Last,
     /// `A:B` — plays on pass `A` of every `B`.
     Ratio { a: u32, b: u32 },
@@ -107,6 +115,14 @@ pub struct CondContext {
     pub fill_active: bool,
     pub prev_on_track: Option<bool>,
     pub prev_on_neighbour: Option<bool>,
+    /// Whether this is the track's last pass before the pattern changes —
+    /// `LST`. `None` outside song mode, where nothing knows a change is coming,
+    /// and the trig then plays.
+    ///
+    /// Not filled in by [`CondHistory::context_for`]: it is not history, it is
+    /// the arrangement, and the scheduler is the only thing that knows when the
+    /// row it is on ends.
+    pub last_pass: Option<bool>,
 }
 
 /// The result of evaluating one trig.
@@ -117,7 +133,8 @@ pub struct TrigOutcome {
     /// actually evaluate — which is what a later `PRE` or `NEI` consults.
     ///
     /// `None` for an unconditional trig, and for one whose condition could not be
-    /// evaluated. Neither touches the history: an unconditional trig does not
+    /// evaluated — `LST` in pattern mode, and nothing else now. Neither touches
+    /// the history: an unconditional trig does not
     /// participate in `PRE` on the box either, and recording a *guess* for `LST`
     /// would propagate it into every downstream `PRE`, which is worse than the
     /// gap it fills.
@@ -173,7 +190,7 @@ pub fn should_play(
             }
             CondKind::Pre => ctx.prev_on_track,
             CondKind::Nei => ctx.prev_on_neighbour,
-            CondKind::Last => None,
+            CondKind::Last => ctx.last_pass,
         }?;
         Some(if parsed.negated { !raw } else { raw })
     });
@@ -214,6 +231,9 @@ impl CondHistory {
             prev_on_neighbour: track
                 .checked_sub(1)
                 .and_then(|n| self.last.get(n).copied().flatten()),
+            // Not history. The scheduler fills this in from the song row it is
+            // on, because nothing in a per-device history could know.
+            last_pass: None,
         }
     }
 

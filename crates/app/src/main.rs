@@ -14,6 +14,7 @@
 
 use digi_roll_studio::engine::EngineLink;
 use digi_roll_studio::ui::edit::EditPanel;
+use digi_roll_studio::ui::song::SongPanel;
 use digi_roll_studio::ui::generate::GeneratePanel;
 use digi_roll_studio::ui::harmony::HarmonyPanel;
 use digi_roll_studio::ui::pianoroll::PianoRoll;
@@ -75,6 +76,10 @@ struct App {
     /// `ui::generate`'s header for why that press never touches a box on its
     /// own.
     generate: GeneratePanel,
+    /// The rail's *fifth* slot, real since 2026-08-22: the arrangement — rows of
+    /// scenes, ROW PLAY COUNT, ROW LENGTH and ROW MUTE, and the SONG/PATTERN
+    /// mode it shares with the transport bar.
+    song: SongPanel,
     /// Undo and redo, over the music only. `core::history` has the argument for
     /// where that line is; the shell's job is the two calls below that decide
     /// where one step ends.
@@ -100,6 +105,7 @@ impl Default for App {
             edit: EditPanel::default(),
             harmony: HarmonyPanel::default(),
             generate: GeneratePanel::default(),
+            song: SongPanel::default(),
             history: History::default(),
         }
     }
@@ -275,7 +281,9 @@ impl eframe::App for App {
                     &mut self.edit,
                     &mut self.harmony,
                     &mut self.generate,
+                    &mut self.song,
                     &mut self.session,
+                    &mut self.engine,
                     self.selection,
                     &mut self.roll,
                     &mut self.history,

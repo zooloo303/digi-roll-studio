@@ -22,6 +22,7 @@ pub mod midifile;
 pub mod model;
 pub mod project;
 pub mod session;
+pub mod song;
 pub mod track_clip;
 
 pub use chords::{Harmony, Scale};
@@ -34,6 +35,7 @@ pub use midifile::{midi_file_to_notes, track_to_midi_file, Imported, MidiFileErr
 pub use model::{ModelError, Note, PLockLane, Pattern, Source, Track, TrackKind, TrackScale};
 pub use project::{Project, ProjectError, FORMAT_VERSION};
 pub use session::{BindError, PatternRef, Scene, Session};
+pub use song::{EndAction, Song, SongRow, LABELS, MAX_ROWS, ROW_LENGTH_MAX, ROW_LENGTH_MIN};
 pub use track_clip::{paste_track, ChordDrop, PasteReport, TrackClip};
 
 /// A session with a DT2 and a DN2 in it, one bank of slots each, and one scene

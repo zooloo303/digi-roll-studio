@@ -734,3 +734,136 @@ fn a_level_on_a_track_routed_nowhere_is_refused_rather_than_guessed() {
     std::thread::sleep(Duration::from_millis(50));
     assert!(log.lock().expect("sink log").sent.is_empty());
 }
+
+// --- song mode ---------------------------------------------------------------
+//
+// PLAN.md §6 phase 12, at the seam. The scheduler's own tests prove the walk;
+// these prove the three things only the link can get wrong — that the mode
+// survives a rebuild, that a song built while SONG is already lit starts playing
+// without the toggle being pressed twice, and that an `END: STOP` reaches the
+// transport as an actual stop rather than as silence with the playhead still
+// running.
+
+/// A session whose scenes are two different pitches, so the wire says which row
+/// is playing. 480 bpm, as the scene tests use: a 16-step track is half a second.
+fn song_session() -> Session {
+    let mut session = digi_core::default_session();
+    session.tempo_bpm = 480.0;
+    bind_output(&mut session, 0, "the box");
+    session.add_scene("Chorus", Some(0));
+    let dt2 = session.devices[0].id;
+    session.set_slot_in_scene(1, dt2, digi_core::PatternRef::from_slot(1));
+    put_trigs_in_slot(&mut session, 0, 0, 60, &(0..16).collect::<Vec<u16>>());
+    put_trigs_in_slot(&mut session, 0, 1, 67, &(0..16).collect::<Vec<u16>>());
+    session
+}
+
+#[test]
+fn song_mode_walks_the_rows_and_the_pointer_says_where() {
+    let (log, factory) = recording();
+    let mut engine = EngineLink::with_sinks(factory);
+    let mut session = song_session();
+    session.add_song_row(0).unwrap();
+    session.add_song_row(1).unwrap();
+
+    engine.set_song_mode(&session, true);
+    engine.play(&session);
+    std::thread::sleep(Duration::from_millis(60));
+    assert_eq!(engine.song_position().map(|(row, _)| row), Some(0));
+
+    // Past the first row's boundary — the 16-step track at 480 bpm is 500 ms.
+    std::thread::sleep(Duration::from_millis(600));
+    assert_eq!(engine.song_position().map(|(row, _)| row), Some(1));
+    engine.stop();
+    std::thread::sleep(Duration::from_millis(50));
+
+    let log = log.lock().expect("sink log");
+    let pitches = pitches_played(&log);
+    assert!(pitches.contains(&60) && pitches.contains(&67), "both rows sounded");
+    assert!(nothing_left_sounding(&log));
+}
+
+#[test]
+fn a_song_built_while_song_mode_is_already_on_starts_walking() {
+    // The mode is a standing request, so the snapshot that first gives the engine
+    // rows to walk is where it is honoured. Otherwise SONG has to be pressed
+    // twice — once before there was a song, once after — which is a bug nobody
+    // would report as one.
+    let (_log, factory) = recording();
+    let mut engine = EngineLink::with_sinks(factory);
+    let mut session = song_session();
+
+    engine.set_song_mode(&session, true);
+    engine.play(&session);
+    std::thread::sleep(Duration::from_millis(50));
+    assert_eq!(engine.song_position(), None, "nothing to walk yet");
+
+    session.add_song_row(1).unwrap();
+    engine.sync(&session);
+    std::thread::sleep(Duration::from_millis(50));
+    assert_eq!(engine.song_position(), Some((0, 0)));
+    engine.stop();
+}
+
+#[test]
+fn end_stop_stops_the_transport_and_releases_everything() {
+    let (log, factory) = recording();
+    let mut engine = EngineLink::with_sinks(factory);
+    let mut session = song_session();
+    session.add_song_row(0).unwrap();
+    session.song_mut().end = digi_core::EndAction::Stop;
+
+    engine.set_song_mode(&session, true);
+    engine.play(&session);
+    std::thread::sleep(Duration::from_millis(50));
+    assert!(engine.is_playing());
+
+    // One 16-step row at 480 bpm is 500 ms.
+    std::thread::sleep(Duration::from_millis(700));
+    assert!(!engine.is_playing(), "the song ran out and the transport stopped");
+    let log = log.lock().expect("sink log");
+    assert!(nothing_left_sounding(&log), "and nothing was left droning");
+}
+
+#[test]
+fn a_rebuild_mid_set_keeps_walking_the_song() {
+    // A rebuild is a new scheduler that knows nothing of song mode — the link
+    // carries it across, the same way it carries the scene, the clock and FILL.
+    let (_log, factory) = recording();
+    let mut engine = EngineLink::with_sinks(factory);
+    let mut session = song_session();
+    session.add_song_row(0).unwrap();
+    session.add_song_row(1).unwrap();
+
+    engine.set_song_mode(&session, true);
+    engine.play(&session);
+    std::thread::sleep(Duration::from_millis(50));
+
+    // Identifying a second box is a new port, which is a rebuild.
+    bind_output(&mut session, 1, "the other box");
+    assert!(engine.reroute(&session), "a new port rebuilds");
+    std::thread::sleep(Duration::from_millis(50));
+    assert!(engine.song_mode());
+    assert_eq!(engine.song_position(), Some((0, 0)), "from the top, as a rebuild is");
+    engine.stop();
+}
+
+#[test]
+fn leaving_song_mode_stops_the_walk_without_stopping_the_music() {
+    let (_log, factory) = recording();
+    let mut engine = EngineLink::with_sinks(factory);
+    let mut session = song_session();
+    session.add_song_row(1).unwrap();
+
+    engine.set_song_mode(&session, true);
+    engine.play(&session);
+    std::thread::sleep(Duration::from_millis(60));
+    assert_eq!(engine.playing_scene(), 1, "the row put its scene up");
+
+    engine.set_song_mode(&session, false);
+    std::thread::sleep(Duration::from_millis(50));
+    assert_eq!(engine.song_position(), None);
+    assert!(engine.is_playing(), "still running");
+    assert_eq!(engine.playing_scene(), 1, "on the scene the last row left up");
+    engine.stop();
+}

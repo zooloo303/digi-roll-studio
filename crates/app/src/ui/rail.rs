@@ -18,17 +18,20 @@ pub enum Tool {
     Edit,
     Harmony,
     Generate,
+    Song,
     Session,
 }
 
 impl Tool {
-    pub const ALL: [Self; 4] = [Self::Edit, Self::Harmony, Self::Generate, Self::Session];
+    pub const ALL: [Self; 5] =
+        [Self::Edit, Self::Harmony, Self::Generate, Self::Song, Self::Session];
 
     pub fn title(self) -> &'static str {
         match self {
             Self::Edit => "Edit",
             Self::Harmony => "Harmony",
             Self::Generate => "Generate",
+            Self::Song => "Song",
             Self::Session => "Session",
         }
     }
@@ -39,6 +42,7 @@ impl Tool {
             Self::Edit => "Velocity, length, micro-timing, the trig lane and the p-lock lanes",
             Self::Harmony => "Key and scale, scale-tinted rows, chord draw, and a chord under everything selected",
             Self::Generate => "Bass, chords, lead and a kick/snare/hat kit, generated to agree with each other",
+            Self::Song => "The arrangement: rows of scenes, played in order",
             Self::Session => "Save and open the session file",
         }
     }
@@ -260,6 +264,11 @@ pub fn ui(ui: &mut Ui, bars: &mut Sidebars) {
 
 #[cfg(test)]
 mod tests {
+    /// How many rail rows open a panel — Edit, Harmony, Generate, Song, Session.
+    /// One number rather than a literal in each test, so the next tool added
+    /// moves it once and both assertions below keep meaning what they say.
+    const PANEL_TOOLS: usize = 5;
+
     use super::*;
 
     #[test]
@@ -284,11 +293,18 @@ mod tests {
     }
 
     #[test]
-    fn the_support_link_is_not_a_fifth_tool() {
+    fn the_support_link_is_not_a_tool() {
         // The rail is built from `ALL`, so anything added there becomes a panel
-        // slot. The Ko-fi row opens a browser instead, and the four labels above
-        // it have to keep meaning "a panel opens here".
-        assert_eq!(Tool::ALL.len(), 4);
+        // slot. The Ko-fi row opens a browser instead, and every label above it
+        // has to keep meaning "a panel opens here".
+        //
+        // **This was `the_support_link_is_not_a_fifth_tool` until 2026-08-22**, and
+        // then Song became a fifth tool that is a panel — so the name had gone
+        // from stating the rule to contradicting it. The rule was never about
+        // five; it is that the support row is not in `ALL`. `DEVELOPMENT.md`
+        // lesson 4 is this, in the one direction it is easiest to miss: the count
+        // in the assertion moved and the name did not.
+        assert_eq!(Tool::ALL.len(), PANEL_TOOLS);
         for tool in Tool::ALL {
             assert!(
                 !tool.title().to_ascii_lowercase().contains("ko-fi"),
@@ -301,7 +317,7 @@ mod tests {
     fn every_tool_has_a_title_and_a_hint() {
         // The rail is built from `ALL`, so a tool added to the enum and left out
         // of it simply never appears — which is the failure this catches.
-        assert_eq!(Tool::ALL.len(), 4);
+        assert_eq!(Tool::ALL.len(), PANEL_TOOLS);
         for tool in Tool::ALL {
             assert!(!tool.title().is_empty());
             assert!(!tool.hint().is_empty());

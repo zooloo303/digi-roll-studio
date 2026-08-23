@@ -1,6 +1,11 @@
 // The left panel: one body per rail tool.
 //
-// **All four are real panels now.** Session took the rail's fourth position when
+// **All five are real panels now.** Song took a fifth position on 2026-08-22
+// with PLAN.md §6 phase 12 and is drawn by `ui::song` — the arrangement, and the
+// one panel here that reads the engine as well as the session, because a row is
+// only meaningful beside the pointer walking it.
+//
+// The four before it: Session took the rail's fourth position when
 // banks were cut on 2026-08-18 and is drawn by `ui::session`; Edit stopped being a
 // slot in Phase 9 (`ui::edit`); Harmony in Phase 11 (`ui::harmony`); and Generate
 // — the last one, `crates/generator` having shipped its five build stages with
@@ -19,6 +24,8 @@
 
 use eframe::egui::Ui;
 
+use crate::engine::EngineLink;
+
 use digi_core::device::PortRef;
 use digi_core::history::History;
 use digi_core::Session;
@@ -29,13 +36,14 @@ use crate::ui::harmony::HarmonyPanel;
 use crate::ui::pianoroll::PianoRoll;
 use crate::ui::rail::Tool;
 use crate::ui::session::SessionPanel;
+use crate::ui::song::SongPanel;
 use crate::ui::tracks::Selection;
 
 /// What one frame of the left panel did, whichever tool it was showing.
 ///
-/// The union of the four panels' outcomes, because the shell has one call site
+/// The union of the five panels' outcomes, because the shell has one call site
 /// and every answer reaches it through this. `reloaded` is Session's, `stepped`
-/// is Edit's, and `edited` is Edit's, Harmony's and Generate's.
+/// is Edit's, and `edited` is Edit's, Harmony's, Generate's and Song's.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct Outcome {
     pub close: bool,
@@ -59,7 +67,9 @@ pub fn ui(
     edit_panel: &mut EditPanel,
     harmony_panel: &mut HarmonyPanel,
     generate_panel: &mut GeneratePanel,
+    song_panel: &mut SongPanel,
     session: &mut Session,
+    engine: &mut EngineLink,
     selection: Selection,
     roll: &mut PianoRoll,
     history: &mut History,
@@ -96,6 +106,15 @@ pub fn ui(
         }
         Tool::Generate => {
             let out = generate_panel.ui(ui, session);
+            Outcome {
+                close: out.close,
+                reloaded: false,
+                edited: out.edited,
+                stepped: false,
+            }
+        }
+        Tool::Song => {
+            let out = song_panel.ui(ui, session, engine);
             Outcome {
                 close: out.close,
                 reloaded: false,

@@ -61,6 +61,15 @@ pub struct EngineLink {
     /// a rebuild is a new scheduler that knows none of them.
     scene: usize,
     scene_immediate: bool,
+    /// Whether the transport is walking the song, and which row the SONG panel is
+    /// pointing at.
+    ///
+    /// Both live here rather than in the session for the reason the scene does:
+    /// *which arrangement exists* is the session's, *whether we are playing it*
+    /// is the engine's. And both have to be remembered here, because a rebuild is
+    /// a whole new scheduler that knows neither.
+    song_mode: bool,
+    song_row: usize,
     rebuilds: u64,
 }
 
@@ -84,6 +93,8 @@ impl EngineLink {
             fill: false,
             scene: 0,
             scene_immediate: false,
+            song_mode: false,
+            song_row: 0,
             rebuilds: 0,
         }
     }
@@ -128,6 +139,14 @@ impl EngineLink {
             .playing_scene
             .store(self.scene, std::sync::atomic::Ordering::Relaxed);
         scheduler.prepare(session, &mut wanted);
+        // After `prepare`, because the walker commits a scene and that has to
+        // land on cursors that exist. A rebuild restarts the set from the top
+        // (see below), so the song starts at the row the panel is on rather than
+        // wherever the old scheduler had got to — there is no timeline left to
+        // resume into.
+        if self.song_mode {
+            scheduler.set_song_mode(session, true, self.song_row, 0.0);
+        }
         self.transport = Some(Transport::spawn(
             Arc::new(session.clone()),
             scheduler,
@@ -309,6 +328,54 @@ impl EngineLink {
         match self.transport {
             Some(_) => self.state.playing_scene(),
             None => self.scene,
+        }
+    }
+
+    // ------------------------------------------------------------- song mode
+
+    /// Whether the transport is walking the song.
+    pub fn song_mode(&self) -> bool {
+        self.song_mode
+    }
+
+    /// Walk the song, or stop walking it.
+    ///
+    /// Turning it on with no song built is allowed and does nothing audible: the
+    /// mode is a standing request, and the first snapshot that gives the engine
+    /// rows to walk starts it. That is what makes building a song with SONG lit
+    /// behave the way it looks, rather than needing the toggle pressed twice.
+    pub fn set_song_mode(&mut self, session: &Session, on: bool) {
+        self.song_mode = on;
+        if let Some(song) = session.song() {
+            self.song_row = self.song_row.min(song.len().saturating_sub(1));
+        }
+        self.send(TransportCommand::SetSongMode { on, row: self.song_row });
+    }
+
+    /// Which row the panel is pointing at — the box's selected row, the one the
+    /// editors write to and the one PLAY starts from.
+    pub fn selected_row(&self) -> usize {
+        self.song_row
+    }
+
+    /// Point the panel at a row without moving the playhead. The box's `[UP]`
+    /// and `[DOWN]`: selecting a row is not jumping to it.
+    pub fn select_row(&mut self, row: usize) {
+        self.song_row = row;
+    }
+
+    /// Move the playhead to a row, and point the panel at it.
+    pub fn jump_to_row(&mut self, row: usize) {
+        self.song_row = row;
+        self.send(TransportCommand::JumpToSongRow(row));
+    }
+
+    /// The row playing and which pass of it — the box's SONG POINTER. `None` in
+    /// pattern mode, and while song mode has no rows to walk.
+    pub fn song_position(&self) -> Option<(usize, u16)> {
+        match self.transport {
+            Some(_) => self.state.song_position(),
+            None => None,
         }
     }
 

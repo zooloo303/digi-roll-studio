@@ -156,6 +156,7 @@ pub mod restore;
 pub mod scenes;
 pub mod session;
 pub mod setup;
+pub mod song;
 pub mod tools;
 pub mod tracks;
 pub mod transfer;
@@ -363,6 +364,40 @@ pub fn paint_direction_arrow(
         egui::pos2(head_x, c.y),
         egui::pos2(back, c.y - half_h),
         egui::pos2(back, c.y + half_h),
+    ];
+    painter.add(egui::Shape::convex_polygon(points, colour, egui::Stroke::NONE));
+}
+
+/// The same arrow, pointing up or down — the SONG panel's row-order buttons.
+///
+/// A separate function rather than an axis flag on [`paint_direction_arrow`]: its
+/// callers all pass a `bool` already, and a second one meaning "but sideways"
+/// reads worse at every call site than two named functions do.
+///
+/// Painted for the reason the whole family is: `▾` U+25BE and `▼` U+25BC were
+/// both tofu on this screen, tried in that order, and a triangle has no font
+/// behind it.
+pub fn paint_vertical_arrow(
+    painter: &egui::Painter,
+    rect: egui::Rect,
+    pointing_down: bool,
+    colour: Color32,
+) {
+    let c = rect.center();
+    let half_h = rect.height() * 0.36;
+    let half_w = rect.width() * 0.30;
+    let stroke = egui::Stroke::new((rect.width() * 0.16).max(1.0), colour);
+    let (tail_y, head_y) = if pointing_down {
+        (c.y - half_h, c.y + half_h)
+    } else {
+        (c.y + half_h, c.y - half_h)
+    };
+    painter.line_segment([egui::pos2(c.x, tail_y), egui::pos2(c.x, head_y)], stroke);
+    let back = if pointing_down { head_y - half_h * 0.8 } else { head_y + half_h * 0.8 };
+    let points = vec![
+        egui::pos2(c.x, head_y),
+        egui::pos2(c.x - half_w, back),
+        egui::pos2(c.x + half_w, back),
     ];
     painter.add(egui::Shape::convex_polygon(points, colour, egui::Stroke::NONE));
 }

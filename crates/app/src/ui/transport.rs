@@ -19,7 +19,7 @@
 //
 // ```text
 // │ ▶ PLAY  ■ STOP  ▶▶ │ 120.0 BPM │ 003.2.07 ●●●● │ CLOCK [INT] FILL │
-//   SCENE [Scene 1] DT2 A01 · DN2 A01 │        ▍▍▍▍▍ 3 sounding │ PANIC  SETUP │
+//   [SONG] 03·1 CHORUS · SCENE [Scene 1] DT2 A01 │  ▍▍▍▍▍ 3 sounding │ PANIC  SETUP │
 // ```
 //
 // The dividers are the whole point. Before this pass the bar was one
@@ -292,9 +292,10 @@ fn clock_zone(ui: &mut Ui, engine: &mut EngineLink) {
     }
 }
 
-/// Zone 5 — scene. The compact live state only: a label, the sounding scene as a
-/// cyan pill, the `»` queued mark when a switch is waiting for a boundary, and
-/// the per-box slots.
+/// Zone 5 — scene, and since 2026-08-22 the song. The compact live state only:
+/// the PTN/SONG mode pill, the song pointer while the song is walking, a label,
+/// the sounding scene as a cyan pill, the `»` queued mark when a switch is
+/// waiting for a boundary, and the per-box slots.
 ///
 /// **Clicking the pill opens the full scene controls in a popup** — add, remove,
 /// NOW, pick which scene is being edited, rename it, and its per-box slot
@@ -312,6 +313,59 @@ fn clock_zone(ui: &mut Ui, engine: &mut EngineLink) {
 /// see its doc comment.
 fn scene_zone(ui: &mut Ui, session: &mut Session, engine: &mut EngineLink) -> bool {
     let mut changed = false;
+    // **The mode pill, and the song pointer, live in this zone rather than in
+    // zone 3.** Zone 3 is the bars-beats-steps readout, six ASCII digits and two
+    // dots in the mono family, and the box's SONG POINTER is a different question
+    // — *where in the arrangement*, not *where in the bar*. Putting it beside the
+    // scene keeps both answers to "what is playing right now" in one place, and
+    // leaves the position readout's width fixed so it does not jump when the mode
+    // changes.
+    let song_mode = engine.song_mode();
+    let has_song = session.song().is_some_and(|s| !s.is_empty());
+    let mode = if song_mode {
+        cyan_pill(ui, "SONG")
+    } else {
+        pill_button(
+            ui,
+            "PTN",
+            super::INSET_BG,
+            super::TEXT_DIMMER,
+            super::PANEL_BORDER,
+            super::INSET_BG,
+            super::TEXT_PRIMARY,
+            super::BORDER_HOVER,
+        )
+    };
+    if mode
+        .on_hover_text(if has_song {
+            "SONG walks the rows in the Song panel; PTN stays on one scene"
+        } else {
+            "No song built yet — the Song panel on the rail is where rows go.              Turning this on now means the song plays as soon as it has a row"
+        })
+        .clicked()
+    {
+        engine.set_song_mode(session, !song_mode);
+    }
+
+    if song_mode {
+        // The pointer, or why there is none. A row number with no row behind it
+        // would be the display inventing an arrangement.
+        let text = match engine.song_position() {
+            Some((row, repeat)) => {
+                let label = session
+                    .song_row(row)
+                    .map(|r| r.label.clone())
+                    .filter(|l| !l.is_empty())
+                    .unwrap_or_else(|| String::from("row"));
+                format!("{:02}·{} {label}", row + 1, repeat + 1)
+            }
+            None if has_song => String::from("— stopped"),
+            None => String::from("— no rows"),
+        };
+        ui.label(egui::RichText::new(text).monospace().size(10.0).color(super::TEXT_SECONDARY));
+        ui.label(egui::RichText::new("·").size(10.0).color(super::TEXT_DIMMEST));
+    }
+
     ui.label(egui::RichText::new("SCENE").size(9.0).color(super::TEXT_DIMMER));
 
     // A project file is the only way to get here with no scenes — nothing in the
