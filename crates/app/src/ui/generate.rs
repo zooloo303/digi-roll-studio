@@ -1335,7 +1335,7 @@ mod tests {
     use digi_core::model::Note;
 
     fn session_with_two_boxes() -> Session {
-        digi_core::default_session()
+        digi_core::two_box_session()
     }
 
     /// `GenContext::default()`'s six rows, aimed at a real box — the bare

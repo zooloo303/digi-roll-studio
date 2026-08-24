@@ -19,7 +19,7 @@
 use digi_core::device::model_for_key;
 use digi_core::import::{patch_read_source, patch_read_source_named, Fetched, PatchReadError};
 use digi_core::model::{PatchSound, Source, TrackPatch};
-use digi_core::{default_session, DeviceId, ImportError, Note, PatternRef, Project, Session, TrackKind};
+use digi_core::{two_box_session, DeviceId, ImportError, Note, PatternRef, Project, Session, TrackKind};
 use digi_protocol::pattern::{
     decode_pattern_kit, dn2_spec, dt2_spec, KitInfo, PatternKit, Spec, TrackData,
 };
@@ -54,12 +54,12 @@ fn payload(name: &str) -> Vec<u8> {
 
 /// A session, a device of that model in it, and the fixture ready to import.
 fn ready(model_key: &str, fixture: &str) -> (Session, DeviceId, Spec, Vec<u8>) {
-    let session = default_session();
+    let session = two_box_session();
     let device = session
         .devices
         .iter()
         .find(|d| d.model.key == model_key)
-        .expect("default_session has both boxes")
+        .expect("two_box_session has both boxes")
         .id;
     let spec = if model_key == "DT2" { dt2_spec() } else { dn2_spec() };
     (session, device, spec, payload(fixture))
@@ -298,7 +298,7 @@ fn patch_read_source_refuses_a_pattern_with_no_provenance_rather_than_guessing_a
     // fetch: a pattern nobody has ever fetched carries no `Source`, and this
     // must refuse rather than default to A01 or to the slot it happens to sit
     // in.
-    let session = default_session();
+    let session = two_box_session();
     let device = session.devices[0].id;
     let pattern = session.device(device).unwrap().pattern(0);
     assert_eq!(pattern.and_then(|p| p.source.as_ref()), None, "a fresh session's slot has no source");
@@ -338,7 +338,7 @@ fn patch_read_source_resolves_the_slot_a_pattern_actually_came_from() {
     let kit = decode_pattern_kit(&spec, &payload).unwrap();
     // Fetched from A01 in this session but landed in A06 — a real shape
     // `ui::transfer`'s IN block allows (its `into` picker is independent of
-    // `from`). `default_session` gives each box one bank of sixteen slots, so
+    // `from`). `two_box_session` gives each box one bank of sixteen slots, so
     // A06 is the highest-numbered real destination available here. The slot
     // to *read* has to follow the pattern's own record, not wherever it
     // happens to be sitting in the session.
@@ -363,7 +363,7 @@ fn patch_read_source_named_reads_a_slot_a_pattern_made_here_never_came_from() {
     // with sixteen named tracks, and nothing fetched yet. The slot comes from a
     // picker on screen, so it is said rather than guessed, and this function is
     // where "said" is spelled out.
-    let session = default_session();
+    let session = two_box_session();
     let device = session.devices[0].id;
     let pattern = session.device(device).unwrap().pattern(0);
     assert_eq!(pattern.and_then(|p| p.source.as_ref()), None, "nothing here was ever fetched");
@@ -920,7 +920,7 @@ fn a_patch() -> TrackPatch {
 
 #[test]
 fn a_track_with_a_patch_round_trips_through_the_project_file() {
-    let mut session = default_session();
+    let mut session = two_box_session();
     let device = session.devices[0].id;
     session
         .device_mut(device)
@@ -941,7 +941,7 @@ fn a_track_with_a_patch_round_trips_through_the_project_file() {
 
 #[test]
 fn a_track_without_a_patch_round_trips_through_the_project_file() {
-    let session = default_session();
+    let session = two_box_session();
     let device = session.devices[0].id;
     assert_eq!(
         session.device(device).unwrap().pattern(0).unwrap().track(0).unwrap().patch,
@@ -956,7 +956,7 @@ fn a_track_without_a_patch_round_trips_through_the_project_file() {
 
 #[test]
 fn a_project_file_written_before_the_patch_field_existed_still_loads() {
-    let mut session = default_session();
+    let mut session = two_box_session();
     let device = session.devices[0].id;
     session
         .device_mut(device)

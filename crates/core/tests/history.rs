@@ -8,11 +8,11 @@
 
 use digi_core::device::{model_for_key, Device};
 use digi_core::history::{Content, History, HISTORY_MAX};
-use digi_core::{default_session, Note, PortRef, Session};
+use digi_core::{two_box_session, Note, PortRef, Session};
 
 /// Two boxes, and a session where both play A01. The default the app opens with.
 fn session() -> Session {
-    default_session()
+    two_box_session()
 }
 
 fn first_track(session: &mut Session) -> &mut digi_core::Track {

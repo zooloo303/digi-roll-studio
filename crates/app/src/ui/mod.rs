@@ -71,7 +71,7 @@
 // | glyph | where |
 // |---|---|
 // | `·` U+00B7 | separator in the device strip, track strip and transport; a live trig-lane step with nothing set, and the lane picker's title |
-// | `×` U+00D7 | the close button on both side panels |
+// | `×` U+00D7 | the close button on both side panels, and the remove-box control in the device strip |
 // | `»` U+00BB | scene bar: this scene is queued |
 // | `—` U+2014 | the em dash in "— none —", an unbound port, the lane picker's no-condition button, every write/restore result line, and the Session panel's close guard |
 // | `…` U+2026 | ports panel: waiting for the box; the status line of a fetch, a write or a restore; the Session panel's `Save As…` and `Open…`, and the Backups list's `Export…` |

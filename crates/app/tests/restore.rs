@@ -21,7 +21,7 @@ use std::sync::mpsc::channel;
 
 use digi_core::device::{model_for_key, DeviceIo, PortRef};
 use digi_core::import::Fetched;
-use digi_core::{default_session, DeviceId, PatternRef, Session};
+use digi_core::{two_box_session, DeviceId, PatternRef, Session};
 use digi_protocol::backup_stash::{Stash, StashEntry};
 use digi_protocol::device::{identity_from_responses, DeviceIdentity, DeviceResponse};
 use digi_protocol::pattern::{decode_pattern_kit, Spec};
@@ -114,12 +114,12 @@ fn tmp_stash(tag: &str) -> Stash {
 /// A session holding the DT2 capture in A01, with the box's ports set so a press
 /// can build a job at all.
 fn session_with_import() -> (Session, DeviceId, &'static Spec) {
-    let mut session = default_session();
+    let mut session = two_box_session();
     let id = session
         .devices
         .iter()
         .find(|d| d.model.key == "DT2")
-        .expect("default_session has both boxes")
+        .expect("two_box_session has both boxes")
         .id;
     let spec = model_for_key("DT2").and_then(|m| m.spec()).expect("a box with a spec");
     let bytes = payload(DT2_CONDITIONS);

@@ -882,7 +882,7 @@ fn re_preparing_never_renumbers_a_table_the_caller_already_opened() {
 fn a_session_with_no_ports_at_all_interns_nothing() {
     // What the app opens with, before any box has been identified: it must be
     // able to spawn an engine and move a playhead against no connections.
-    let session = digi_core::default_session();
+    let session = digi_core::two_box_session();
     let mut ports = PortTable::new();
     digi_engine::scheduler::intern_ports(&session, &mut ports);
     assert!(ports.is_empty());

@@ -19,7 +19,7 @@
 //! third one, in-app rather than cross-device.
 
 use digi_core::model::TrackScale;
-use digi_core::{default_session, Note, PLockLane};
+use digi_core::{two_box_session, Note, PLockLane};
 use digi_roll_studio::ui::tracks::{track, track_mut, Selection};
 use digi_roll_studio::EngineLink;
 use eframe::egui;
@@ -78,7 +78,7 @@ fn frame(
     edited
 }
 
-/// DT2 T01 in `default_session()`.
+/// DT2 T01 in `two_box_session()`.
 const SOURCE: Selection = Selection { device: 0, track: 0 };
 /// DT2 T06 — a different track on the same box, the ordinary case.
 const DEST: Selection = Selection { device: 0, track: 5 };
@@ -88,7 +88,7 @@ const DN2_DEST: Selection = Selection { device: 1, track: 0 };
 #[test]
 fn shift_c_then_shift_v_copies_the_music_and_leaves_the_destination_s_routing_alone() {
     let ctx = egui::Context::default();
-    let mut session = default_session();
+    let mut session = two_box_session();
     let engine = EngineLink::default();
 
     {
@@ -154,7 +154,7 @@ fn shift_c_then_shift_v_copies_the_music_and_leaves_the_destination_s_routing_al
 #[test]
 fn pasting_onto_the_copied_cell_itself_is_a_silent_no_op() {
     let ctx = egui::Context::default();
-    let mut session = default_session();
+    let mut session = two_box_session();
     let engine = EngineLink::default();
     {
         let t = track_mut(&mut session, SOURCE).unwrap();
@@ -174,7 +174,7 @@ fn pasting_onto_the_copied_cell_itself_is_a_silent_no_op() {
 #[test]
 fn pasting_with_nothing_ever_copied_does_nothing() {
     let ctx = egui::Context::default();
-    let mut session = default_session();
+    let mut session = two_box_session();
     let engine = EngineLink::default();
     let before = track(&session, DEST).unwrap().clone();
 
@@ -189,7 +189,7 @@ fn pasting_with_nothing_ever_copied_does_nothing() {
 #[test]
 fn pasting_after_the_copied_device_is_removed_fails_safely() {
     let ctx = egui::Context::default();
-    let mut session = default_session(); // [DT2, DN2]
+    let mut session = two_box_session(); // [DT2, DN2]
     let engine = EngineLink::default();
     {
         let t = track_mut(&mut session, DN2_DEST).unwrap();
@@ -216,7 +216,7 @@ fn pasting_after_the_copied_device_is_removed_fails_safely() {
 #[test]
 fn a_cross_device_paste_still_edits_even_though_a_raw_lane_could_not_cross() {
     let ctx = egui::Context::default();
-    let mut session = default_session();
+    let mut session = two_box_session();
     let engine = EngineLink::default();
     {
         let t = track_mut(&mut session, SOURCE).unwrap(); // DT2 T01
@@ -244,7 +244,7 @@ fn a_cell_with_no_track_under_it_cannot_be_copied() {
     // A selection past the end of the session — the same "no track selected"
     // case `track`/`track_mut` already handle elsewhere in this pane.
     let ctx = egui::Context::default();
-    let mut session = default_session();
+    let mut session = two_box_session();
     let engine = EngineLink::default();
     let empty_selection = Selection { device: 9, track: 0 };
 
@@ -280,7 +280,7 @@ fn a_cell_with_no_track_under_it_cannot_be_copied() {
 #[test]
 fn a_command_modified_letter_is_not_this_pane_s_shortcut() {
     let ctx = egui::Context::default();
-    let mut session = digi_core::default_session();
+    let mut session = digi_core::two_box_session();
     let engine = EngineLink::default();
 
     {

@@ -668,20 +668,20 @@ mod tests {
     #[test]
     fn a_destination_with_no_device_refuses_to_validate() {
         let dest = Destination { device: None, slot: PatternRef::new(0, 0), track: 0 };
-        let session = digi_core::default_session();
+        let session = digi_core::two_box_session();
         assert_eq!(dest.validate(&session), Err(DestinationError::NoDevice));
     }
 
     #[test]
     fn a_destination_naming_a_device_not_in_the_session_refuses_to_validate() {
         let dest = Destination { device: Some(DeviceId::next()), slot: PatternRef::new(0, 0), track: 0 };
-        let session = digi_core::default_session();
+        let session = digi_core::two_box_session();
         assert_eq!(dest.validate(&session), Err(DestinationError::DeviceMissing));
     }
 
     #[test]
     fn a_destination_naming_a_real_device_and_track_validates() {
-        let session = digi_core::default_session();
+        let session = digi_core::two_box_session();
         let device = &session.devices[0];
         let dest = Destination { device: Some(device.id), slot: PatternRef::new(0, 0), track: 0 };
         assert_eq!(dest.validate(&session), Ok(()));
@@ -689,7 +689,7 @@ mod tests {
 
     #[test]
     fn a_track_past_the_devices_own_count_refuses_to_validate() {
-        let session = digi_core::default_session();
+        let session = digi_core::two_box_session();
         let device = &session.devices[0];
         let dest = Destination { device: Some(device.id), slot: PatternRef::new(0, 0), track: device.model.num_tracks };
         assert_eq!(

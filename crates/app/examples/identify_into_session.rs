@@ -10,13 +10,13 @@
 // Run with:  cargo run -p digi_roll_studio --example identify_into_session
 
 use digi_core::device::PortRef;
-use digi_core::{default_session, BindError};
+use digi_core::{two_box_session, BindError};
 use digi_midi::{list_inputs, list_outputs, ElektronDevice, PortBinding};
 
 fn main() {
     let inputs = list_inputs().expect("MIDI would not start");
     let outputs = list_outputs().expect("MIDI would not start");
-    let mut session = default_session();
+    let mut session = two_box_session();
 
     println!("session: {} devices, none identified yet", session.devices.len());
 

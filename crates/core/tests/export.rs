@@ -25,7 +25,7 @@ use std::collections::BTreeMap;
 use digi_core::device::model_for_key;
 use digi_core::export::track_write;
 use digi_core::import::Fetched;
-use digi_core::{default_session, DeviceId, PatternRef, Session};
+use digi_core::{two_box_session, DeviceId, PatternRef, Session};
 use digi_protocol::backup_stash::Stash;
 use digi_protocol::device::{identity_from_responses, DeviceIdentity, DeviceResponse};
 use digi_protocol::pattern::{decode_pattern_kit, track_notes, Note, Spec};
@@ -134,12 +134,12 @@ fn tmp_stash(tag: &str) -> Stash {
 
 /// A session with one box of `model_key` in it, holding `fixture` in slot A01.
 fn imported(model_key: &str, fixture: &str) -> (Session, DeviceId, &'static Spec, Vec<u8>) {
-    let mut session = default_session();
+    let mut session = two_box_session();
     let device = session
         .devices
         .iter()
         .find(|d| d.model.key == model_key)
-        .expect("default_session has both boxes")
+        .expect("two_box_session has both boxes")
         .id;
     let spec = model_for_key(model_key).and_then(|m| m.spec()).expect("a box with a spec");
     let bytes = payload(fixture);

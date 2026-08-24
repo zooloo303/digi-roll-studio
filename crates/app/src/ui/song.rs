@@ -675,7 +675,7 @@ mod tests {
     use digi_core::song::SongRow;
 
     fn session() -> Session {
-        let mut s = digi_core::default_session();
+        let mut s = digi_core::two_box_session();
         s.scenes[0].name = "Intro".into();
         s.add_scene("Chorus", Some(0));
         s

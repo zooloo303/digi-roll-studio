@@ -19,14 +19,14 @@
 
 use digi_core::chords::{ChordSettings, Harmonised, Harmony, Quality, QualityChoice, Scale};
 use digi_core::history::{Content, History};
-use digi_core::{default_session, Note, Project, Session};
+use digi_core::{two_box_session, Note, Project, Session};
 use digi_roll_studio::ui::harmony::{harmonise_message, HarmonyPanel, Status};
 use digi_roll_studio::ui::pianoroll::PianoRoll;
 use digi_roll_studio::ui::tracks::{track, track_mut, Selection};
 
 /// A session with a key set, chord draw on, and one note on the DT2's track 0.
 fn session_with_a_melody() -> (Session, Selection, PianoRoll) {
-    let mut session = default_session();
+    let mut session = two_box_session();
     session.harmony = Harmony {
         root: 0,
         scale: Some(Scale::Major),
@@ -196,7 +196,7 @@ fn a_harmonise_over_a_track_the_roll_cannot_draw_is_still_bounded_by_the_roll() 
     // carries — because a fetched pattern can hold a pitch outside the default
     // rows. A chord under such a note has somewhere to go, and it must be inside
     // the band the roll will draw.
-    let mut session = default_session();
+    let mut session = two_box_session();
     session.harmony = Harmony {
         chord: ChordSettings {
             on: true,

@@ -20,7 +20,7 @@ use std::rc::Rc;
 use digi_core::edit_ops::{clear_track, duplicate_last_bar};
 use digi_core::history::{Content, History};
 use digi_core::midifile::{midi_file_to_notes, track_to_midi_file};
-use digi_core::{default_session, Note, Session};
+use digi_core::{two_box_session, Note, Session};
 use digi_roll_studio::ui::edit::{EditPanel, Status};
 use digi_roll_studio::ui::pianoroll::PianoRoll;
 use digi_roll_studio::ui::tracks::{track, track_mut, Selection};
@@ -95,7 +95,7 @@ const FIRST: Selection = Selection { device: 0, track: 0 };
 /// committed witness no test can see. The first version of this fixture had notes
 /// at 0, 4 and 12, and the swing test passed by being unable to fail.
 fn seeded() -> Session {
-    let mut session = default_session();
+    let mut session = two_box_session();
     let device = session.devices[0].id;
     let pattern = session.device_mut(device).unwrap().pattern_mut(0).unwrap();
     pattern.swing = 66;
@@ -189,7 +189,7 @@ fn an_import_replaces_the_tracks_notes_and_its_length() {
     // A file whose music needs two bars, built by the codec so the fixture cannot
     // drift from what the parser expects.
     let source = {
-        let mut s = default_session();
+        let mut s = two_box_session();
         let device = s.devices[0].id;
         let t = s.device_mut(device).unwrap().pattern_mut(0).unwrap().track_mut(0).unwrap();
         t.length_steps = 32;
@@ -344,7 +344,7 @@ fn a_file_whose_notes_all_land_past_the_limit_says_so_rather_than_no_notes_found
     let mut session = seeded();
     let mut roll = PianoRoll::default();
     let source = {
-        let mut s = default_session();
+        let mut s = two_box_session();
         let device = s.devices[0].id;
         let t = s.device_mut(device).unwrap().pattern_mut(0).unwrap().track_mut(0).unwrap();
         // Past MAX_STEPS (128), the way the real file's first track was. The
@@ -557,7 +557,7 @@ fn an_import_is_an_ordinary_step_and_undoes() {
     let mut roll = PianoRoll::default();
     let mut history = History::default();
     let source = {
-        let mut s = default_session();
+        let mut s = two_box_session();
         let device = s.devices[0].id;
         let t = s.device_mut(device).unwrap().pattern_mut(0).unwrap().track_mut(0).unwrap();
         t.notes = vec![Note::new(0.0, 48, 1.0, 90, 0.0)];

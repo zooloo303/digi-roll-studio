@@ -130,7 +130,7 @@ fn models() -> (&'static DeviceModel, &'static DeviceModel) {
 fn the_engine_is_built_once_and_rebuilt_only_when_the_routing_moves() {
     let (log, factory) = recording();
     let mut engine = EngineLink::with_sinks(factory);
-    let mut session = digi_core::default_session();
+    let mut session = digi_core::two_box_session();
 
     assert!(!engine.running(), "nothing is spawned until something asks");
     assert!(engine.reroute(&session), "the first call builds the engine");
@@ -162,7 +162,7 @@ fn the_engine_is_built_once_and_rebuilt_only_when_the_routing_moves() {
 fn a_second_box_is_a_second_port_and_two_boxes_on_one_port_share_it() {
     let (_log, factory) = recording();
     let mut engine = EngineLink::with_sinks(factory);
-    let mut session = digi_core::default_session();
+    let mut session = digi_core::two_box_session();
 
     bind_output(&mut session, 0, "Elektron Digitakt II");
     bind_output(&mut session, 1, "Elektron Digitone II");
@@ -182,7 +182,7 @@ fn a_second_box_is_a_second_port_and_two_boxes_on_one_port_share_it() {
 fn an_edit_snapshots_rather_than_rebuilding() {
     let (log, factory) = recording();
     let mut engine = EngineLink::with_sinks(factory);
-    let mut session = digi_core::default_session();
+    let mut session = digi_core::two_box_session();
     bind_output(&mut session, 0, "a port");
     engine.reroute(&session);
     assert_eq!(engine.rebuilds(), 1);
@@ -202,7 +202,7 @@ fn an_edit_snapshots_rather_than_rebuilding() {
 fn a_track_pointed_at_its_own_port_gets_one_of_its_own() {
     let (_log, factory) = recording();
     let mut engine = EngineLink::with_sinks(factory);
-    let mut session = digi_core::default_session();
+    let mut session = digi_core::two_box_session();
     bind_output(&mut session, 0, "the box");
 
     let id = session.devices[0].id;
@@ -227,7 +227,7 @@ fn a_track_pointed_at_its_own_port_gets_one_of_its_own() {
 fn playing_puts_clock_and_notes_on_the_wire_and_stop_releases_every_one() {
     let (log, factory) = recording();
     let mut engine = EngineLink::with_sinks(factory);
-    let mut session = digi_core::default_session();
+    let mut session = digi_core::two_box_session();
     // 240 bpm: a step is 62.5 ms, so a short run is still several steps. The
     // assertions below are all "at least one" — this test proves the seam
     // carries bytes, not what the timing is. `digi_engine`'s own tests own the
@@ -274,7 +274,7 @@ fn stopping_releases_a_note_whose_off_was_already_queued() {
     // time; the loop makes "most" into "reliably at least once".
     let (log, factory) = recording();
     let mut engine = EngineLink::with_sinks(factory);
-    let mut session = digi_core::default_session();
+    let mut session = digi_core::two_box_session();
     session.tempo_bpm = 120.0;
     bind_output(&mut session, 0, "a port");
     put_trigs(&mut session, 0, 0, &(0..16).collect::<Vec<u16>>());
@@ -294,10 +294,10 @@ fn stopping_releases_a_note_whose_off_was_already_queued() {
 
 #[test]
 fn the_models_are_the_two_the_session_opens_with() {
-    // Guards the fixtures the tests above lean on: `default_session` is a DT2 and
+    // Guards the fixtures the tests above lean on: `two_box_session` is a DT2 and
     // a DN2, in that order, 16 tracks each.
     let (dt2, dn2) = models();
-    let session = digi_core::default_session();
+    let session = digi_core::two_box_session();
     assert_eq!(session.devices[0].model, dt2);
     assert_eq!(session.devices[1].model, dn2);
     assert_eq!(session.devices[0].model.num_tracks, 16);
@@ -320,7 +320,7 @@ fn a_scene_change_is_not_a_routing_change_and_does_not_rebuild_the_engine() {
     // the one playing.
     let (log, factory) = recording();
     let mut engine = EngineLink::with_sinks(factory);
-    let mut session = digi_core::default_session();
+    let mut session = digi_core::two_box_session();
     bind_output(&mut session, 0, "the box");
 
     // The second scene sends track 1 somewhere the first one does not, which is
@@ -353,7 +353,7 @@ fn a_scene_picked_while_stopped_takes_effect_at_once() {
     // scene to edit has to do what it looks like it does.
     let (_log, factory) = recording();
     let mut engine = EngineLink::with_sinks(factory);
-    let mut session = digi_core::default_session();
+    let mut session = digi_core::two_box_session();
     bind_output(&mut session, 0, "the box");
     session.add_scene("Chorus", Some(0));
     engine.reroute(&session);
@@ -370,7 +370,7 @@ fn a_scene_picked_while_stopped_takes_effect_at_once() {
 fn a_scene_asked_for_while_playing_waits_for_the_boundary() {
     let (log, factory) = recording();
     let mut engine = EngineLink::with_sinks(factory);
-    let mut session = digi_core::default_session();
+    let mut session = digi_core::two_box_session();
     // 480 bpm makes a step 31 ms, so the default 16-step tracks put the boundary
     // half a second out — long enough that "still queued" is not a race, short
     // enough that the test does not sit there.
@@ -414,7 +414,7 @@ fn a_scene_asked_for_while_playing_waits_for_the_boundary() {
 fn asking_for_a_scene_that_is_not_there_changes_nothing() {
     let (_log, factory) = recording();
     let mut engine = EngineLink::with_sinks(factory);
-    let mut session = digi_core::default_session();
+    let mut session = digi_core::two_box_session();
     bind_output(&mut session, 0, "the box");
     engine.reroute(&session);
 
@@ -431,7 +431,7 @@ fn a_rebuild_starts_on_the_scene_that_was_asked_for() {
     // case: it must not put the boxes back on scene 1.
     let (_log, factory) = recording();
     let mut engine = EngineLink::with_sinks(factory);
-    let mut session = digi_core::default_session();
+    let mut session = digi_core::two_box_session();
     bind_output(&mut session, 0, "the box");
     session.add_scene("Chorus", Some(0));
     engine.reroute(&session);
@@ -452,7 +452,7 @@ fn removing_a_scene_below_the_one_playing_moves_the_engine_with_it() {
     // end, nothing at all.
     let (_log, factory) = recording();
     let mut engine = EngineLink::with_sinks(factory);
-    let mut session = digi_core::default_session();
+    let mut session = digi_core::two_box_session();
     bind_output(&mut session, 0, "the box");
     session.add_scene("Two", Some(0));
     session.add_scene("Three", Some(0));
@@ -488,7 +488,7 @@ fn removing_a_scene_below_the_one_playing_moves_the_engine_with_it() {
 fn a_hand_picked_port_is_a_routing_change_and_opens_a_connection() {
     let (log, factory) = recording();
     let mut engine = EngineLink::with_sinks(factory);
-    let mut session = digi_core::default_session();
+    let mut session = digi_core::two_box_session();
     engine.reroute(&session);
     assert_eq!(engine.ports().len(), 0, "nothing has been identified or picked");
 
@@ -513,7 +513,7 @@ fn a_box_pointed_at_a_bus_by_hand_plays_its_trigs_there() {
     // reach the port the strip named.
     let (log, factory) = recording();
     let mut engine = EngineLink::with_sinks(factory);
-    let mut session = digi_core::default_session();
+    let mut session = digi_core::two_box_session();
     session.tempo_bpm = 240.0;
 
     let dt2 = session.devices[0].id;
@@ -541,7 +541,7 @@ fn taking_a_port_away_by_hand_closes_the_connection() {
     // or the strip would say "none" while the notes kept going out.
     let (log, factory) = recording();
     let mut engine = EngineLink::with_sinks(factory);
-    let mut session = digi_core::default_session();
+    let mut session = digi_core::two_box_session();
     let dt2 = session.devices[0].id;
     session.set_device_port(
         dt2,
@@ -570,7 +570,7 @@ fn moving_a_port_from_one_box_to_the_other_leaves_one_connection_open() {
     // avoid.
     let (log, factory) = recording();
     let mut engine = EngineLink::with_sinks(factory);
-    let mut session = digi_core::default_session();
+    let mut session = digi_core::two_box_session();
     let (dt2, dn2) = (session.devices[0].id, session.devices[1].id);
     let bus = PortRef { id: "iac1".into(), name: "IAC Driver Bus 1".into() };
 
@@ -628,7 +628,7 @@ fn moving_a_tracks_level_sends_the_boxs_own_fader_on_that_tracks_channel() {
     // mixing happens.
     let (log, factory) = recording();
     let mut engine = EngineLink::with_sinks(factory);
-    let mut session = digi_core::default_session();
+    let mut session = digi_core::two_box_session();
     bind_output(&mut session, 0, "a port");
     set_level(&mut session, 0, 2, Some(64));
 
@@ -655,7 +655,7 @@ fn a_dn2_gets_its_own_level_number_not_the_dt2s() {
     // parameter layer is shaped to prevent.
     let (log, factory) = recording();
     let mut engine = EngineLink::with_sinks(factory);
-    let mut session = digi_core::default_session();
+    let mut session = digi_core::two_box_session();
     bind_output(&mut session, 1, "the dn2");
     set_level(&mut session, 1, 0, Some(127));
 
@@ -678,7 +678,7 @@ fn a_track_that_has_never_been_touched_sends_nothing() {
     // project must not ride sixteen of them to a number it invented.
     let (log, factory) = recording();
     let mut engine = EngineLink::with_sinks(factory);
-    let mut session = digi_core::default_session();
+    let mut session = digi_core::two_box_session();
     bind_output(&mut session, 0, "a port");
 
     engine.reroute(&session);
@@ -695,7 +695,7 @@ fn a_level_follows_the_track_to_its_own_port_not_its_boxs() {
     // different port from the notes would ride some other box's track.
     let (log, factory) = recording();
     let mut engine = EngineLink::with_sinks(factory);
-    let mut session = digi_core::default_session();
+    let mut session = digi_core::two_box_session();
     bind_output(&mut session, 0, "the box");
     let id = session.devices[0].id;
     let slot = session.slot_in_scene(0, id).expect("a slot").slot();
@@ -725,7 +725,7 @@ fn a_level_follows_the_track_to_its_own_port_not_its_boxs() {
 fn a_level_on_a_track_routed_nowhere_is_refused_rather_than_guessed() {
     let (log, factory) = recording();
     let mut engine = EngineLink::with_sinks(factory);
-    let mut session = digi_core::default_session();
+    let mut session = digi_core::two_box_session();
     set_level(&mut session, 0, 0, Some(64));
 
     engine.reroute(&session);
@@ -747,7 +747,7 @@ fn a_level_on_a_track_routed_nowhere_is_refused_rather_than_guessed() {
 /// A session whose scenes are two different pitches, so the wire says which row
 /// is playing. 480 bpm, as the scene tests use: a 16-step track is half a second.
 fn song_session() -> Session {
-    let mut session = digi_core::default_session();
+    let mut session = digi_core::two_box_session();
     session.tempo_bpm = 480.0;
     bind_output(&mut session, 0, "the box");
     session.add_scene("Chorus", Some(0));

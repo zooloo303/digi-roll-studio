@@ -34,7 +34,7 @@
 use digi_core::device::{model_for_slug, PortRef};
 use digi_core::import::Fetched;
 use digi_core::session::PatternRef;
-use digi_core::{default_session, Session};
+use digi_core::{two_box_session, Session};
 use digi_midi::{list_inputs, list_outputs, ElektronDevice, PortBinding};
 use digi_protocol::pattern::decode_pattern_kit;
 use digi_protocol::pattern_settings::read_swing;
@@ -53,7 +53,7 @@ fn main() {
     // The same session the app opens with: a DT2 and a DN2, one bank of slots
     // each. A fetched pattern has to land somewhere, and "somewhere" is a real
     // session or the fetch has proved nothing about the import.
-    let mut session = default_session();
+    let mut session = two_box_session();
 
     let mut attempted = 0usize;
     let mut ok = 0usize;

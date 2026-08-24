@@ -231,7 +231,7 @@ mod tests {
 
     #[test]
     fn a_scene_button_says_what_the_engine_is_doing_with_it() {
-        let mut session = digi_core::default_session();
+        let mut session = digi_core::two_box_session();
         session.add_scene("Chorus", Some(0));
 
         // Playing scene 0 with 1 queued behind it: one mark each, and they are
@@ -244,7 +244,7 @@ mod tests {
 
     #[test]
     fn the_tooltip_names_every_box_and_its_slot() {
-        let mut session = digi_core::default_session();
+        let mut session = digi_core::two_box_session();
         let dn2 = session.devices[1].id;
         session.set_slot_in_scene(0, dn2, PatternRef::new(1, 2));
         assert_eq!(slots_summary(&session, 0), "DT2 A01 · DN2 B03");

@@ -18,7 +18,7 @@ use digi_core::device::PortRef;
 use digi_core::model::{Note, PLockLane, TrackScale, PLOCK_STEPS};
 use digi_core::project::Project;
 use digi_core::session::PatternRef;
-use digi_core::{default_session, Session};
+use digi_core::{two_box_session, Session};
 use digi_roll_studio::ui::session::{
     export_backup, Chooser, CloseGuard, NewGuard, SessionPanel, Status,
 };
@@ -96,7 +96,7 @@ fn tmp_dir(tag: &str) -> PathBuf {
 /// — the same argument as `core/tests/session.rs`'s seeded fixture, and for the
 /// same reason: a round-trip assertion only witnesses what the fixture sets.
 fn seeded() -> Session {
-    let mut s = default_session();
+    let mut s = two_box_session();
     let (dt2, dn2) = (s.devices[0].id, s.devices[1].id);
 
     s.name = "Desk".into();
@@ -127,29 +127,22 @@ fn seeded() -> Session {
     s
 }
 
-/// Assert `session` is a just-launched session, without comparing it to a
-/// second `default_session()` call by `==`.
+/// Assert `session` is a just-launched session.
 ///
-/// **Why not `assert_eq!(session, default_session())`:** `DeviceId` comes off
-/// a process-global `AtomicU64` (`core::device::NEXT_DEVICE_ID`), so every
-/// call to `default_session()` mints fresh ids — two separate calls are never
-/// equal to one another even though their *shape* is identical. An equality
-/// assertion against a second call would be exactly lesson 4's shape: it
-/// fails even on correct code, for a reason that has nothing to do with the
-/// claim the test is making. Checking the shape field by field is what
-/// survives that.
-fn assert_is_fresh_default_session(session: &Session) {
+/// Since discovery-first (2026-08-24) that means **empty**: no boxes, one
+/// scene, house tempo. New and first launch are the same state, and both leave
+/// filling the desk to auto-connect and to Setup's "Add a box" — so a fresh
+/// session asserting two specific boxes would be asserting the pre-2026-08-24
+/// launch state this release removed.
+fn assert_is_fresh_empty_session(session: &Session) {
     assert_eq!(session.name, "Session");
     assert_eq!(session.tempo_bpm, 120.0);
     assert_eq!(session.current_scene, 0);
     assert_eq!(session.scenes.len(), 1);
-    assert_eq!(session.devices.len(), 2);
-    assert_eq!(session.devices[0].name, "DT2");
-    assert_eq!(session.devices[0].model.num_tracks, 16);
-    assert!(!session.devices[0].has_ports(), "a new session's boxes must have no ports bound");
-    assert_eq!(session.devices[1].name, "DN2");
-    assert_eq!(session.devices[1].model.num_tracks, 16);
-    assert!(!session.devices[1].has_ports(), "a new session's boxes must have no ports bound");
+    assert!(
+        session.devices.is_empty(),
+        "a new session has no boxes — discovery and Add a box fill the desk"
+    );
 }
 
 // ------------------------------------------------------------- save and open
@@ -166,7 +159,7 @@ fn a_saved_session_opens_back_as_the_same_session() {
     let original = seeded();
     assert!(p.save(&original), "the save should reach the disk");
 
-    let mut opened = default_session();
+    let mut opened = two_box_session();
     let (mut q, script2) = panel();
     script2.borrow_mut().open_answers.push(Some(path.clone()));
     assert!(q.open(&mut opened, &[], &[]));
@@ -187,7 +180,7 @@ fn a_session_saved_and_opened_and_saved_again_is_byte_identical() {
     script.borrow_mut().save_answers.push(Some(first_path.clone()));
     assert!(p.save(&seeded()));
 
-    let mut reopened = default_session();
+    let mut reopened = two_box_session();
     let (mut q, script2) = panel();
     script2.borrow_mut().open_answers.push(Some(first_path.clone()));
     script2.borrow_mut().save_answers.push(Some(second_path.clone()));
@@ -222,7 +215,7 @@ fn saving_adopts_the_file_so_the_next_save_does_not_ask_again() {
 #[test]
 fn the_suggested_filename_comes_off_the_session_name() {
     let (mut p, script) = panel();
-    let mut s = default_session();
+    let mut s = two_box_session();
     s.name = "Tuesday Desk".into();
     p.save_as(&s);
     assert_eq!(script.borrow().suggested.as_deref(), Some("Tuesday-Desk.json"));
@@ -301,7 +294,7 @@ fn opening_a_session_does_not_mark_it_as_unsaved_work() {
     script.borrow_mut().open_answers.push(Some(path));
     p.mark_edited(true);
 
-    let mut s = default_session();
+    let mut s = two_box_session();
     assert!(p.open(&mut s, &[], &[]));
     assert!(!p.is_dirty(), "a session straight off disk is not unsaved work");
 }
@@ -381,7 +374,7 @@ fn a_box_whose_port_is_gone_is_named_and_keeps_its_patterns() {
     let (mut p, script) = panel();
     script.borrow_mut().open_answers.push(Some(path));
 
-    let mut s = default_session();
+    let mut s = two_box_session();
     // Nothing plugged in that matches, by id or by name.
     let elsewhere = [PortRef { id: "other".into(), name: "Some Other Box".into() }];
     assert!(p.open(&mut s, &elsewhere, &elsewhere));
@@ -410,7 +403,7 @@ fn a_box_whose_port_is_back_is_not_reported_as_lost() {
     let (mut p, script) = panel();
     script.borrow_mut().open_answers.push(Some(path));
 
-    let mut s = default_session();
+    let mut s = two_box_session();
     // One list, handed to both ends: the port is an input *and* an output here,
     // which is what the clone used to say less directly.
     let ports = [port];
@@ -485,7 +478,7 @@ fn new_on_a_clean_session_replaces_it_immediately_and_reports_it() {
     let mut session = seeded();
 
     assert!(p.request_new(&mut session), "a clean session needs no guard");
-    assert_is_fresh_default_session(&session);
+    assert_is_fresh_empty_session(&session);
     assert_eq!(p.guard_new(), NewGuard::Idle);
     assert_eq!(p.status(), Some(&Status::New));
 }
@@ -532,7 +525,7 @@ fn discarding_on_new_replaces_the_session_and_resets_the_panel() {
     assert!(!p.request_new(&mut session));
     p.confirm_new(&mut session);
 
-    assert_is_fresh_default_session(&session);
+    assert_is_fresh_empty_session(&session);
     assert_eq!(p.path(), None);
     assert!(!p.is_dirty());
     assert!(p.lost_ports().is_empty());
@@ -557,7 +550,7 @@ fn saving_then_new_writes_first_and_only_then_replaces_the_session() {
     assert!(std::fs::read_to_string(&path).is_ok(), "bytes must be on disk already");
     p.confirm_new(&mut session);
 
-    assert_is_fresh_default_session(&session);
+    assert_is_fresh_empty_session(&session);
     assert!(!p.is_dirty());
     assert_eq!(p.guard_new(), NewGuard::Idle);
 }
@@ -613,7 +606,7 @@ fn new_clears_a_stale_lost_ports_warning_from_whatever_was_open_before_it() {
 
     let (mut p, script) = panel();
     script.borrow_mut().open_answers.push(Some(path));
-    let mut session = default_session();
+    let mut session = two_box_session();
     assert!(p.open(&mut session, &[], &[]));
     assert!(!p.lost_ports().is_empty(), "setup: the open must have flagged something");
 

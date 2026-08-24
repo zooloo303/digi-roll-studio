@@ -16,7 +16,7 @@
 //! font-atlas delta cleared or epaint's debug assert fires when it drops.
 
 use digi_core::device::{DeviceIo, PortRef};
-use digi_core::{default_session, DeviceId, Session};
+use digi_core::{two_box_session, DeviceId, Session};
 use digi_protocol::backup_stash::{BackupContext, Stash, StashEntry};
 use digi_protocol::safe_write::{pattern_kit_file, Timestamp};
 use digi_roll_studio::ui::restore::RestorePanel;
@@ -30,12 +30,12 @@ const NOW: Timestamp =
 /// A DT2 with both ports wired, so its block draws its list rather than a reason
 /// it cannot restore anything.
 fn session() -> (Session, DeviceId) {
-    let mut session = default_session();
+    let mut session = two_box_session();
     let id = session
         .devices
         .iter()
         .find(|d| d.model.key == "DT2")
-        .expect("default_session has both boxes")
+        .expect("two_box_session has both boxes")
         .id;
     let device = session.device_mut(id).expect("just found it");
     device.io = DeviceIo {

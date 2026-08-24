@@ -161,9 +161,25 @@ pub fn ui(
         .auto_shrink([false, false])
         .show(ui, |ui| {
             status_strip(ui, panel, session, engine, &present_out);
-            if panel.devices_expanded {
+            if session.devices.is_empty() {
+                // First launch, and every New: the desk is empty until
+                // discovery or the row below fills it. Drawn unconditionally —
+                // there is no strip to expand and nothing else to see.
                 ui.add_space(4.0);
-                changed |= devices::ui(ui, session, engine, ports.inputs(), ports.outputs());
+                empty_desk(ui, autoconnect);
+                ui.add_space(6.0);
+                changed |= devices::add_box_row(ui, session);
+            } else if panel.devices_expanded {
+                ui.add_space(4.0);
+                let outcome = devices::ui(ui, session, engine, ports.inputs(), ports.outputs());
+                changed |= outcome.changed;
+                // A removed box must not boomerang back on discovery's next
+                // scan while its cable is still in — see `AutoConnect::decline`.
+                for (input, output) in outcome.declined {
+                    autoconnect.decline(&input, &output);
+                }
+                ui.add_space(6.0);
+                changed |= devices::add_box_row(ui, session);
                 ui.add_space(6.0);
                 autoconnect.ui(ui);
             }
@@ -259,7 +275,9 @@ fn status_strip(
     outputs: &[digi_midi::PortInfo],
 ) {
     if session.devices.is_empty() {
-        ui.weak(format!("{} — no boxes in this session", session.name));
+        // Nothing to summarise and nothing to fold: the caller draws
+        // [`empty_desk`] in this state, and a strip above it saying "no boxes"
+        // would be the same sentence twice.
         return;
     }
 
@@ -329,6 +347,24 @@ fn status_strip(
     if response.clicked() {
         panel.devices_expanded = !panel.devices_expanded;
     }
+}
+
+/// The desk with no boxes on it: what a first launch shows, and what New goes
+/// back to since 2026-08-24. One sentence saying what will happen by itself,
+/// then the auto-connect controls — whose checkbox is the sentence's honesty:
+/// with it off, "watching" would be a lie, so the copy follows the setting.
+/// The caller draws `devices::add_box_row` underneath for the uncabled case.
+fn empty_desk(ui: &mut Ui, autoconnect: &mut AutoConnect) {
+    let copy = if autoconnect.enabled() {
+        "No boxes yet. Watching for Elektron boxes — plug one in over USB and it \
+         joins the session with its ports set."
+    } else {
+        "No boxes yet, and auto-connect is off — turn it on to find your boxes \
+         over USB, or add one below."
+    };
+    ui.label(egui::RichText::new(copy).size(11.0).color(super::TEXT_SECONDARY));
+    ui.add_space(6.0);
+    autoconnect.ui(ui);
 }
 
 /// The `←`/`→` label row over each half of the transfer container.
@@ -424,11 +460,11 @@ mod tests {
 
     #[test]
     fn a_box_with_no_out_port_open_forces_the_strip_open_even_after_a_manual_close() {
-        // `default_session`'s boxes have no ports at all yet, so `is_live` is
+        // `two_box_session`'s boxes have no ports at all yet, so `is_live` is
         // false for both of them and the strip has to force itself open — the
         // "missing box" half of "auto-detect drives this".
         let ctx = egui::Context::default();
-        let session = digi_core::default_session();
+        let session = digi_core::two_box_session();
         let engine = EngineLink::default();
         let mut panel = SetupPanel { devices_expanded: false, ..SetupPanel::default() };
 

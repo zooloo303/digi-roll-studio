@@ -33,7 +33,7 @@ use std::collections::HashMap;
 use std::sync::mpsc::{channel, Receiver};
 use std::sync::{LazyLock, Mutex};
 
-use digi_core::device::PortEnd;
+use digi_core::device::{DeviceModel, PortEnd, MODELS};
 use digi_core::session::PatternRef;
 use digi_core::{Device, DeviceId, PortRef, Session};
 use digi_midi::{ElektronDevice, PortInfo};
@@ -74,19 +74,34 @@ pub fn is_live(device: &Device, engine: &EngineLink, outputs: &[PortInfo]) -> bo
     })
 }
 
-/// Draw the strip. Returns whether the session changed.
+/// What one frame of the strip did.
+///
+/// `declined` exists for exactly one wire: the remove control hands the removed
+/// box's port pair up to the caller, which hands it to
+/// [`crate::ui::autoconnect::AutoConnect::decline`] — without it, removing a
+/// box whose cable is still in would grow it back on discovery's next scan.
+/// Only pairs with *both* ends bound are reported, because only those can form
+/// a candidate again.
+#[derive(Default)]
+pub struct Outcome {
+    pub changed: bool,
+    pub declined: Vec<(PortRef, PortRef)>,
+}
+
+/// Draw the strip.
 pub fn ui(
     ui: &mut Ui,
     session: &mut Session,
     engine: &EngineLink,
     inputs: &[PortInfo],
     outputs: &[PortInfo],
-) -> bool {
-    let mut changed = false;
+) -> Outcome {
+    let mut outcome = Outcome::default();
+    let changed = &mut outcome.changed;
 
     if session.devices.is_empty() {
         ui.weak(format!("{} — no boxes in this session", session.name));
-        return changed;
+        return outcome;
     }
 
     let devices: Vec<DeviceId> = session.devices.iter().map(|d| d.id).collect();
@@ -110,12 +125,28 @@ pub fn ui(
         let tracks = device.model.num_tracks;
         let sysex = device.can_sysex();
         let build = device.io.build.clone();
+        let name = device.name.clone();
+        let ports_pair = device.io.input.clone().zip(device.io.output.clone());
 
-        ui.label(text).on_hover_text(if live {
-            "The engine has this box's out port open"
-        } else {
-            "No out port open for this box — it will not sound"
+        let mut remove = false;
+        ui.horizontal(|ui| {
+            ui.label(text).on_hover_text(if live {
+                "The engine has this box's out port open"
+            } else {
+                "No out port open for this box — it will not sound"
+            });
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                remove = remove_control(ui, id, &name);
+            });
         });
+        if remove {
+            session.remove_device(id);
+            *changed = true;
+            if let Some(pair) = ports_pair {
+                outcome.declined.push(pair);
+            }
+            continue;
+        }
         ui.horizontal_wrapped(|ui| {
             ui.weak(format!("{tracks} trk · plays {slot}"));
             if let Some(build) = build {
@@ -128,8 +159,8 @@ pub fn ui(
             }
         });
 
-        changed |= picker(ui, session, id, PortEnd::Input, inputs);
-        changed |= picker(ui, session, id, PortEnd::Output, outputs);
+        *changed |= picker(ui, session, id, PortEnd::Input, inputs);
+        *changed |= picker(ui, session, id, PortEnd::Output, outputs);
 
         // This is our half of sync, and it is the smaller half. Proven on
         // hardware 2026-08-17: with both boxes set to receive, both took sync from
@@ -161,12 +192,12 @@ pub fn ui(
         {
             if let Some(d) = session.device_mut(id) {
                 d.io.takes_clock = takes_clock;
-                changed = true;
+                *changed = true;
             }
         }
 
         let (_, patched, _) = patch_read_row(ui, session, id, inputs, outputs, open_real);
-        changed |= patched;
+        *changed |= patched;
 
         if position != last {
             ui.add_space(6.0);
@@ -174,7 +205,82 @@ pub fn ui(
         }
     }
 
-    changed
+    outcome
+}
+
+/// The ✕ at the right of a box's heading, and the confirm it opens. Returns
+/// whether the removal was confirmed this frame.
+///
+/// A [`super::working_popup`] rather than a bare click, because removing a box
+/// discards its patterns in this session and the history cannot bring them
+/// back — `core::history` holds notes, not the device list. One extra click,
+/// and the click that costs something is the one that says what it costs.
+fn remove_control(ui: &mut Ui, device: DeviceId, name: &str) -> bool {
+    // Pinned to the device id, not egui's positional auto-id: removing the box
+    // *above* this one must not hand this box the open confirm of the row that
+    // used to be here.
+    let toggle = ui
+        .push_id(("remove-box", device.0), |ui| {
+            // `×` U+00D7 — already proven on the panel close buttons; see
+            // `ui::mod`'s glyph table before reaching for anything prettier.
+            ui.add(
+                egui::Button::new(
+                    egui::RichText::new("×").size(11.0).color(super::TEXT_DIMMER),
+                )
+                .frame(false),
+            )
+        })
+        .inner
+        .on_hover_text(format!("Remove {name} from this session"));
+    super::working_popup(&toggle, 230.0, |ui| {
+        ui.label(
+            egui::RichText::new(format!(
+                "Removes {name} and its patterns from this session. The box itself is \
+                 untouched — and it is not re-added while its cable stays in; unplug and \
+                 replug to bring it back, or use Add a box.",
+            ))
+            .size(10.5)
+            .color(super::TEXT_DIMMER),
+        );
+        ui.add_space(6.0);
+        ui.button(format!("Remove {name}")).clicked()
+    })
+    .unwrap_or(false)
+}
+
+/// The "Add a box" row under the strip: every model this build ships, for a
+/// desk with no hardware plugged in — a train, a soundcheck, somebody else's
+/// session file being sketched at home. Discovery covers the cabled case;
+/// this is the uncabled one, and it is also the only way to get a *planned*
+/// box — a row for hardware that is not here today.
+///
+/// A `ComboBox` rather than a menu because selection-closes-the-popup is the
+/// behaviour wanted and it is the one widget here that already has it.
+/// Returns whether the session changed.
+pub fn add_box_row(ui: &mut Ui, session: &mut Session) -> bool {
+    let mut pick: Option<&'static DeviceModel> = None;
+    // ASCII `+`: the fullwidth `＋` (U+FF0B) was drawn first and read back off
+    // the screen as tofu — 2026-08-24, the same hour it shipped. `ui::mod`'s
+    // glyph-table lesson holds: a mark nobody has seen render is a box.
+    egui::ComboBox::from_id_salt("setup-add-box")
+        .selected_text("+ Add a box")
+        .width(ui.available_width().max(120.0) - 4.0)
+        .show_ui(ui, |ui| {
+            for model in MODELS {
+                let label = match model.can_sysex() {
+                    true => format!("{} · {} trk", model.display, model.num_tracks),
+                    false => format!("{} · {} trk · live only", model.display, model.num_tracks),
+                };
+                if ui.selectable_label(false, label).clicked() {
+                    pick = Some(model);
+                }
+            }
+        });
+    let Some(model) = pick else { return false };
+    // One bank of slots, same as `two_box_session` gives its fixtures.
+    let name = session.suggested_name(model);
+    session.add_device(Device::new(name, model, 16));
+    true
 }
 
 /// One end's dropdown. Returns whether it changed the session.
@@ -547,7 +653,7 @@ mod tests {
     fn a_picker_offers_none_first_then_every_connected_port() {
         // "None" has to be reachable: the way to stop a box sounding without
         // unplugging it is to take its port away.
-        let session = digi_core::default_session();
+        let session = digi_core::two_box_session();
         let dt2 = session.devices[0].id;
         let ports = [info("iac1", "IAC Driver Bus 1"), info("out-1", "Elektron Digitakt II")];
 
@@ -562,7 +668,7 @@ mod tests {
 
     #[test]
     fn a_picker_names_the_box_already_holding_a_port() {
-        let mut session = digi_core::default_session();
+        let mut session = digi_core::two_box_session();
         let (dt2, dn2) = (session.devices[0].id, session.devices[1].id);
         session.set_device_port(
             dt2,
@@ -578,7 +684,7 @@ mod tests {
 
     #[test]
     fn a_box_does_not_report_itself_as_holding_its_own_port() {
-        let mut session = digi_core::default_session();
+        let mut session = digi_core::two_box_session();
         let dt2 = session.devices[0].id;
         session.set_device_port(
             dt2,
@@ -595,7 +701,7 @@ mod tests {
     fn the_other_ends_holder_is_not_reported_on_this_end() {
         // A box's input and output usually share a name. Listing the outputs must
         // not claim the DT2 holds one because it holds the *input* of that name.
-        let mut session = digi_core::default_session();
+        let mut session = digi_core::two_box_session();
         let (dt2, dn2) = (session.devices[0].id, session.devices[1].id);
         session.set_device_port(
             dt2,
@@ -619,7 +725,7 @@ mod tests {
 
     #[test]
     fn a_picker_offers_nothing_but_none_when_no_ports_are_connected() {
-        let session = digi_core::default_session();
+        let session = digi_core::two_box_session();
         let dt2 = session.devices[0].id;
         let choices = port_choices(&session, dt2, PortEnd::Output, &[]);
         assert_eq!(choices.len(), 1);

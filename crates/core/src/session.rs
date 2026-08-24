@@ -223,6 +223,25 @@ impl Session {
         self.devices.iter_mut().find(|d| d.id == id)
     }
 
+    /// A name for the next box of this model: the model key while it is free,
+    /// then "DT2 2", "DT2 3" and so on.
+    ///
+    /// Names are the user's — this only picks the starting point, for the two
+    /// callers that add a device without a person typing one: auto-connect
+    /// discovering a box, and Setup's "Add a box". Two boxes *may* share a name
+    /// (nothing keys on it; identity is [`DeviceId`]), but a desk with two rows
+    /// both called "DT2" is a desk where a scene picker stops meaning anything.
+    pub fn suggested_name(&self, model: &DeviceModel) -> String {
+        let taken = |name: &str| self.devices.iter().any(|d| d.name == name);
+        if !taken(model.key) {
+            return model.key.to_string();
+        }
+        (2..)
+            .map(|n| format!("{} {n}", model.key))
+            .find(|name| !taken(name))
+            .expect("some counter is always free")
+    }
+
     /// Adds the device and points every existing scene at its first slot, so a
     /// scene is never silently missing a box that is in the session.
     pub fn add_device(&mut self, device: Device) -> DeviceId {

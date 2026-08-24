@@ -31,7 +31,7 @@ use eframe::egui::{self, Ui};
 
 use digi_core::device::PortRef;
 use digi_core::project::{Project, ProjectError};
-use digi_core::{default_session, DeviceId, Session};
+use digi_core::{DeviceId, Session};
 
 /// How the app asks the desktop for a path.
 ///
@@ -410,11 +410,15 @@ impl SessionPanel {
         }
     }
 
-    /// Do the reset: a fresh [`default_session`], and the panel put back to
-    /// its just-launched state. Called both for a clean session's immediate
+    /// Do the reset: a fresh empty session, and the panel put back to its
+    /// just-launched state. Called both for a clean session's immediate
     /// New and for the modal's `Discard` and `Save` exits.
+    ///
+    /// Empty means *no boxes*, same as launch: auto-connect re-adds whatever is
+    /// actually plugged in within a scan, so New on a cabled desk comes back to
+    /// the same boxes with their ports — minus any it only imagined having.
     pub fn confirm_new(&mut self, session: &mut Session) {
-        *session = default_session();
+        *session = Session::default();
         self.path = None;
         self.dirty = false;
         self.lost_ports.clear();

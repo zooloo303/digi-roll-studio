@@ -4,6 +4,23 @@
 // landed 2026-08-17. What was missing is nobody having to press anything: plug a
 // DT2 in, and the DT2 row in this session should have its ports.
 //
+// ## Discovery adds boxes, 2026-08-24
+//
+// Until now a reply could only land on a device already in the session, and the
+// session always opened with a DT2 and a DN2 in it. Both halves changed at once:
+// the app now opens on an *empty* session, and a handshake that agrees with its
+// port name but matches no free device **adds one** ([`Placement::Add`], landed
+// on the UI thread in [`AutoConnect::land`], never on the worker). First launch
+// is: plug in whatever Elektron boxes you own, and the desk is them.
+//
+// The rule that keeps this from being a nuisance: **discovery adds, it never
+// removes** — an unplugged box goes amber exactly as before, its patterns
+// untouched. And removing a box is a decision the app must not overrule, so the
+// remove control tells this module to [`AutoConnect::decline`] the box's port
+// pair: it is not asked about again until it leaves the port list, which makes
+// unplug-and-replug the gesture that means "I want it back" — the same gesture
+// that already clears a spent handshake backoff.
+//
 // ## The two rules this must not break, and how each is met
 //
 //  1. **It may never bind a port a user chose by hand.** Met by never *moving*
@@ -60,7 +77,7 @@ use std::sync::mpsc::{channel, Receiver};
 use std::time::{Duration, Instant};
 
 use digi_core::device::{model_for_slug, PortRef};
-use digi_core::{DeviceId, Session};
+use digi_core::{Device, DeviceId, Session};
 use digi_midi::{ElektronDevice, PortBinding, PortInfo};
 use digi_protocol::device::DeviceIdentity;
 use eframe::egui::{self, Ui};
@@ -87,14 +104,19 @@ pub struct Candidate {
 /// Every port pair worth asking "who are you?", given what is plugged in and
 /// what the session already has.
 ///
-/// Three conditions, all of them rule 1 or rule 2:
+/// Two conditions, one per rule:
 ///
-/// * the port *name* identifies a box this build has a model for (rule 2 — an
-///   unknown port is never grabbed);
+/// * the port *name* identifies a box this build has a **model** for (rule 2 —
+///   an unknown port is never grabbed; a box the handshake can name but the
+///   table cannot seat, like a gen-1 Digitakt, is skipped for the same reason);
 /// * neither end is bound to any device in this session (rule 1 — nothing is
-///   ever taken off anybody);
-/// * some device of that model has no ports at all (rule 1 again — there is
-///   somewhere to put it that nobody has aimed).
+///   ever taken off anybody).
+///
+/// There is deliberately no "is there room" condition any more: a pair with no
+/// free device of its model is exactly the pair whose reply will *add* one
+/// ([`Placement::Add`]). What keeps a removed box from boomeranging straight
+/// back in is not this function — a declined pair is still a candidate — but
+/// the spent [`Attempt`] that [`AutoConnect::decline`] parks on it.
 pub fn candidates(session: &Session, inputs: &[PortInfo], outputs: &[PortInfo]) -> Vec<Candidate> {
     let mut out: Vec<Candidate> = Vec::new();
     // Two identical boxes give two identically *named* port pairs, so the second
@@ -103,6 +125,9 @@ pub fn candidates(session: &Session, inputs: &[PortInfo], outputs: &[PortInfo]) 
     let mut claimed: HashSet<&str> = HashSet::new();
     for input in inputs {
         let Some(slug) = input.slug else { continue };
+        if model_for_slug(slug).is_none() {
+            continue;
+        }
         if bound(session, &input.id, &input.name) {
             continue;
         }
@@ -116,19 +141,6 @@ pub fn candidates(session: &Session, inputs: &[PortInfo], outputs: &[PortInfo]) 
         }) else {
             continue;
         };
-        // Enough boxes of that model with no ports for the ones already lined up
-        // plus this one — two free sockets and one free DT2 row is one candidate.
-        let room = model_for_slug(slug).is_some_and(|model| {
-            let free = session
-                .devices
-                .iter()
-                .filter(|d| d.model == model && !d.has_ports())
-                .count();
-            out.iter().filter(|c| c.slug == slug).count() < free
-        });
-        if !room {
-            continue;
-        }
         claimed.insert(output.id.as_str());
         out.push(Candidate {
             slug,
@@ -170,9 +182,10 @@ pub fn destination(session: &Session, identity: &DeviceIdentity) -> Option<Devic
 pub enum Placement {
     /// Bind it here.
     Bind(DeviceId),
-    /// Every box of that model already has ports. Rule 1 declining, which is not
-    /// a failure and says nothing.
-    NoRoom,
+    /// Every box of that model already has ports — so this is a box the session
+    /// has never seen, and the desk grows a row for it. Until 2026-08-24 this
+    /// arm was `NoRoom`, a silent decline; discovery-first turned it around.
+    Add(&'static digi_core::DeviceModel),
     /// The port name said one box and the reply says another. Left for the
     /// person with the Identify button, who can see both — the sentence is the
     /// one shown.
@@ -197,9 +210,19 @@ pub fn placement(
             identity.name
         ));
     }
-    match destination(session, identity) {
-        Some(device) => Placement::Bind(device),
-        None => Placement::NoRoom,
+    if let Some(device) = destination(session, identity) {
+        return Placement::Bind(device);
+    }
+    match model_for_slug(&identity.slug) {
+        Some(model) => Placement::Add(model),
+        // Unreachable off a real scan — `candidates` already required a model
+        // for the *claimed* slug and the reply agrees with it — but this
+        // function is public and pure, so it answers for every input: a box
+        // the table cannot seat is left for a human, same as a disagreement.
+        None => Placement::Disagrees(format!(
+            "{} answered, but this build has no model for it — left alone",
+            identity.name
+        )),
     }
 }
 
@@ -401,26 +424,63 @@ impl AutoConnect {
             self.tried.entry(key).or_insert_with(Attempt::started).failed(Instant::now());
             return false;
         };
-        let device = match placement(session, reply.candidate.slug, &identity) {
-            Placement::Bind(device) => device,
+        let (device, added) = match placement(session, reply.candidate.slug, &identity) {
+            Placement::Bind(device) => (device, false),
+            // A box the session has never seen. Adding it here — on the UI
+            // thread, off a handshake that answered *and* agreed with its port
+            // name — is what makes first launch "plug in what you own". One
+            // bank of slots, same as `two_box_session` gives its fixtures.
+            Placement::Add(model) => {
+                let name = session.suggested_name(model);
+                (session.add_device(Device::new(name, model, 16)), true)
+            }
             Placement::Disagrees(why) => {
                 self.said = Some(why);
                 return false;
             }
-            // Rule 1 declining, which is not news.
-            Placement::NoRoom => return false,
         };
         match session.bind_identity_to(device, &identity, reply.candidate.input, reply.candidate.output) {
             Ok(()) => {
                 let name = session.device(device).map(|d| d.name.clone()).unwrap_or_default();
-                self.said = Some(format!("Connected {name} — {}", identity.name));
+                self.said = Some(match added {
+                    true => format!("Added {name} — {}", identity.name),
+                    false => format!("Connected {name} — {}", identity.name),
+                });
                 true
             }
             Err(e) => {
+                // Unreachable for a row this frame just added — its model *is*
+                // the reply's — but if it ever happens the row must not stay: a
+                // portless ghost box nobody asked for is worse than no bind.
+                if added {
+                    session.remove_device(device);
+                }
                 self.said = Some(format!("Could not place {}: {e}", identity.name));
                 false
             }
         }
+    }
+
+    /// Park a port pair so discovery leaves it alone until it is unplugged.
+    ///
+    /// Called by the remove control in `ui::devices`: without this, removing a
+    /// box whose cable is still in would grow it back on the next scan. A spent
+    /// [`Attempt`] is exactly the "asked and answered" state the backoff already
+    /// ends in, and it inherits the same release: `tick`'s `retain` drops it
+    /// when the ports leave the list, so unplug-and-replug means "I want it
+    /// back" — one gesture, both meanings.
+    pub fn decline(&mut self, input: &PortRef, output: &PortRef) {
+        self.tried.insert(
+            (input.id.clone(), output.id.clone()),
+            // `retry_at: None` with the failure count spent: never due again.
+            Attempt { failures: RETRY_BACKOFF.len() + 1, retry_at: None },
+        );
+    }
+
+    /// Whether the scan is on — for `ui::setup`'s empty-desk copy, which says
+    /// "watching for boxes" and must not say it while this is off.
+    pub fn enabled(&self) -> bool {
+        self.enabled
     }
 
     /// The checkbox and the one line about what it last did.
@@ -581,14 +641,40 @@ mod tests {
     }
 
     #[test]
-    fn a_box_with_nowhere_to_go_is_not_asked() {
-        // No DT2 in the session, so there is nothing to bind a DT2 reply to —
-        // and auto-connect does not add boxes. That is a session-shape decision,
-        // and a background thread is not where a session grows a device.
+    fn a_box_the_session_has_never_seen_is_still_asked() {
+        // No DT2 in the session — which until 2026-08-24 meant "not a
+        // candidate", because auto-connect could not add boxes and the session
+        // always opened with both rows anyway. The app opens empty now, so
+        // this pair is exactly the one discovery exists for: ask it, and a
+        // reply that agrees becomes a new row ([`Placement::Add`]).
         let mut session = Session::default();
         session.add_device(Device::new("DN2", &DN2, 16));
         let (inputs, outputs) = dt2_ports();
-        assert!(candidates(&session, &inputs, &outputs).is_empty());
+        let found = candidates(&session, &inputs, &outputs);
+        assert_eq!(found.len(), 1);
+        assert_eq!(found[0].slug, "digitakt2");
+    }
+
+    #[test]
+    fn an_empty_session_finds_every_box_on_the_desk() {
+        // First launch: no boxes, two Elektrons plugged in. Both are candidates
+        // and the IAC bus still is not — rule 2 does not relax just because the
+        // desk is empty.
+        let session = Session::default();
+        let inputs = vec![
+            info("in-1", "Digitakt II"),
+            info("in-2", "Digitone II"),
+            info("in-3", "IAC Driver Bus 1"),
+        ];
+        let outputs = vec![
+            info("out-1", "Digitakt II"),
+            info("out-2", "Digitone II"),
+            info("out-3", "IAC Driver Bus 1"),
+        ];
+        let found = candidates(&session, &inputs, &outputs);
+        assert_eq!(found.len(), 2);
+        assert_eq!(found[0].slug, "digitakt2");
+        assert_eq!(found[1].slug, "digitone2");
     }
 
     #[test]
@@ -674,10 +760,11 @@ mod tests {
     }
 
     #[test]
-    fn a_reply_with_nowhere_to_go_is_declined_rather_than_reported() {
-        // Every DT2 in the session already has ports. Rule 1 declining is the
-        // normal state of a fully cabled desk and says nothing, which is why it
-        // is its own arm rather than a `Disagrees` with a sentence in it.
+    fn a_reply_with_no_free_row_grows_the_desk_instead_of_declining() {
+        // Every DT2 in the session already has ports — so whatever just
+        // answered is a *second* physical DT2, and a second box deserves a
+        // second row. This arm was `NoRoom` (a silent decline) until
+        // discovery-first, 2026-08-24.
         let mut session = desk();
         let dt2 = session.devices[0].id;
         session.device_mut(dt2).unwrap().io = DeviceIo {
@@ -685,6 +772,78 @@ mod tests {
             output: Some(port("out-1", "Digitakt II")),
             ..DeviceIo::default()
         };
-        assert_eq!(placement(&session, "digitakt2", &identity(42)), Placement::NoRoom);
+        assert_eq!(placement(&session, "digitakt2", &identity(42)), Placement::Add(&DT2));
+    }
+
+    #[test]
+    fn a_reply_on_an_empty_desk_lands_as_a_new_row_with_its_ports_and_os() {
+        // The whole first-launch story in one call: empty session, a DT2
+        // answers, and `land` adds the row, binds both ends, and keeps the
+        // handshake's OS report. `Session::add_device` gives every scene a slot
+        // for it, so the new box is playable the same frame.
+        let mut session = Session::default();
+        let mut ac = AutoConnect::default();
+        let candidate = Candidate {
+            slug: "digitakt2",
+            input: port("in-1", "Digitakt II"),
+            output: port("out-1", "Digitakt II"),
+        };
+        let changed = ac.land(&mut session, Reply { candidate, identity: Ok(identity(42)) });
+
+        assert!(changed, "a grown desk is a session change the engine has to hear about");
+        assert_eq!(session.devices.len(), 1);
+        let added = &session.devices[0];
+        assert_eq!(added.name, "DT2", "the model key while it is free");
+        assert_eq!(added.model, &DT2);
+        assert_eq!(added.io.input, Some(port("in-1", "Digitakt II")));
+        assert_eq!(added.io.output, Some(port("out-1", "Digitakt II")));
+        assert_eq!(added.io.build.as_deref(), Some("0070"));
+        assert!(added.io.takes_clock, "a new box follows the session's clock");
+        assert!(
+            session.scenes.iter().all(|s| s.slots.contains_key(&added.id)),
+            "every scene can already point at it"
+        );
+        assert_eq!(ac.said.as_deref(), Some("Added DT2 — Digitakt II"));
+    }
+
+    #[test]
+    fn a_second_box_of_the_same_model_gets_its_own_name() {
+        // Two physical DT2s: the second row must not also be called "DT2", or
+        // the scene picker and the port pickers stop telling them apart.
+        let mut session = desk();
+        let dt2 = session.devices[0].id;
+        session.device_mut(dt2).unwrap().io = DeviceIo {
+            input: Some(port("in-9", "Elektron Digitakt II")),
+            output: Some(port("out-9", "Elektron Digitakt II")),
+            ..DeviceIo::default()
+        };
+        let mut ac = AutoConnect::default();
+        let candidate = Candidate {
+            slug: "digitakt2",
+            input: port("in-1", "Digitakt II"),
+            output: port("out-1", "Digitakt II"),
+        };
+        let changed = ac.land(&mut session, Reply { candidate, identity: Ok(identity(42)) });
+
+        assert!(changed);
+        let names: Vec<&str> = session.devices.iter().map(|d| d.name.as_str()).collect();
+        assert_eq!(names, vec!["DT2", "DN2", "DT2 2"]);
+    }
+
+    #[test]
+    fn a_declined_pair_is_never_due_again_until_it_leaves_the_list() {
+        // The remove control's half of the bargain: a box removed with its
+        // cable still in must not boomerang back on the next scan. A declined
+        // pair carries the same spent state a run-out backoff does, and the
+        // same release — `tick`'s retain drops it when the ports disappear.
+        let mut ac = AutoConnect::default();
+        ac.decline(&port("in-1", "Digitakt II"), &port("out-1", "Digitakt II"));
+
+        let attempt = ac
+            .tried
+            .get(&("in-1".to_string(), "out-1".to_string()))
+            .expect("declining parks an attempt on the pair");
+        assert_eq!(attempt.retry_at, None, "spent, not waiting");
+        assert!(!attempt.due(Instant::now() + Duration::from_secs(60 * 60)));
     }
 }

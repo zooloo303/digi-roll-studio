@@ -33,9 +33,14 @@ use digi_core::device::PortRef;
 use digi_core::history::{Content, History};
 use eframe::egui;
 
+#[derive(Default)]
 struct App {
-    /// The session model from Phase 2. The app opens with a DT2 and a DN2 in it,
-    /// 16 tracks each.
+    /// The session model from Phase 2. Opens **empty** — no boxes — and the
+    /// desk fills itself: auto-connect adds a row per Elektron it identifies
+    /// (usually within its first 3 s scan), and Setup's "Add a box" covers a
+    /// desk with no hardware on it. Opening on a hardcoded DT2+DN2 — the
+    /// launch state until 2026-08-24 — meant every first run started with two
+    /// red faults, and a third supported model would have made it three.
     session: digi_core::Session,
     /// The engine thread, and the ports it is sending to.
     engine: EngineLink,
@@ -86,30 +91,6 @@ struct App {
     history: History,
 }
 
-impl Default for App {
-    fn default() -> Self {
-        Self {
-            session: digi_core::default_session(),
-            engine: EngineLink::default(),
-            roll: PianoRoll::default(),
-            ports: PortsPanel::default(),
-            transfer: TransferPanel::default(),
-            write: WritePanel::default(),
-            sync: SyncPanel::default(),
-            setup: SetupPanel::default(),
-            autoconnect: AutoConnect::default(),
-            restore: RestorePanel::default(),
-            selection: Selection::default(),
-            bars: Sidebars::default(),
-            session_file: SessionPanel::default(),
-            edit: EditPanel::default(),
-            harmony: HarmonyPanel::default(),
-            generate: GeneratePanel::default(),
-            song: SongPanel::default(),
-            history: History::default(),
-        }
-    }
-}
 
 impl eframe::App for App {
     // egui 0.36 replaced `App::update(&Context)` with `App::ui(&mut Ui)`, and

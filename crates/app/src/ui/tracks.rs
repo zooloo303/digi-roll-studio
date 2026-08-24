@@ -1140,7 +1140,7 @@ mod tests {
 
     #[test]
     fn a_selection_resolves_through_the_scene_not_through_a_remembered_slot() {
-        let mut session = digi_core::default_session();
+        let mut session = digi_core::two_box_session();
         let dn2 = session.devices[1].id;
         let sel = Selection { device: 1, track: 3 };
 
@@ -1157,7 +1157,7 @@ mod tests {
 
     #[test]
     fn a_selection_past_the_end_of_the_session_is_none_rather_than_a_panic() {
-        let mut session = digi_core::default_session();
+        let mut session = digi_core::two_box_session();
         assert!(track(&session, Selection { device: 9, track: 0 }).is_none());
         assert!(track_mut(&mut session, Selection { device: 0, track: 99 }).is_none());
     }
@@ -1183,7 +1183,7 @@ mod tests {
     /// awkward ones, or the amber appears on the wrong eight.
     #[test]
     fn the_default_channel_map_puts_exactly_tracks_nine_to_sixteen_on_flagged_channels() {
-        let session = digi_core::default_session();
+        let session = digi_core::two_box_session();
         let pattern = session
             .current_pattern(session.devices[0].id)
             .expect("the DT2 plays a pattern in the opening scene");
@@ -1342,7 +1342,7 @@ mod tests {
     #[test]
     fn clicking_a_cell_selects_its_track() {
         let ctx = egui::Context::default();
-        let mut session = digi_core::default_session();
+        let mut session = digi_core::two_box_session();
         let mut selection = Selection::default();
         let engine = EngineLink::default();
 
@@ -1375,7 +1375,7 @@ mod tests {
     #[test]
     fn hovering_a_track_cell_with_a_patch_runs_without_panicking() {
         let ctx = egui::Context::default();
-        let mut session = digi_core::default_session();
+        let mut session = digi_core::two_box_session();
         let device = session.devices[0].id;
         {
             let pattern = session.device_mut(device).unwrap().pattern_mut(0).unwrap();
@@ -1434,7 +1434,7 @@ mod tests {
     #[test]
     fn copying_a_track_remembers_its_selection_and_says_so() {
         let ctx = egui::Context::default();
-        let mut session = digi_core::default_session();
+        let mut session = digi_core::two_box_session();
         let sel = Selection { device: 0, track: 0 };
 
         let edited = run_clipboard(&ctx, egui::Key::C, &mut session, sel);
@@ -1448,7 +1448,7 @@ mod tests {
     #[test]
     fn copying_a_selection_with_no_track_leaves_the_clipboard_alone() {
         let ctx = egui::Context::default();
-        let mut session = digi_core::default_session();
+        let mut session = digi_core::two_box_session();
         let real = Selection { device: 0, track: 0 };
         let nothing_there = Selection { device: 9, track: 0 };
 
@@ -1464,7 +1464,7 @@ mod tests {
     #[test]
     fn pasting_reports_what_landed_and_what_did_not() {
         let ctx = egui::Context::default();
-        let mut session = digi_core::default_session();
+        let mut session = digi_core::two_box_session();
         let source_sel = Selection { device: 0, track: 0 };
         let dest_sel = Selection { device: 0, track: 5 };
         {
@@ -1491,7 +1491,7 @@ mod tests {
     #[test]
     fn a_dropped_cross_device_lane_is_named_in_the_paste_message() {
         let ctx = egui::Context::default();
-        let mut session = digi_core::default_session();
+        let mut session = digi_core::two_box_session();
         let source_sel = Selection { device: 0, track: 0 }; // DT2
         let dest_sel = Selection { device: 1, track: 0 }; // DN2
         {
@@ -1513,7 +1513,7 @@ mod tests {
     #[test]
     fn pasting_a_stale_copy_says_the_track_is_gone_rather_than_editing_anything() {
         let ctx = egui::Context::default();
-        let mut session = digi_core::default_session();
+        let mut session = digi_core::two_box_session();
         let dn2_sel = Selection { device: 1, track: 0 };
         {
             let t = track_mut(&mut session, dn2_sel).unwrap();
@@ -1537,7 +1537,7 @@ mod tests {
         // elsewhere in the app focused, Shift+C/Shift+V has to mean whatever
         // that control means by it, not "copy this track".
         let ctx = egui::Context::default();
-        let mut session = digi_core::default_session();
+        let mut session = digi_core::two_box_session();
         let sel = Selection { device: 0, track: 0 };
         // A focus target that isn't part of this pane at all — the guard reads
         // `ctx.memory().focused()`, which does not care which widget it is.
@@ -1559,7 +1559,7 @@ mod tests {
     #[test]
     fn drawing_the_pane_with_a_copied_cell_runs_without_panicking() {
         let ctx = egui::Context::default();
-        let mut session = digi_core::default_session();
+        let mut session = digi_core::two_box_session();
         let mut selection = Selection { device: 0, track: 0 };
         let engine = EngineLink::default();
 

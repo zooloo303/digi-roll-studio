@@ -1442,7 +1442,7 @@ mod tests {
         // their own measured positions — proof the body is interactive, not
         // merely drawn.
         let ctx = egui::Context::default();
-        let mut session = digi_core::default_session();
+        let mut session = digi_core::two_box_session();
         let selection = Selection::default();
         let mut roll = PianoRoll::default();
         let mut out = Outcome::default();

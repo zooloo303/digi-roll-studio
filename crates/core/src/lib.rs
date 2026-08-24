@@ -39,9 +39,17 @@ pub use song::{EndAction, Song, SongRow, LABELS, MAX_ROWS, ROW_LENGTH_MAX, ROW_L
 pub use track_clip::{paste_track, ChordDrop, PasteReport, TrackClip};
 
 /// A session with a DT2 and a DN2 in it, one bank of slots each, and one scene
-/// pointing both at A01. The target case from PLAN.md §2, and what the app opens
-/// with until there is a project to load.
-pub fn default_session() -> Session {
+/// pointing both at A01. The target case from PLAN.md §2, and the fixture most
+/// tests build on.
+///
+/// **Not what the app opens with any more.** Until 2026-08-24 this was named
+/// `default_session` and the app launched into it, which meant every first run
+/// opened on two boxes the user may not own, both faulted red until cabled.
+/// The app now opens on `Session::default()` — no boxes — and the desk fills
+/// itself: auto-connect adds a row for each Elektron it identifies, and Setup's
+/// "Add a box" covers composing without hardware. The rename is the honesty:
+/// this is the canonical two-box desk, not anybody's default.
+pub fn two_box_session() -> Session {
     let mut session = Session::default();
     let dt2 = session.add_device(Device::new("DT2", &DT2, 16));
     let dn2 = session.add_device(Device::new("DN2", &DN2, 16));

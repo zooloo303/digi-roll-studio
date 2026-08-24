@@ -11,11 +11,11 @@ use digi_core::device::{model_for_slug, Device, DeviceIo, DeviceModel, PortRef, 
 use digi_core::model::{Note, PLockLane, Source, TrackKind, TrackScale, PLOCK_STEPS};
 use digi_core::project::Project;
 use digi_core::session::{PatternRef, Scene, Session};
-use digi_core::{default_session, BindError, PortEnd, ProjectError};
+use digi_core::{two_box_session, BindError, PortEnd, ProjectError};
 use digi_protocol::device::DeviceIdentity;
 
 fn dt2_and_dn2() -> Session {
-    default_session()
+    two_box_session()
 }
 
 // ------------------------------------------------------------- the shape
@@ -99,7 +99,7 @@ fn an_identity_reply_binds_to_the_right_model() {
 /// for `takes_clock` means `false`: its default is `true`, so a box that takes
 /// clock cannot witness the field going missing.
 fn seeded_session() -> Session {
-    let mut s = default_session();
+    let mut s = two_box_session();
     let (dt2, dn2) = (s.devices[0].id, s.devices[1].id);
 
     s.name = "Seeded".into();
