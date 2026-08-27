@@ -43,10 +43,15 @@ use digi_protocol::device::{
     assert_request_opcode, identity_from_responses, parse_device_response,
     parse_version_response, DeviceError, DeviceIdentity,
 };
+use digi_protocol::drive::{
+    assert_read_only_file_op, dir_list_args, list_request_args, parse_dir_list,
+    parse_list_reply, DirEntry, ListReply, API_DIR_LIST, API_FILE_LIST,
+};
+use digi_protocol::query::{parse_query_reply, query_args, QueryValue, API_QUERY};
 use digi_protocol::protocol::{
     build_api_message, build_dump_message, parse_sysex, API_DEVICE, API_RESPONSE, API_VERSION,
     DUMP_PATTERN_KIT, DUMP_PATTERN_KIT_REQUEST, DUMP_PROJECT_SETTINGS,
-    DUMP_WHOLE_PROJECT_REQUEST, SysExKind,
+    DUMP_SOUND_REQUEST, DUMP_WHOLE_PROJECT_REQUEST, SysExKind,
 };
 use digi_protocol::safe_write::{write_gate, PatternIo};
 
@@ -449,10 +454,143 @@ impl ElektronDevice {
         }
     }
 
+    /// Fetch one dump, like [`Self::fetch_dump`], but with a non-empty request
+    /// payload.
+    ///
+    /// `fetch_dump` always sends an empty payload, which is enough to address the
+    /// 128 dump-addressable slots a request's one `index` byte reaches. The
+    /// +Drive is bigger than that — banks A–H times 128+ slots each — so if a
+    /// dump request is how it is reached at all, a bank/slot argument has to
+    /// travel somewhere, and the only somewhere a dump *request* message has
+    /// spare room for is the payload before the checksum trailer
+    /// (`build_dump_message`'s `payload` argument, always `&[]` until now).
+    ///
+    /// Goes through the same `assert_request_opcode` guard as `fetch_dump` — the
+    /// point of that guard is that no *fetch* can send a store opcode, and that
+    /// has to hold regardless of what travels in the payload.
+    pub fn fetch_dump_with_args(
+        &mut self,
+        family: u8,
+        request_type: u8,
+        index: u8,
+        args: &[u8],
+    ) -> Result<DumpResponse, MidiError> {
+        assert_request_opcode(request_type)?;
+        let response_type = request_type - 0x10;
+        self.drain();
+        self.send(&build_dump_message(family, request_type, index, args))?;
+
+        let deadline = Instant::now() + DUMP_STALL;
+        loop {
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            if remaining.is_zero() {
+                return Err(MidiError::Timeout);
+            }
+            let frame = match self.rx.recv_timeout(remaining) {
+                Ok(f) => f,
+                Err(RecvTimeoutError::Timeout) => return Err(MidiError::Timeout),
+                Err(RecvTimeoutError::Disconnected) => return Err(MidiError::Disconnected),
+            };
+            let msg = parse_sysex(&frame);
+            let Some(dump) = msg.dump else { continue };
+            if dump.family != family || dump.dump_type != response_type || dump.index != index {
+                continue;
+            }
+            if !dump.checksum_ok || !dump.count_ok {
+                return Err(MidiError::CorruptDump { dump_type: dump.dump_type, index });
+            }
+            return Ok(DumpResponse {
+                family: dump.family,
+                dump_type: dump.dump_type,
+                index: dump.index,
+                payload: dump.payload,
+                raw: frame,
+            });
+        }
+    }
+
     /// One pattern-kit dump (0x60 request → 0x50 response) from the identified box.
     pub fn fetch_pattern_kit(&mut self, index: u8) -> Result<Vec<u8>, MidiError> {
         let family = self.family()?;
         Ok(self.fetch_dump(family, DUMP_PATTERN_KIT_REQUEST, index)?.payload)
+    }
+
+    /// List one +Drive directory (`0x10` request → `0x90` response).
+    ///
+    /// The API path, not the dump path: this is how anything beyond the
+    /// project's 128 dump-addressable slots gets reached. Read-only — `0x10` is
+    /// the only `0x1n` opcode this crate implements, and the mutating ones
+    /// (`0x11` DirCreate, `0x12` DirDelete, `0x20` FileDelete) are absent by
+    /// choice, so no code path here can alter a +Drive.
+    ///
+    /// Ask [`DeviceIdentity::supported_ids`] before calling: a box that does not
+    /// list `0x10` will simply not answer, and the retry loop will spend
+    /// `REQUEST_TIMEOUT` finding that out.
+    pub fn dir_list(&mut self, path: &str) -> Result<Vec<DirEntry>, MidiError> {
+        let args = dir_list_args(path).map_err(|e| MidiError::Send(e.to_string()))?;
+        let reply = self.request(API_DIR_LIST, &args)?;
+        parse_dir_list(&reply).map_err(|e| MidiError::Send(e.to_string()))
+    }
+
+    /// Read one Query key (`0x09` request → `0x89` response).
+    ///
+    /// The API path's other read, alongside [`Self::dir_list`]: a flat
+    /// key→value namespace rather than a directory tree. Only the request and
+    /// reply are handled here — the key space itself is not documented
+    /// anywhere in this crate, so this is a probe primitive, not a lookup for a
+    /// known key.
+    ///
+    /// A reply of [`QueryValue::None`] still means the key was *answered* —
+    /// that is a weaker claim than "exists" but a much stronger one than a
+    /// timeout, which is what an unrecognised key is expected to produce.
+    pub fn query(&mut self, key: &str) -> Result<QueryValue, MidiError> {
+        let args = query_args(key).map_err(|e| MidiError::Send(e.to_string()))?;
+        let reply = self.request(API_QUERY, &args)?;
+        parse_query_reply(&reply).map_err(|e| MidiError::Send(e.to_string()))
+    }
+
+    /// List one +Drive directory through the **Digitone** file API (`0x53` List
+    /// → `0xD3`), the renumbering a DN1/DN2 answers.
+    ///
+    /// Not the same call as [`ElektronDevice::dir_list`], which speaks elk-herd's
+    /// gen-1 `0x10` numbering that a DT2 answers. A DN2 answers this one and not
+    /// that one; the two are different opcode spaces for the same feature.
+    ///
+    /// `start = 0, count = 0` lists everything. To page, pass the
+    /// [`ListReply::next_cursor`] from the previous reply — **not** an index of
+    /// your own choosing, which returns zero entries.
+    ///
+    /// Read-only, and checked: the opcode goes through
+    /// [`assert_read_only_file_op`], which admits only List/Open/Read/Close. In
+    /// this namespace `0x5C` deletes, so the dump path's "0x5n cannot be sent"
+    /// habit is not a safety property here and this guard is what replaces it.
+    pub fn drive_list(
+        &mut self,
+        path: &str,
+        start: u32,
+        count: u32,
+    ) -> Result<ListReply, MidiError> {
+        assert_read_only_file_op(API_FILE_LIST).map_err(|e| MidiError::Send(e.to_string()))?;
+        let args = list_request_args(path, start, count)
+            .map_err(|e| MidiError::Send(e.to_string()))?;
+        let reply = self.request(API_FILE_LIST, &args)?;
+        parse_list_reply(&reply).map_err(|e| MidiError::Send(e.to_string()))
+    }
+
+    /// One sound dump (`0x63` request → `0x53` response) from the identified box.
+    ///
+    /// `index` addresses the **project's sound pool**, which is 128 slots — the
+    /// pool Overbridge shows as "PROJECT PRESET POOL". It is not a +Drive
+    /// address: the dump request carries a single index byte, so it cannot reach
+    /// the +Drive's banks at all. Reading those needs the API path (`0x10`
+    /// DirList and friends), which this crate does not implement.
+    ///
+    /// Read-only, and provably so: `0x63` goes through the same
+    /// `assert_request_opcode` as every other fetch, and that guard admits no
+    /// opcode that stores.
+    pub fn fetch_sound(&mut self, index: u8) -> Result<Vec<u8>, MidiError> {
+        let family = self.family()?;
+        Ok(self.fetch_dump(family, DUMP_SOUND_REQUEST, index)?.payload)
     }
 
     /// Store a pattern-kit in a slot on the box, overwriting whatever is there.

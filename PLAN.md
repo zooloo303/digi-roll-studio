@@ -718,6 +718,65 @@ re-run on them.
   were all reported from a stretch of playing rather than from a test, which is
   how the three of them came to be the release.
 
+### The +Drive and preset layer — 2026-08-26, DT2 0071 / DN2 0050
+
+A whole day's hardware session, recorded here because most of it was ruling
+things out and the negatives are what stop them being re-tried.
+
+**Verified working:**
+
+- **`0x63` sound fetch** — 256 fetches (128 project-pool slots × 2 boxes), zero
+  timeouts, zero undecodable. First time that opcode had ever been sent.
+- **`0x62` standalone kit fetch** — 22528 bytes DT2, 10752 DN2, matching the
+  `KitSpec` sizes that until now nothing had exercised beyond striding between
+  names.
+- **`0x6b`** — the *active* kit's per-track sound, index 0–15, payload = a 5-byte
+  wrapper then one whole sound struct. Confirmed against Overbridge's own KIT
+  TRACK PRESETS pane, all sixteen in order.
+- **The sound struct's `tagMask` at +8**, `u32be`. Calibrated exactly: DN2 pool
+  slot 1 `BD BRASSY KICK` = `0x04100021` → Kick, Percussion, Noisy, Vintage,
+  matching the device's own display bit for bit. `sound::TAG_NAMES` is correct.
+- **The `0x53` +Drive file API, on both boxes.** `/projects` (128),
+  `/soundbanks` (8 × 256), `/kits` (8 × 128). 1,189 occupied presets on the DN2,
+  148 on the DT2. Every preset entry's size equals the `0x6b` payload size, so
+  `0x54`/`0x55`/`0x56` returns a container `sound::decode_sound_dump` already
+  reads.
+
+**Ruled out, so nobody repeats them:**
+
+- The project sound pool is **not** a browsable library — 0/128 named on the DT2,
+  1/128 on the DN2. Presets in use live in the kit.
+- A whole-project dump carries **no** sounds: 128 × `0x50` + 1 × `0x54`, zero
+  `0x53`. The comment in `midi/src/device.rs` claiming otherwise is wrong.
+- Dump requests `0x67`, `0x6c`, `0x6d`, `0x6e`: silent at eleven index values.
+  `0x68`/`0x69`/`0x6a` answer at **index 1 and nowhere else**.
+- **A dump request's payload is ignored** — 15 argument shapes, byte-identical
+  replies. There is no bank/slot argument riding in it.
+- `0x09` Query works (`sample_file.interleaved_stereo_support` → `Bool(true)` on
+  both boxes) but **`None` means "unknown key"**, not "key exists": the empty
+  key and deliberate nonsense answer `None` too. 23 preset-shaped keys: nothing.
+
+**Two traps, both of which cost hours:**
+
+1. **`0x53` means two things.** Under a dump header it is a Sound dump; under the
+   API header (`10 00`) it is List. The DN2 advertising `50–5E` is that file
+   API's opcode list, **not** dump response types — reading it as the latter is
+   how this project concluded the DN2 had no +Drive. It has 1,189 presets on it.
+2. **The safety rule inverts between namespaces.** "`0x5n` stores, so code that
+   never sends `0x5n` cannot write" holds for the *dump* mechanism only. In the
+   API namespace `0x57`/`0x58`/`0x59` write and **`0x5C` deletes**.
+   `drive::assert_read_only_file_op` is the positive allowlist that replaces it.
+
+Not attempted, and gated: the DT2 advertises seven API ids elk-herd does not
+document — `0x17`, `0x18`, `0x19`, `0x28`, `0x29`, `0x36`, `0x46`. They sit in
+the DirDelete/FileDelete/FileWrite families and that box holds 2.07 GB of
+samples. **Do not sweep them without a +Drive backup.**
+
+Writes to the +Drive are unexplored here and carry a known problem from the
+source document: only single-chunk writes have ever succeeded, chunk *count* is
+the failing variable regardless of size, and the checksum is crc32 seeded with
+**zero**.
+
 ### What has not
 
 - **A DT2 on Windows.** The WinMM path has met a DN2 (above) and no DT2, so the
@@ -727,6 +786,15 @@ re-run on them.
 - **"Read patch names" on the *second* box.** One box answered on 2026-08-22 and
   the other has not been tried, so `NotThisBox` and the DT2/DN2 difference in kit
   layout are still fake-only.
+- **Reading a +Drive preset's contents.** `0x53` List gives names, indices and
+  sizes, verified. `0x54` Open / `0x55` Read / `0x56` Close are implemented
+  nowhere — the browser can list 1,189 presets and cannot yet open one, so no
+  preset's tag mask has been read off the +Drive itself.
+- **The DT2 half of the dump-index sweep.** Piped through `tail` twice and lost.
+  The DN2 was the target; that data was simply not collected.
+- **Paging a listing.** Every call used `start = 0, count = 0` (list everything)
+  and every collection fitted one reply, so the `next_cursor` path is untested.
+  Per the source document a made-up `start` returns zero entries.
 
 ### Not verified on a screen
 

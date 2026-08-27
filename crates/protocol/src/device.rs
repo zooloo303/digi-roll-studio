@@ -139,7 +139,7 @@ pub fn assert_request_opcode(dump_type: u8) -> Result<(), DeviceError> {
 /// Windows-1252 → `char`. Bytes 0x00–0x7F and 0xA0–0xFF map to the same code
 /// point; 0x80–0x9F carry printable characters that Latin-1 leaves as control
 /// codes. Unassigned bytes become U+FFFD, matching `TextDecoder`.
-fn cp1252_char(b: u8) -> char {
+pub fn cp1252_char(b: u8) -> char {
     const HIGH: [char; 32] = [
         '\u{20AC}', '\u{FFFD}', '\u{201A}', '\u{0192}', '\u{201E}', '\u{2026}', '\u{2020}',
         '\u{2021}', '\u{02C6}', '\u{2030}', '\u{0160}', '\u{2039}', '\u{0152}', '\u{FFFD}',
@@ -155,7 +155,7 @@ fn cp1252_char(b: u8) -> char {
 
 /// Null-terminated Windows-1252 string at `start`; returns `(value, next_offset)`.
 /// An unterminated string runs to the end of the buffer, as in the JS.
-fn cstring(bytes: &[u8], start: usize) -> (String, usize) {
+pub fn cstring(bytes: &[u8], start: usize) -> (String, usize) {
     if start >= bytes.len() {
         return (String::new(), bytes.len());
     }

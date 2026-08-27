@@ -10,7 +10,13 @@ carries the license text those notices require.
 
 ## elk-herd — the reason the protocol layer exists
 
-**[elk-herd](https://github.com/mzero/elk-herd) by mzero**, BSD-2-Clause.
+**elk-herd by Mark Lentczner ("mzero")**, BSD-2-Clause.
+
+The upstream repository at `github.com/mzero/elk-herd` was withdrawn by its
+author in 2026. The attribution below is taken from the `LICENSE.txt` of the
+`elk-herd-main` source archive (retrieved 2026-08-26), and is reproduced
+verbatim — BSD-2-Clause clause 1 requires the notice to travel with the source,
+and a dead URL does not discharge that.
 
 elk-herd is the de-facto public documentation of Elektron's SysEx protocol.
 Without it there is no byte-level knowledge to port and no project here. The
@@ -34,7 +40,9 @@ rule 6.
 ### BSD-2-Clause
 
 ```
-Copyright (c) mzero
+BSD 2-Clause License
+
+Copyright (c) 2017 - 2025, Mark Lentczner
 
 Redistribution and use in source and binary forms, with or without
 modification, are permitted provided that the following conditions are met:
@@ -48,15 +56,14 @@ modification, are permitted provided that the following conditions are met:
 
 THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
 AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
-IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
-ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE
-LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR
-CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF
-SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS
-INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN
-CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
-ARISING OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY
-OF SUCH DAMAGE.
+IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
+DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
+FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
+DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
+SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
+CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
+OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
+OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 ```
 
 ---
@@ -64,11 +71,46 @@ OF SUCH DAMAGE.
 ## digi-roll — the direct ancestor
 
 **[digi-roll](https://github.com/zooloo303/digi-roll)** — a browser piano roll
-for the same boxes, by the same author as this project. digi-roll is where the
-protocol work was hardware-verified, and this repo is a port of it: the seven-bit
+for the same boxes, started by the same author as this project and with
+contributions from others (see below). digi-roll is where the protocol work was
+hardware-verified, and this repo is a port of it: the seven-bit
 codec, the pattern structs, the byte lanes, `chords.js`, the generator and the
 safe-write rules all came across from there. Where the two disagree about a byte,
 digi-roll is right until hardware says otherwise.
+
+---
+
+## Ángel Linares García — DN1 support, and the +Drive file API
+
+**Ángel Linares García**, who also builds **DNX**, a sibling project
+independently reverse-engineering the Digitone family.
+
+He is a contributor to digi-roll, the codebase this repo is a port of, and the
+work below came across with the rest of it. This file did not name him until
+2026-08-26; the public-history squash that created this repository left his
+commits invisible here, which is a reason the omission went unnoticed and not an
+excuse for it.
+
+In digi-roll:
+
+| What | Where it landed |
+|---|---|
+| Digitone 1 read-only support — decode, p-locks, fixtures, hardware test plan | `js/elektron/dn1/pattern.js`, `test/dn1.test.js`, five DN1 preset captures under `dumps/fixtures/` |
+| Corrections to the device table, protocol framing, safe-write and trig-conditions | `js/elektron/{device,protocol,safe-write,trig-cond}.js` |
+| **The Elektron +Drive file API, documented** | `docs/plus-drive-file-api.md` |
+
+That last one is the load-bearing one for anything in this repo that reads a
++Drive. It is measured on real hardware and on a USB capture of Elektron's own
+Transfer application — not inferred from elk-herd, which has no Digitone
+support at all. It also corrected a claim digi-roll had been carrying: that the
+DN2 has no +Drive file API. It does. The `50–5E` opcodes a DN2 advertises are a
+**second, renumbered file API** on the API mechanism, not dump types and not a
+gap — so under the API header `0x53` is *List*, while under a dump header the
+same byte is a *Sound dump*. This project independently made the identical
+mistake before reading his document, which is the best argument for the
+document existing.
+
+If the +Drive file API is implemented here, this credit travels with it.
 
 ---
 
@@ -91,7 +133,9 @@ predominantly MIT/Apache-2.0. The load-bearing ones:
 ## A note on the copyright line above
 
 The BSD-2-Clause text is reproduced here in full, as the license requires of
-anyone redistributing the derived source. The holder is credited as it is
-credited throughout this codebase and throughout digi-roll before it — "mzero".
-If elk-herd's own `LICENSE` states a fuller legal name or a copyright year, that
-notice is the canonical one and this file should be corrected to match it.
+anyone redistributing the derived source. This file previously credited the
+holder only as "mzero", the handle used throughout this codebase and throughout
+digi-roll before it, and noted that elk-herd's own `LICENSE` would be canonical
+if it stated a fuller name. It does: **Copyright (c) 2017 - 2025, Mark
+Lentczner**. That is now the credit above, reproduced verbatim, and it is the
+one to keep.
