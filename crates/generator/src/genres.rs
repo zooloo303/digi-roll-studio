@@ -89,6 +89,12 @@ pub enum Role {
     Bass,
     Chords,
     Lead,
+    /// One half of a call-and-response pair — see `parts::lead`'s "Taking
+    /// turns". A pair is two ordinary rows, paired by row order the way
+    /// everything else in the panel is: the nearest `LeadCall` above a
+    /// `LeadResponse` is the one it answers.
+    LeadCall,
+    LeadResponse,
     Kick,
     Snare,
     Clap,
@@ -104,10 +110,12 @@ impl Role {
     /// Melodic first, then the drum voices in kit order — which is the order
     /// the panel's role picker draws, so a kick sits next to a snare rather
     /// than next to whatever was added last.
-    pub const ALL: [Self; 12] = [
+    pub const ALL: [Self; 14] = [
         Self::Bass,
         Self::Chords,
         Self::Lead,
+        Self::LeadCall,
+        Self::LeadResponse,
         Self::Kick,
         Self::Snare,
         Self::Clap,
@@ -119,10 +127,12 @@ impl Role {
         Self::Tom,
     ];
 
-    /// The three roles `theory`/`chord`-aware generation applies to —
+    /// The roles `theory`/`chord`-aware generation applies to —
     /// [`generate_for_role`](crate::arrange) reads this split to decide
-    /// whether a part needs an octave and a key at all.
-    pub const MELODIC: [Self; 3] = [Self::Bass, Self::Chords, Self::Lead];
+    /// whether a part needs an octave and a key at all. A call and a
+    /// response are leads, so they are here: both pick a register and both
+    /// resolve degrees against the bar's chord.
+    pub const MELODIC: [Self; 5] = [Self::Bass, Self::Chords, Self::Lead, Self::LeadCall, Self::LeadResponse];
     pub const DRUM_VOICES: [Self; 9] = [
         Self::Kick,
         Self::Snare,
@@ -144,6 +154,8 @@ impl Role {
             Self::Bass => "bass",
             Self::Chords => "chords",
             Self::Lead => "lead",
+            Self::LeadCall => "lead_call",
+            Self::LeadResponse => "lead_response",
             Self::Kick => "kick",
             Self::Snare => "snare",
             Self::Clap => "clap",
@@ -163,6 +175,8 @@ impl Role {
             Self::Bass => "Bass",
             Self::Chords => "Chords",
             Self::Lead => "Lead",
+            Self::LeadCall => "Lead (call)",
+            Self::LeadResponse => "Lead (response)",
             Self::Kick => "Kick",
             Self::Snare => "Snare",
             Self::Clap => "Clap",
@@ -486,6 +500,29 @@ fn drum_profile(
 
 pub fn role_profile(id: GenreId, role: Role) -> RoleProfile {
     match (id, role) {
+        // **A call and a response are one voice taking turns**, so both play
+        // the genre's own lead grammar rather than restating five weight
+        // tables twice over. Everything that makes the pair read as a
+        // conversation is *phrasing* — which turn a voice plays in, and what
+        // it answers — and phrasing is `parts::lead`'s business, not this
+        // file's. The one thing decided here is that a response speaks a few
+        // points under the call: an answer is spoken, not shouted, and
+        // without it two identical velocity curves alternating read as one
+        // lead with holes in it.
+        (g, Role::LeadCall) => role_profile(g, Role::Lead),
+        (g, Role::LeadResponse) => {
+            let lead = role_profile(g, Role::Lead);
+            let softer = |v: u8| v.saturating_sub(6).max(1);
+            RoleProfile {
+                velocity: Velocity {
+                    accent: softer(lead.velocity.accent),
+                    normal: softer(lead.velocity.normal),
+                    ghost: softer(lead.velocity.ghost),
+                },
+                ..lead
+            }
+        }
+
         (GenreId::Dnb, Role::Bass) => RoleProfile {
             // A long root anchor on the 1, then syncopated stabs off the
             // grid. The quarters at 4/8/12 are deliberately weak:

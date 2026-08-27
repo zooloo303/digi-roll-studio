@@ -208,6 +208,144 @@ pub fn motif_plan(rng: &mut Rng, phrases: u32, looseness: f64) -> Vec<MotifVaria
     out
 }
 
+/// How a response answers the call it just heard.
+///
+/// [`MotifVariant`] is what a player does to their *own* idea across a
+/// phrase. This is a different list, because an answer has a different job:
+/// it must be recognisable as a reply to something the ear heard a bar ago,
+/// so it either quotes the call outright ([`Sequence`](Self::Sequence),
+/// [`TailEcho`](Self::TailEcho)), turns it over
+/// ([`Invert`](Self::Invert), [`Retrograde`](Self::Retrograde)), or keeps
+/// its rhythm and walks the tune home ([`Resolve`](Self::Resolve)).
+///
+/// Three of the five are [`develop_motif`] under another name — an answer
+/// by inversion *is* an inversion — and they delegate rather than restate
+/// it, so a fix to how inversion pivots reaches both callers.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum AnswerVariant {
+    /// The call again, moved up or down a step or two — the plainest
+    /// "yes, and": same shape, new pitch level. Weighted downward, because
+    /// an answer that falls sounds like an answer and one that rises
+    /// sounds like a second question.
+    Sequence,
+    Invert,
+    Retrograde,
+    /// The last two or three notes of the call, restated at the top of the
+    /// answer. The move a horn section makes: quote the end of what was
+    /// just played, then go somewhere with it.
+    TailEcho,
+    /// The call's rhythm with its tune walked stepwise back to the
+    /// phrase's own centre — the consequent that closes what the antecedent
+    /// left open.
+    Resolve,
+}
+
+pub const ANSWER_VARIANTS: [AnswerVariant; 5] = [
+    AnswerVariant::Sequence,
+    AnswerVariant::Invert,
+    AnswerVariant::Retrograde,
+    AnswerVariant::TailEcho,
+    AnswerVariant::Resolve,
+];
+
+/// Answer a phrase. `call` is what the other voice actually played in its
+/// turn — already developed and thinned, not the bare motif — because an
+/// answer replies to what was *heard*, not to the idea behind it.
+///
+/// Like [`develop_motif`] this may return fewer notes than it was given,
+/// and never returns more; a caller that gets an empty list has a turn of
+/// space, which is a reply too. Every returned step is inside `window`.
+pub fn answer_motif(call: &[MotifNote], variant: AnswerVariant, window: u32, rng: &mut Rng) -> Vec<MotifNote> {
+    if call.is_empty() {
+        return Vec::new();
+    }
+    let out = match variant {
+        // Two of the five entries fall by one, so a plain `pick` over this
+        // slice is the weighting — five outcomes, `-1` twice as likely as
+        // any other, and no second rng draw to bias it with.
+        AnswerVariant::Sequence => {
+            let by = *pick(rng, &[-3, -2, -1, -1, 2]).unwrap();
+            call.iter().map(|n| MotifNote { deg: n.deg + by, ..*n }).collect()
+        }
+        AnswerVariant::Invert => develop_motif(call, MotifVariant::Invert, window, rng),
+        AnswerVariant::Retrograde => develop_motif(call, MotifVariant::Retrograde, window, rng),
+        AnswerVariant::TailEcho => {
+            let take = call.len().min(if chance(rng, 0.5) { 2 } else { 3 }).max(1);
+            let tail = &call[call.len() - take..];
+            // Re-timed so the quote starts the answer, keeping the gaps
+            // between the quoted notes exactly as they were — that spacing
+            // is most of what makes an ear recognise the quote.
+            let first = tail[0].step;
+            tail.iter().map(|n| MotifNote { step: n.step - first, ..*n }).collect()
+        }
+        AnswerVariant::Resolve => {
+            // The call's rhythm, its tune replaced by a walk that picks up
+            // where the call left off and takes it home. A *ramp* and not a
+            // step-at-a-time descent, because the two differ whenever the
+            // distance and the note count disagree: stepping by one arrives
+            // early and then sits on the centre for the rest of the phrase,
+            // which is a rest with extra notes rather than a resolution.
+            // Spreading the distance over the gaps instead means the last
+            // note is always the arrival, however far there was to go.
+            //
+            // A call that already ended on the centre has left nothing to
+            // resolve, so the walk starts from wherever its contour reached
+            // furthest instead — the peak of the phrase is the thing an ear
+            // is still holding on to.
+            let from = match call.last().map(|n| n.deg).unwrap_or(0) {
+                0 => call.iter().map(|n| n.deg).max_by_key(|d| d.abs()).unwrap_or(0),
+                d => d,
+            };
+            let gaps = (call.len() - 1).max(1) as f64;
+            call.iter()
+                .enumerate()
+                .map(|(i, n)| {
+                    let remaining = (call.len() - 1 - i) as f64;
+                    MotifNote { deg: (f64::from(from) * remaining / gaps).round() as i32, ..*n }
+                })
+                .collect()
+        }
+    };
+    out.into_iter().filter(|n| n.step < window).collect()
+}
+
+/// Which answer each of the response's turns gets.
+///
+/// The shape is fixed even though the picks are not: the **first** answer
+/// always quotes the call, because an answer nobody recognises as one is
+/// just a second lead, and the **last** always resolves, so the loop closes
+/// rather than trailing off. Looseness decides everything in between, and
+/// with one turn there is no between — a single answer is drawn from the
+/// whole pool, quoting at low looseness and turning the idea over at high.
+pub fn answer_plan(rng: &mut Rng, turns: u32, looseness: f64) -> Vec<AnswerVariant> {
+    // `.max().min()` and not `clamp`, for the reason `motif_plan` gives
+    // just above: a `NaN` looseness must land on 0.0 — quote it back —
+    // rather than being carried into every weight comparison below.
+    #[allow(clippy::manual_clamp)]
+    let loose = looseness.max(0.0).min(100.0) / 100.0;
+    let pool: [(AnswerVariant, f64); 5] = [
+        (AnswerVariant::Sequence, 3.0 * (1.2 - 0.6 * loose)),
+        (AnswerVariant::TailEcho, 2.0 * (1.2 - 0.6 * loose)),
+        (AnswerVariant::Resolve, 1.5),
+        (AnswerVariant::Invert, 2.0 * (0.15 + 1.1 * loose)),
+        (AnswerVariant::Retrograde, 1.5 * (0.15 + 1.1 * loose)),
+    ];
+    let draw = |rng: &mut Rng| {
+        sample_weighted(rng, &pool, 1, |e| e.1).first().map(|e| e.0).unwrap_or(AnswerVariant::Sequence)
+    };
+
+    if turns <= 1 {
+        return (0..turns).map(|_| draw(rng)).collect();
+    }
+    let quoting = [AnswerVariant::Sequence, AnswerVariant::TailEcho];
+    let mut out = vec![*pick(rng, &quoting).unwrap()];
+    for _ in 1..turns - 1 {
+        out.push(draw(rng));
+    }
+    out.push(AnswerVariant::Resolve);
+    out
+}
+
 /// How much of a developed motif survives at a given density. A lead at
 /// density 20 plays the bones of the idea; at 100 it plays all of it plus
 /// passing notes, which Stage 3's lead generator adds. Ordered by step so
@@ -456,6 +594,173 @@ mod tests {
     fn leaves_a_one_note_motif_alone() {
         let one = vec![MotifNote { step: 0, deg: 0, len: 1.0 }];
         assert_eq!(thin_motif(&one, 0.0, &mut Rng::new(1)), one);
+    }
+
+    fn call_phrase() -> Vec<MotifNote> {
+        vec![
+            MotifNote { step: 0, deg: 0, len: 1.0 },
+            MotifNote { step: 3, deg: 2, len: 1.0 },
+            MotifNote { step: 6, deg: 3, len: 2.0 },
+            MotifNote { step: 10, deg: 4, len: 2.0 },
+        ]
+    }
+
+    #[test]
+    fn a_sequence_answer_keeps_the_calls_shape_and_moves_it() {
+        let call = call_phrase();
+        for seed in 0..20u32 {
+            let out = answer_motif(&call, AnswerVariant::Sequence, 16, &mut Rng::new(seed));
+            assert_eq!(out.len(), call.len());
+            assert_eq!(out.iter().map(|n| n.step).collect::<Vec<_>>(), vec![0, 3, 6, 10]);
+            let moves: std::collections::HashSet<i32> = out.iter().zip(&call).map(|(o, c)| o.deg - c.deg).collect();
+            assert_eq!(moves.len(), 1, "a sequence moves every note by the same amount");
+            assert_ne!(*moves.iter().next().unwrap(), 0);
+        }
+    }
+
+    #[test]
+    fn a_sequence_answer_falls_more_often_than_it_rises() {
+        // Three of the five entries fall, so a falling answer should be the
+        // clear majority — the point of the weighting, not an accident of
+        // one seed.
+        let call = call_phrase();
+        let fell = (0..200u32)
+            .filter(|&seed| answer_motif(&call, AnswerVariant::Sequence, 16, &mut Rng::new(seed))[0].deg < 0)
+            .count();
+        assert!(fell > 120, "only {fell}/200 answers fell");
+    }
+
+    #[test]
+    fn an_inverted_answer_is_the_call_upside_down() {
+        let call = call_phrase();
+        let out = answer_motif(&call, AnswerVariant::Invert, 16, &mut Rng::new(1));
+        assert_eq!(out.iter().map(|n| n.deg).collect::<Vec<_>>(), vec![0, -2, -3, -4]);
+    }
+
+    #[test]
+    fn a_tail_echo_quotes_the_end_of_the_call_at_the_top_of_the_answer() {
+        let call = call_phrase();
+        for seed in 0..20u32 {
+            let out = answer_motif(&call, AnswerVariant::TailEcho, 16, &mut Rng::new(seed));
+            assert!((2..=3).contains(&out.len()), "quoted {} notes", out.len());
+            assert_eq!(out[0].step, 0, "the quote starts the answer");
+            // The degrees are the call's own last notes, in order, and the
+            // gaps between them are the call's gaps — that spacing is most
+            // of what makes an ear recognise a quote.
+            let tail = &call[call.len() - out.len()..];
+            assert_eq!(out.iter().map(|n| n.deg).collect::<Vec<_>>(), tail.iter().map(|n| n.deg).collect::<Vec<_>>());
+            let gaps = |v: &[MotifNote]| -> Vec<u32> { v.windows(2).map(|w| w[1].step - w[0].step).collect() };
+            assert_eq!(gaps(&out), gaps(tail));
+        }
+    }
+
+    #[test]
+    fn a_resolving_answer_keeps_the_rhythm_and_walks_the_tune_home() {
+        let call = call_phrase();
+        let out = answer_motif(&call, AnswerVariant::Resolve, 16, &mut Rng::new(1));
+        assert_eq!(out.iter().map(|n| n.step).collect::<Vec<_>>(), call.iter().map(|n| n.step).collect::<Vec<_>>());
+        assert_eq!(out[0].deg, call.last().unwrap().deg, "it picks up where the call left off");
+        assert_eq!(out.last().unwrap().deg, 0, "the consequent closes on the centre");
+        // Monotonic: it walks home rather than wandering there.
+        for w in out.windows(2) {
+            assert!(w[1].deg.abs() <= w[0].deg.abs());
+        }
+    }
+
+    #[test]
+    fn a_resolving_answer_arrives_on_the_last_note_not_early() {
+        // Why the walk is a ramp and not a step-at-a-time descent: moving by
+        // one per note reaches the centre on note five of six and then sits
+        // there, which is a rest with extra notes rather than a resolution.
+        let call: Vec<MotifNote> = (0..6u32).map(|i| MotifNote { step: i * 2, deg: 5, len: 1.0 }).collect();
+        let out = answer_motif(&call, AnswerVariant::Resolve, 16, &mut Rng::new(1));
+        assert_eq!(out.iter().map(|n| n.deg).collect::<Vec<_>>(), vec![5, 4, 3, 2, 1, 0]);
+    }
+
+    #[test]
+    fn a_resolving_answer_to_a_call_that_already_closed_walks_from_its_peak() {
+        // Nothing to resolve, so the answer takes the highest thing the call
+        // reached and brings *that* home instead of holding one note.
+        let call = vec![
+            MotifNote { step: 0, deg: 0, len: 1.0 },
+            MotifNote { step: 4, deg: -4, len: 1.0 },
+            MotifNote { step: 8, deg: -2, len: 1.0 },
+            MotifNote { step: 12, deg: 0, len: 1.0 },
+        ];
+        let out = answer_motif(&call, AnswerVariant::Resolve, 16, &mut Rng::new(1));
+        assert_eq!(out.iter().map(|n| n.deg).collect::<Vec<_>>(), vec![-4, -3, -1, 0]);
+    }
+
+    #[test]
+    fn every_answer_stays_inside_the_turn_and_never_grows_the_phrase() {
+        let call = call_phrase();
+        for variant in ANSWER_VARIANTS {
+            for seed in 0..20u32 {
+                let out = answer_motif(&call, variant, 8, &mut Rng::new(seed));
+                assert!(out.len() <= call.len(), "{variant:?} grew the phrase");
+                for n in &out {
+                    assert!(n.step < 8, "{variant:?} put a note at {} in an 8-step turn", n.step);
+                    assert!(n.len > 0.0);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn answering_nothing_is_nothing() {
+        // A call that rested through its turn: `parts::lead` reaches further
+        // back for something to answer, but this must not panic on the way.
+        for variant in ANSWER_VARIANTS {
+            assert!(answer_motif(&[], variant, 8, &mut Rng::new(1)).is_empty());
+        }
+    }
+
+    #[test]
+    fn an_answer_leaves_the_call_untouched() {
+        let call = call_phrase();
+        let before = call.clone();
+        for variant in ANSWER_VARIANTS {
+            answer_motif(&call, variant, 16, &mut Rng::new(7));
+        }
+        assert_eq!(call, before);
+    }
+
+    #[test]
+    fn an_answer_plan_quotes_first_and_closes_last() {
+        let quoting = [AnswerVariant::Sequence, AnswerVariant::TailEcho];
+        for seed in 0..30u32 {
+            for turns in 2..6u32 {
+                let plan = answer_plan(&mut Rng::new(seed), turns, 50.0);
+                assert_eq!(plan.len(), turns as usize);
+                assert!(quoting.contains(&plan[0]), "seed {seed}: first answer {:?} quotes nothing", plan[0]);
+                assert_eq!(*plan.last().unwrap(), AnswerVariant::Resolve);
+            }
+        }
+    }
+
+    #[test]
+    fn a_single_answer_is_drawn_from_the_whole_pool() {
+        // Two bars trade bar for bar, which gives the response exactly one
+        // turn — the commonest case there is. Forcing it to `Resolve` or to
+        // a quote would make every two-bar pattern answer the same way.
+        let seen: std::collections::HashSet<AnswerVariant> =
+            (0..80u32).map(|seed| answer_plan(&mut Rng::new(seed), 1, 50.0)[0]).collect();
+        assert!(seen.len() >= 3, "only {} of the five answers ever came up", seen.len());
+        assert!(answer_plan(&mut Rng::new(1), 0, 50.0).is_empty());
+    }
+
+    #[test]
+    fn an_answer_plan_turns_the_idea_over_more_at_high_looseness_than_at_low() {
+        let far = [AnswerVariant::Invert, AnswerVariant::Retrograde];
+        let count = |looseness: f64| -> usize {
+            (0..80u32).filter(|&seed| far.contains(&answer_plan(&mut Rng::new(seed), 1, looseness)[0])).count()
+        };
+        assert!(count(100.0) > count(5.0) * 2, "{} vs {}", count(100.0), count(5.0));
+    }
+
+    #[test]
+    fn an_answer_plan_is_deterministic_for_a_seed() {
+        assert_eq!(answer_plan(&mut Rng::new(9), 4, 40.0), answer_plan(&mut Rng::new(9), 4, 40.0));
     }
 
     #[test]

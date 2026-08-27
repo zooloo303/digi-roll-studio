@@ -16,10 +16,19 @@
 //
 // Order is row order — the order the parts appear in `GenContext::parts` —
 // each handed the accumulated set of steps every earlier row claimed. That
-// one piece of shared state is the whole of what buys call-and-response,
-// and it generalises the JS's fixed bass→chords→lead order: with N rows of
-// any role, "what answers what" is simply "what comes after it in the
-// list", which the panel's row order already controls.
+// generalises the JS's fixed bass→chords→lead order: with N rows of any
+// role, "what answers what" is simply "what comes after it in the list",
+// which the panel's row order already controls.
+//
+// **Two things now flow down that list, not one.** The busy step map buys
+// *avoidance* — a lead sits in the gaps instead of doubling the bassline —
+// and for a long time this header claimed that was "the whole of what buys
+// call-and-response". It isn't: avoidance is two parts not colliding, and a
+// conversation is two parts taking turns. So a second piece of shared state
+// travels alongside it, the [`CallVoice`] a `Lead (call)` row leaves behind
+// for the nearest `Lead (response)` row below it — what the call actually
+// played, turn by turn, so the answer can reply to what was heard. See
+// `parts::lead`'s "Taking turns".
 //
 // Nothing here encodes a byte. A result is ordinary pattern state — roll
 // notes, and (from Stage 4) p-lock lanes — which leaves for the box through
@@ -31,7 +40,13 @@ use digi_core::model::Note;
 
 use crate::context::{resolve_context, GenContext, Part, PartId, ResolvedContext};
 use crate::genres::{role_profile, Role};
-use crate::parts::{bass::generate_bass, chords::generate_chords, drums::generate_drums, lead::generate_lead, GeneratedPart};
+use crate::parts::{
+    bass::generate_bass,
+    chords::generate_chords,
+    drums::generate_drums,
+    lead::{generate_lead, generate_lead_voice, CallVoice, LeadVoice},
+    GeneratedPart,
+};
 use crate::plockdesign::design_lanes;
 use crate::rng::rng_for;
 use crate::theory::ChordParseError;
@@ -50,12 +65,45 @@ pub fn stream_tag(id: PartId, variation: u32) -> String {
     }
 }
 
-fn generate_for_role(ctx: &ResolvedContext, role: Role, octave: u8, density: u8, rng: &mut crate::rng::Rng, busy: &HashSet<u32>) -> GeneratedPart {
+/// What one row produced: its notes and trigs, plus — for a `Lead (call)`
+/// row only — the conversation the row below it answers.
+struct RoleOutput {
+    part: GeneratedPart,
+    call: Option<CallVoice>,
+}
+
+impl From<GeneratedPart> for RoleOutput {
+    fn from(part: GeneratedPart) -> Self {
+        RoleOutput { part, call: None }
+    }
+}
+
+fn generate_for_role(
+    ctx: &ResolvedContext,
+    role: Role,
+    octave: u8,
+    density: u8,
+    rng: &mut crate::rng::Rng,
+    busy: &HashSet<u32>,
+    heard: Option<&CallVoice>,
+) -> RoleOutput {
     let profile = role_profile(ctx.profile.id, role);
     match role {
-        Role::Bass => generate_bass(ctx, &profile, octave, density, rng, busy),
-        Role::Chords => generate_chords(ctx, &profile, octave, density, rng, busy),
-        Role::Lead => generate_lead(ctx, &profile, octave, density, rng, busy).into(),
+        Role::Bass => generate_bass(ctx, &profile, octave, density, rng, busy).into(),
+        Role::Chords => generate_chords(ctx, &profile, octave, density, rng, busy).into(),
+        Role::Lead => GeneratedPart::from(generate_lead(ctx, &profile, octave, density, rng, busy)).into(),
+        // The pair. A call leaves its turns behind for whatever answers it;
+        // a response is handed the nearest call above it, or `None` — which
+        // is not an error here, only a row that trades with itself until a
+        // call row joins it. `build_part` is what says so.
+        Role::LeadCall => {
+            let lead = generate_lead_voice(ctx, &profile, octave, density, rng, busy, LeadVoice::Call);
+            let call = lead.call.clone();
+            RoleOutput { part: lead.into(), call }
+        }
+        Role::LeadResponse => {
+            GeneratedPart::from(generate_lead_voice(ctx, &profile, octave, density, rng, busy, LeadVoice::Response(heard))).into()
+        }
         // Every drum voice takes the identical path — the only thing that
         // differs between a kick and a ride is the profile fetched above,
         // which is why adding a voice costs a weight table and a name here.
@@ -70,7 +118,7 @@ fn generate_for_role(ctx: &ResolvedContext, role: Role, octave: u8, density: u8,
         | Role::OpenHat
         | Role::Ride
         | Role::Shaker
-        | Role::Tom => generate_drums(ctx, &profile, density, rng, busy),
+        | Role::Tom => generate_drums(ctx, &profile, density, rng, busy).into(),
     }
 }
 
@@ -98,10 +146,25 @@ pub struct ArrangedPart {
 /// `digi_core::model::PLOCK_STEPS`.
 const PLOCK_STEPS: usize = digi_core::model::PLOCK_STEPS;
 
-fn build_part(ctx: &ResolvedContext, part: &Part, busy: &HashSet<u32>, device_kind: Option<&'static str>) -> ArrangedPart {
+/// What the panel says when a `Lead (response)` row has nothing above it to
+/// answer. Not an error — the row still plays, and still leaves the call's
+/// turns empty — so this is worded as the missing half of a pair rather
+/// than as a failure.
+pub const RESPONSE_WITHOUT_CALL: &str =
+    "A Lead (response) row has no Lead (call) row above it, so it is trading with itself. \
+     Add a Lead (call) row above it, and it will answer that instead.";
+
+fn build_part(
+    ctx: &ResolvedContext,
+    part: &Part,
+    busy: &HashSet<u32>,
+    heard: Option<&CallVoice>,
+    device_kind: Option<&'static str>,
+) -> (ArrangedPart, Option<CallVoice>) {
     let tag = stream_tag(part.id, part.variation);
     let mut rng = rng_for(ctx.seed, &tag);
-    let generated = generate_for_role(ctx, part.role, part.octave, part.density, &mut rng, busy);
+    let output = generate_for_role(ctx, part.role, part.octave, part.density, &mut rng, busy, heard);
+    let generated = output.part;
 
     let trig_count = generated.notes.iter().map(|n| n.step).collect::<HashSet<_>>().len();
     let notes: Vec<Note> = generated
@@ -120,8 +183,11 @@ fn build_part(ctx: &ResolvedContext, part: &Part, busy: &HashSet<u32>, device_ki
     // notes, so that turning Motion up doesn't rewrite the music.
     let mut lane_rng = rng_for(ctx.seed, &format!("{tag}.lanes"));
     let profile = role_profile(ctx.profile.id, part.role);
-    let (designed, warnings) =
+    let (designed, mut warnings) =
         design_lanes(&profile, device_kind, &generated.trigs, ctx.length_steps, u32::from(ctx.feel.motion), PLOCK_STEPS, &mut lane_rng);
+    if part.role == Role::LeadResponse && heard.is_none() {
+        warnings.push(RESPONSE_WITHOUT_CALL.to_string());
+    }
     let plocks: Vec<digi_core::model::PLockLane> = designed
         .into_iter()
         .map(|lane| {
@@ -131,7 +197,7 @@ fn build_part(ctx: &ResolvedContext, part: &Part, busy: &HashSet<u32>, device_ki
         })
         .collect();
 
-    ArrangedPart {
+    let arranged = ArrangedPart {
         part_id: part.id,
         role: part.role,
         on: part.on,
@@ -141,7 +207,8 @@ fn build_part(ctx: &ResolvedContext, part: &Part, busy: &HashSet<u32>, device_ki
         plocks,
         trig_count,
         warnings,
-    }
+    };
+    (arranged, output.call)
 }
 
 /// The whole generated arrangement, and anything worth telling the panel
@@ -182,15 +249,39 @@ pub fn generate_arrangement(ctx: &GenContext, device_kind: Option<&'static str>)
     let mut busy: HashSet<u32> = HashSet::new();
     let mut parts = Vec::with_capacity(ctx.parts.len());
     let mut warnings: Vec<String> = Vec::new();
+    // The nearest `Lead (call)` row above wherever the loop has got to.
+    // Replaced by each call row it passes, never cleared: two responses
+    // under one call both answer it, which is what "a horn section" means,
+    // and a call with no response below it simply goes unanswered.
+    let mut heard: Option<CallVoice> = None;
 
     for part in &ctx.parts {
-        let arranged = build_part(&resolved, part, &busy, device_kind);
+        let (arranged, produced) = build_part(&resolved, part, &busy, heard.as_ref(), device_kind);
+        if produced.is_some() {
+            heard = produced;
+        }
         // Only a part that is actually being used should claim steps in the
         // busy map… except that it must claim them whether or not it is
         // applied, or a later row would move when an earlier row's checkbox
         // changed. So every part registers, and `on` decides what a caller
         // writes.
-        busy.extend(arranged.notes.iter().map(|n| n.step as u32));
+        //
+        // **A drum voice registers nothing.** The busy map means "a pitched
+        // part already owns this step", and `parts::drums` has always read
+        // it that way from the other side: every voice passes `avoid: 0.0`
+        // on purpose, because a kick under a hi-hat is the point rather
+        // than a collision. Filling a map it refuses to read is the
+        // asymmetric half of that decision, and it bites the moment a
+        // melodic row sits *below* a kit — which nothing stops, and which
+        // adding a call-and-response pair to the default six does by
+        // default. A closed hat at density 65 claims fourteen steps of
+        // every sixteen, so the row under it had almost nowhere left to
+        // play: an eight-bar answer came back empty. The default six are
+        // unaffected either way, drums being last in that list, but "the
+        // order happens not to expose it" is not the same as correct.
+        if !arranged.role.is_drum_voice() {
+            busy.extend(arranged.notes.iter().map(|n| n.step as u32));
+        }
         if arranged.on {
             for w in &arranged.warnings {
                 if !warnings.contains(w) {
@@ -613,6 +704,276 @@ mod tests {
         // never changes an id) can never change it — the whole point of
         // Decision 1's redesign.
         assert_eq!(stream_tag(parts[0].id, 0), a);
+    }
+
+    #[test]
+    fn a_drum_row_leaves_the_busy_map_alone_for_the_melodic_rows_under_it() {
+        // The asymmetry `generate_arrangement` used to have: a drum voice
+        // reads the busy map with `avoid: 0.0` — a kick under a hi-hat is
+        // the point — but filled it anyway, so a melodic row placed *below*
+        // a kit was squeezed out by a rhythm that was never in its way. The
+        // default six hide it, drums being last; this puts a lead under
+        // them, which the panel has always allowed.
+        let mut c = ctx(GenContext { seed: 21, bars: 2, ..GenContext::default() });
+        let hat_steps: HashSet<u32> = {
+            let a = generate_arrangement(&c, None).unwrap();
+            a.parts.iter().filter(|p| p.role.is_drum_voice()).flat_map(|p| p.notes.iter().map(|n| n.step as u32)).collect()
+        };
+        assert!(hat_steps.len() > 16, "the default kit only claimed {} steps", hat_steps.len());
+
+        let mut under = default_parts()[2];
+        under.id = PartId::next();
+        under.destination.track = 6;
+        under.density = 60;
+        c.parts.push(under);
+
+        let arrangement = generate_arrangement(&c, None).unwrap();
+        let below = arrangement.parts.last().unwrap();
+        assert_eq!(below.role, Role::Lead);
+        assert!(!below.notes.is_empty());
+        // And it is genuinely free of the kit rather than lucky: a lead this
+        // dense cannot possibly miss every drum step by accident.
+        let landed_on_a_drum = below.notes.iter().filter(|n| hat_steps.contains(&(n.step as u32))).count();
+        assert!(landed_on_a_drum > 0, "a lead under a kit still dodged every drum step");
+    }
+
+    // --- The call-and-response pair ---------------------------------------
+
+    /// Renumber every row from a fixed base.
+    ///
+    /// **A stream tag is keyed by `PartId`, and `PartId::next()` draws from
+    /// a process-global counter** — so which ids a test gets depends on how
+    /// many rows every *other* test in the binary happened to create first,
+    /// and tests run in parallel in one process. Any assertion about a rate
+    /// across seeds is then order-dependent: the music is reproducible for a
+    /// given set of ids and the ids are not. Most tests here are immune
+    /// because they compare two arrangements built from one `GenContext`,
+    /// which fixes the ids for both sides. The ones that count how often
+    /// something holds are not, and this is what makes them so.
+    fn pin_ids(mut c: GenContext) -> GenContext {
+        for (i, part) in c.parts.iter_mut().enumerate() {
+            part.id = PartId(9_000_000 + i as u64);
+        }
+        c
+    }
+
+    /// The default six rows with a `Lead (call)` / `Lead (response)` pair
+    /// added below them, on their own two tracks — what a person gets by
+    /// adding two rows in the panel and picking the two roles.
+    fn with_a_pair(seed: u32, bars: u32) -> GenContext {
+        let mut c = ctx(GenContext { seed, bars, ..GenContext::default() });
+        for (offset, role) in [Role::LeadCall, Role::LeadResponse].into_iter().enumerate() {
+            let mut row = default_parts()[2]; // the lead row: its register and density
+            row.role = role;
+            row.destination.track = 6 + offset;
+            c.parts.push(row);
+        }
+        pin_ids(c)
+    }
+
+    fn steps_of(part: &ArrangedPart) -> Vec<u32> {
+        part.notes.iter().map(|n| n.step as u32).collect()
+    }
+
+    #[test]
+    fn a_pair_of_rows_trades_turns_end_to_end() {
+        // The whole feature through the real pipeline, not the part
+        // generator: two rows, paired by row order, writing two tracks.
+        for bars in crate::context::GEN_BARS {
+            for seed in 0..8u32 {
+                let c = with_a_pair(seed, bars);
+                let arrangement = generate_arrangement(&c, Some("DT2")).unwrap();
+                let call = arrangement.parts.iter().find(|p| p.role == Role::LeadCall).unwrap();
+                let response = arrangement.parts.iter().find(|p| p.role == Role::LeadResponse).unwrap();
+                assert!(!call.notes.is_empty() && !response.notes.is_empty());
+                assert_eq!(call.destination.track, 6);
+                assert_eq!(response.destination.track, 7);
+
+                let trade = crate::parts::lead::trade_steps(bars * 16);
+                for step in steps_of(call) {
+                    assert_eq!((step / trade) % 2, 0, "{bars}b/{seed}: call trigged at {step}");
+                }
+                for step in steps_of(response) {
+                    assert!((step / trade) % 2 == 1 || trade - (step % trade) <= 2, "{bars}b/{seed}: response trigged at {step}");
+                }
+                assert!(arrangement.warnings.iter().all(|w| w != RESPONSE_WITHOUT_CALL));
+            }
+        }
+    }
+
+    #[test]
+    fn re_rolling_the_call_moves_the_response_below_it() {
+        // The point of threading the conversation down the row list. ↻ on a
+        // call is a new question, so the answer below it has to be a new
+        // answer — and the rows *above* the pair must not move, which is the
+        // promise the whole row-order design rests on.
+        //
+        // Asserted per seed rather than as a rate, unlike
+        // `keeps_other_parts_still_when_only_one_parts_density_moves` above:
+        // that one measures a *statistical* effect, where an unlucky seed
+        // can tie by coincidence. This is a causal one — the response's
+        // material is derived from the call's, so a different question
+        // cannot produce the same answer except by an accident far rarer
+        // than forty seeds. If this ever does tie, the answer has stopped
+        // depending on the call and that is the bug, not the test.
+        for seed in 0..40u32 {
+            let mut c = with_a_pair(seed, 4);
+            let call_id = c.parts[6].id;
+            let before = generate_arrangement(&c, None).unwrap();
+            c.bump_variation(call_id);
+            let after = generate_arrangement(&c, None).unwrap();
+            for i in 0..6 {
+                assert_eq!(shape(&after.parts[i].notes), shape(&before.parts[i].notes), "seed {seed}: row {i} moved");
+            }
+            assert_ne!(shape(&after.parts[6].notes), shape(&before.parts[6].notes), "seed {seed}: the call didn't re-roll");
+            assert_ne!(shape(&after.parts[7].notes), shape(&before.parts[7].notes), "seed {seed}: the answer ignored the new call");
+        }
+    }
+
+    #[test]
+    fn re_rolling_the_response_leaves_the_call_alone() {
+        // The other direction: an answer is downstream of a question, never
+        // upstream of it.
+        for seed in 0..8u32 {
+            let mut c = with_a_pair(seed, 4);
+            let response_id = c.parts[7].id;
+            let before = generate_arrangement(&c, None).unwrap();
+            c.bump_variation(response_id);
+            let after = generate_arrangement(&c, None).unwrap();
+            assert_eq!(shape(&after.parts[6].notes), shape(&before.parts[6].notes), "seed {seed}: the call moved");
+        }
+    }
+
+    #[test]
+    fn a_response_still_answers_a_call_whose_checkbox_is_off() {
+        // The rule this module already holds for the busy map, extended to
+        // the conversation: unchecking a row must not reshuffle the rows
+        // that answer it, or every checkbox becomes a re-roll.
+        for seed in 0..8u32 {
+            let base = with_a_pair(seed, 4);
+            let mut off = base.clone();
+            off.parts[6].on = false;
+            let a = generate_arrangement(&base, None).unwrap();
+            let b = generate_arrangement(&off, None).unwrap();
+            assert_eq!(shape(&b.parts[7].notes), shape(&a.parts[7].notes), "seed {seed}: the answer moved");
+            assert!(!b.parts[6].on);
+            assert!(!b.parts[6].notes.is_empty());
+        }
+    }
+
+    #[test]
+    fn a_response_with_no_call_above_it_says_so_and_still_plays() {
+        let mut c = ctx(GenContext { seed: 5, bars: 4, ..GenContext::default() });
+        let mut row = default_parts()[2];
+        row.id = PartId::next();
+        row.role = Role::LeadResponse;
+        row.destination.track = 6;
+        c.parts.push(row);
+
+        let arrangement = generate_arrangement(&c, None).unwrap();
+        let orphan = arrangement.parts.last().unwrap();
+        assert_eq!(orphan.role, Role::LeadResponse);
+        assert!(!orphan.notes.is_empty(), "an unpaired response is a warning, not a silent row");
+        assert!(arrangement.warnings.contains(&RESPONSE_WITHOUT_CALL.to_string()));
+    }
+
+    #[test]
+    fn a_call_below_a_response_does_not_answer_it() {
+        // Row order is the pairing, and it only ever looks *up*. A response
+        // above a call is an unpaired response, and must say so rather than
+        // quietly reading the row below it.
+        let mut c = ctx(GenContext { seed: 6, bars: 4, ..GenContext::default() });
+        for role in [Role::LeadResponse, Role::LeadCall] {
+            let mut row = default_parts()[2];
+            row.id = PartId::next();
+            row.role = role;
+            row.destination.track = 6 + usize::from(role == Role::LeadCall);
+            c.parts.push(row);
+        }
+        let arrangement = generate_arrangement(&c, None).unwrap();
+        assert!(arrangement.warnings.contains(&RESPONSE_WITHOUT_CALL.to_string()));
+    }
+
+    #[test]
+    fn two_responses_under_one_call_both_answer_it() {
+        // A horn section: the nearest call above is *the* call, and nothing
+        // clears it, so a second answer is an answer too rather than an
+        // orphan.
+        let mut c = with_a_pair(7, 4);
+        let mut second = c.parts[7];
+        second.destination.track = 8;
+        second.density = second.density.saturating_add(20).min(100);
+        c.parts.push(second);
+        let c = pin_ids(c);
+
+        let arrangement = generate_arrangement(&c, None).unwrap();
+        assert!(arrangement.warnings.iter().all(|w| w != RESPONSE_WITHOUT_CALL));
+        let trade = crate::parts::lead::trade_steps(64);
+        for part in arrangement.parts.iter().filter(|p| p.role == Role::LeadResponse) {
+            assert!(!part.notes.is_empty());
+            for step in steps_of(part) {
+                assert!((step / trade) % 2 == 1 || trade - (step % trade) <= 2, "second response trigged at {step}");
+            }
+        }
+        // Two rows, two `PartId`s, two streams — the same question answered
+        // twice, not the same answer written twice.
+        let answers: Vec<String> = arrangement.parts.iter().filter(|p| p.role == Role::LeadResponse).map(|p| shape(&p.notes)).collect();
+        assert_ne!(answers[0], answers[1]);
+    }
+
+    #[test]
+    fn a_second_call_takes_over_from_the_first() {
+        // Two conversations down one row list: call A, response A, call B,
+        // response B. B's answer must answer B.
+        let mut c = with_a_pair(11, 4);
+        for (offset, role) in [Role::LeadCall, Role::LeadResponse].into_iter().enumerate() {
+            let mut row = default_parts()[2];
+            row.role = role;
+            row.destination.track = 8 + offset;
+            c.parts.push(row);
+        }
+        let c = pin_ids(c);
+        let a = generate_arrangement(&c, None).unwrap();
+
+        // Re-roll the *second* call. The first pair cannot move, and the
+        // second answer must.
+        let mut rolled = c.clone();
+        rolled.bump_variation(c.parts[8].id);
+        let b = generate_arrangement(&rolled, None).unwrap();
+        assert_eq!(shape(&b.parts[6].notes), shape(&a.parts[6].notes), "the first call moved");
+        assert_eq!(shape(&b.parts[7].notes), shape(&a.parts[7].notes), "the first answer moved");
+        assert_ne!(shape(&b.parts[9].notes), shape(&a.parts[9].notes), "the second answer ignored its own call");
+    }
+
+    #[test]
+    fn a_pair_is_reproducible_and_moves_with_the_seed() {
+        let c = with_a_pair(4242, 4);
+        let a = generate_arrangement(&c, None).unwrap();
+        let b = generate_arrangement(&c, None).unwrap();
+        for (pa, pb) in a.parts.iter().zip(&b.parts) {
+            assert_eq!(shape(&pb.notes), shape(&pa.notes));
+        }
+        let mut rolled = c.clone();
+        rolled.seed += 1;
+        let d = generate_arrangement(&rolled, None).unwrap();
+        assert_ne!(shape(&d.parts[6].notes), shape(&a.parts[6].notes));
+        assert_ne!(shape(&d.parts[7].notes), shape(&a.parts[7].notes));
+    }
+
+    #[test]
+    fn a_pair_generates_for_every_genre() {
+        for genre in GenreId::ALL {
+            let mut c = with_a_pair(3, GenContext::default().bars);
+            c = c.for_genre(genre, false);
+            let arrangement = generate_arrangement(&c, Some("DN2")).unwrap();
+            for role in [Role::LeadCall, Role::LeadResponse] {
+                let part = arrangement.parts.iter().find(|p| p.role == role).unwrap();
+                assert!(!part.notes.is_empty(), "{genre:?}/{role:?} produced nothing");
+                // A pair inherits the lead's lane recipe, so Motion still
+                // reaches it — the roles are new, the p-lock path is not.
+                assert!(part.plocks.iter().all(|l| l.values.len() == PLOCK_STEPS));
+            }
+        }
     }
 
     #[test]

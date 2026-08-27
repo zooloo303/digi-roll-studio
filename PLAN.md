@@ -500,6 +500,18 @@ The elements:
   wanted transposing up by hand, and the window heights are untouched, so this
   moved the floor rather than the range. A row's ↻ re-rolls that row and whatever
   answers it below.
+
+  **Lead (call) and Lead (response)** are a pair of roles that trade phrases
+  across two tracks. Row order is the pairing, as it is everywhere else here: a
+  response answers the nearest call above it. The turn grid is derived from the
+  pattern rather than configured — one bar trades at the half bar, two and four
+  bars trade bar for bar, eight bars trade two bars at a time — and the call goes
+  quiet in the response's turn, which is the feature rather than a gap. What
+  travels between the two rows is what the call *actually played*, turn by turn,
+  so the answer quotes, inverts or resolves a phrase that really sounded; a
+  response also closes onto a chord tone where the call deliberately steps off
+  the root. Avoidance was never enough for this: two parts not colliding is not
+  two parts taking turns.
 - **Transport** — play/stop/continue, tempo, swing, FILL, panic, clock
   master/slave.
 

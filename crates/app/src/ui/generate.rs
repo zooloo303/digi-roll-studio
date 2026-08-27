@@ -1322,7 +1322,13 @@ fn reference_text(ui: &mut Ui) {
              PARTS: one row per track this writes. Row order is call-and-response — whatever \
              comes after a row in this list answers it. Reroll rewrites just that row and \
              whatever answers it below, straight into the session — no Generate press needed, \
-             and the seed and every row above it stay put.",
+             and the seed and every row above it stay put.\n\n\
+             LEAD (CALL) / LEAD (RESPONSE): a pair of rows that trade phrases across two \
+             tracks. The call states an idea and then rests; the response answers into the \
+             space, quoting, inverting or resolving what the call just played. Put the call \
+             above the response — a response looks upward for the nearest call to answer. How \
+             long a turn lasts follows the pattern: one bar trades at the half bar, two and \
+             four bars trade bar for bar, eight bars trade two bars at a time.",
         )
         .weak()
         .small(),
