@@ -30,6 +30,18 @@ pub const PRODUCTS: &[Product] = &[
     Product { product_id: 43, name: "Digitone II", slug: "digitone2", family: FAMILY_DIGITONE_2 },
 ];
 
+/// Boxes recognisable by their port *name* that have no row in [`PRODUCTS`],
+/// because no product id has ever been captured for them — the Analog Four
+/// mk1 predates the API generation the DT2/DN2 answer, and until one is on a
+/// desk answering (or provably not answering) there is nothing honest to put
+/// in the wire table. This list feeds [`slug_from_port_name`] only; it can
+/// never claim an identity reply, which is what keeps a guessed id out of
+/// [`product_for_id`].
+///
+/// If an A4 turns out to answer opcode 0x01 after all, capture the id and
+/// family from the box and promote the row into [`PRODUCTS`].
+pub const NAME_ONLY_PRODUCTS: &[(&str, &str)] = &[("Analog Four", "analogfour")];
+
 pub fn product_for_id(product_id: u8) -> Option<&'static Product> {
     PRODUCTS.iter().find(|p| p.product_id == product_id)
 }
@@ -67,8 +79,22 @@ pub fn product_from_port_name(port_name: &str) -> Option<&'static Product> {
         .find(|p| lower.contains(&p.name.to_lowercase()))
 }
 
+/// [`product_from_port_name`] plus the boxes only a name can identify
+/// ([`NAME_ONLY_PRODUCTS`]). Same longest-name-first rule across the merged
+/// list, so a hypothetical "Analog Four II" entry could never be claimed by
+/// "Analog Four" first.
 pub fn slug_from_port_name(port_name: &str) -> Option<&'static str> {
-    product_from_port_name(port_name).map(|p| p.slug)
+    let lower = port_name.to_lowercase();
+    let mut candidates: Vec<(&str, &str)> = PRODUCTS
+        .iter()
+        .map(|p| (p.name, p.slug))
+        .chain(NAME_ONLY_PRODUCTS.iter().copied())
+        .collect();
+    candidates.sort_by_key(|(name, _)| std::cmp::Reverse(name.len()));
+    candidates
+        .into_iter()
+        .find(|(name, _)| lower.contains(&name.to_lowercase()))
+        .map(|(_, slug)| slug)
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

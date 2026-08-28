@@ -26,7 +26,7 @@ pub mod song;
 pub mod track_clip;
 
 pub use chords::{Harmony, Scale};
-pub use device::{Device, DeviceId, DeviceIo, DeviceModel, PortEnd, PortRef, DN2, DT2, MODELS};
+pub use device::{Device, DeviceId, DeviceIo, DeviceModel, PortEnd, PortRef, A4, DN2, DT2, MODELS};
 pub use export::{track_write, ExportError, TrackExport};
 pub use history::{Content, History};
 pub use import::{pattern_from_kit, Fetched, ImportError, ImportReport};

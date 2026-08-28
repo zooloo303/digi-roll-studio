@@ -45,33 +45,52 @@ fn track_count_comes_from_the_model_not_a_constant() {
 }
 
 #[test]
-fn a_four_track_live_only_model_constructs_correctly() {
+fn an_unshipped_live_only_model_constructs_correctly() {
     // Deliberately not shipped in MODELS: this proves the table is data without
-    // claiming an A4 profile we have not verified.
-    static A4: DeviceModel = DeviceModel {
-        key: "A4",
-        display: "Analog Four",
+    // claiming a Syntakt profile we have not verified. This test's model was
+    // an "Analog Four" from Phase 2 until 2026-08-24, when the real A4 row
+    // graduated into the shipped table — the Syntakt takes over as the next
+    // box the plan names and this build does not ship.
+    static SYNTAKT: DeviceModel = DeviceModel {
+        key: "ST",
+        display: "Syntakt",
         slug: None,
-        num_tracks: 4,
+        num_tracks: 12,
         max_steps: 64,
         default_track_kind: TrackKind::Audio,
         sysex: None,
+        answers_identity: false,
     };
 
-    let d = Device::new("A4", &A4, 8);
+    let d = Device::new("ST", &SYNTAKT, 8);
     assert_eq!(d.patterns.len(), 8);
     for p in &d.patterns {
-        assert_eq!(p.num_tracks(), 4);
+        assert_eq!(p.num_tracks(), 12);
     }
     // sysex: None means sequence-live-only — no fetch, no write.
     assert!(!d.can_sysex());
-    assert!(A4.spec().is_none());
-    d.validate().expect("a 4-track model is coherent");
+    assert!(SYNTAKT.spec().is_none());
+    d.validate().expect("a 12-track model is coherent");
+}
+
+#[test]
+fn the_shipped_a4_is_live_only_and_six_tracks() {
+    // The first `sysex: None` row to ship. Six tracks — four voices, FX, CV —
+    // and 64 steps, both off the box's own manual; nothing here is a guess a
+    // dump has to verify, because no dump is ever read for it.
+    assert_eq!(digi_core::A4.num_tracks, 6);
+    assert_eq!(digi_core::A4.max_steps, 64);
+    assert!(!digi_core::A4.can_sysex());
+    assert!(digi_core::A4.spec().is_none());
+    assert!(!digi_core::A4.answers_identity, "the mk1 predates the identity API");
+    let d = Device::new("A4", &digi_core::A4, 16);
+    d.validate().expect("the shipped A4 model is coherent");
 }
 
 #[test]
 fn the_shipped_models_can_do_sysex_and_say_so_truthfully() {
     // Guards the trap of a model whose `sysex` field disagrees with reality.
+    // The A4 is deliberately absent: its truth is the test above.
     for m in [&DT2, &DN2] {
         assert!(m.can_sysex(), "{} should do SysEx", m.key);
         assert!(m.spec().is_some(), "{} should resolve a Spec", m.key);
@@ -81,9 +100,12 @@ fn the_shipped_models_can_do_sysex_and_say_so_truthfully() {
 #[test]
 fn an_identity_reply_binds_to_the_right_model() {
     // The slug is the link between protocol's wire identity and core's musical
-    // table — the binding Phase 3 could not do without a Session.
+    // table — the binding Phase 3 could not do without a Session. The A4's is
+    // reachable only from a port *name* (`NAME_ONLY_PRODUCTS`), never from a
+    // handshake, but the table lookup is the same either way.
     assert_eq!(model_for_slug("digitakt2").unwrap().key, "DT2");
     assert_eq!(model_for_slug("digitone2").unwrap().key, "DN2");
+    assert_eq!(model_for_slug("analogfour").unwrap().key, "A4");
     assert!(model_for_slug("microfreak").is_none());
 }
 

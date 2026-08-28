@@ -64,9 +64,11 @@ pub const MIDI_MAX: i32 = 127;
 /// lane it cannot name.
 pub const RAW_VALUE_MAX: u16 = 0xFFFE;
 
-/// The device kinds with a curated table, keyed as [`crate::pattern::Spec`]
-/// spells them.
-pub const DEVICE_KINDS: &[&str] = &["DT2", "DN2"];
+/// The device kinds with a curated table. For a box with a `Spec` the key is
+/// spelled as [`crate::pattern::Spec::device`] spells it; `A4` has no spec —
+/// it is live-only — so its key is the model key, which the two spellings
+/// agree on for every box that has both.
+pub const DEVICE_KINDS: &[&str] = &["DT2", "DN2", "A4"];
 
 /// How to *hear* a parameter. Any of the three may be absent: the DN2's whole
 /// LFO3 has no CC at all, and the DT2's appendix gives no NRPN for the FX page.
@@ -370,6 +372,105 @@ pub static DN2_PARAMS: &[Param] = &[
     },
 ];
 
+/// Analog Four curated p-lock parameters — audition-only, every `plock: None`.
+///
+/// The `midi` half is from **two of Elektron's own manuals, agreeing value for
+/// value**: the Analog Four mk1 manual (OS 1.0, Appendix D) and the Analog
+/// Keys manual (OS 1.51C, same appendix — the AK is the same engine and OS
+/// line, and 1.51 is the generation a 2026 mk1 will actually be running).
+/// Cross-checked against midi.guide's A4 tables, same as the two above.
+///
+/// **Every `plock` is `None`, and that is the design working, not a gap**: the
+/// paramId byte only ever comes from locking a knob on hardware and reading
+/// the dump back (Phase 0's method), no A4 dump has ever been read by this
+/// code, and the A4 model ships `sysex: None` anyway. So these lanes can be
+/// drawn and *heard* — CC/NRPN over the wire — and the write path refuses
+/// them, which is exactly the "missing measurement must not become a wrong
+/// byte" split this file opens with. Measure on the box before filling one in.
+///
+/// Naming: entries share canonical names with the DT2/DN2 tables wherever the
+/// knob is the same idea — `filter.cutoff` here is Filter1, the analog
+/// four-pole, and `fx.overdrive` is the overdrive circuit between the two
+/// filters (bipolar on this box: 0 is clean, negative drives the filter
+/// itself, positive clips after it — the one entry here whose DT2/DN2
+/// namesakes are unipolar). `lfoN.depth` is Depth A of the two-destination
+/// LFOs. Three entries have no namesake because the DT2/DN2 have no such
+/// knob: `osc1.level`, `osc2.level` and `amp.volume` — and note CC 7 *works*
+/// here, on the AMP page, unlike on the two digis where the appendices omit
+/// it entirely (see [`track_level_midi`]).
+pub static A4_PARAMS: &[Param] = &[
+    // High-resolution: the appendix gives a CC LSB, so CC alone would drop
+    // the bottom seven bits. NRPN carries all 14 — same story as the DT2 LFO
+    // depths, and the same reason the audition path prefers NRPN.
+    Param {
+        name: "filter.cutoff", label: "FLTR1 FREQ", short: "CUTOFF", bipolar: false,
+        midi: MidiMap { cc: Some(18), cc_lsb: Some(50), nrpn: Some((1, 40)) },
+        plock: None,
+    },
+    Param {
+        name: "filter.resonance", label: "FLTR1 RESO", short: "RESO", bipolar: false,
+        midi: MidiMap { cc: Some(89), cc_lsb: None, nrpn: Some((1, 41)) },
+        plock: None,
+    },
+    Param {
+        name: "filter.envDepth", label: "FLTR1 ENV DEPTH", short: "ENV D", bipolar: true,
+        midi: MidiMap { cc: Some(102), cc_lsb: None, nrpn: Some((1, 44)) },
+        plock: None,
+    },
+    Param {
+        name: "amp.pan", label: "PAN", short: "PAN", bipolar: true,
+        midi: MidiMap { cc: Some(10), cc_lsb: None, nrpn: Some((1, 58)) },
+        plock: None,
+    },
+    // No CC at all — the appendix's CC column is blank for overdrive, keytrack
+    // and filter2's type, so NRPN is the only way to hear this one.
+    Param {
+        name: "fx.overdrive", label: "FLTR OVERDRIVE", short: "DRIVE", bipolar: true,
+        midi: MidiMap { cc: None, cc_lsb: None, nrpn: Some((1, 42)) },
+        plock: None,
+    },
+    Param {
+        name: "fx.delaySend", label: "DELAY SEND", short: "DELAY", bipolar: false,
+        midi: MidiMap { cc: Some(92), cc_lsb: None, nrpn: Some((1, 56)) },
+        plock: None,
+    },
+    Param {
+        name: "fx.reverbSend", label: "REVERB SEND", short: "REVERB", bipolar: false,
+        midi: MidiMap { cc: Some(93), cc_lsb: None, nrpn: Some((1, 57)) },
+        plock: None,
+    },
+    Param {
+        name: "fx.chorusSend", label: "CHORUS SEND", short: "CHORUS", bipolar: false,
+        midi: MidiMap { cc: Some(91), cc_lsb: None, nrpn: Some((1, 55)) },
+        plock: None,
+    },
+    Param {
+        name: "lfo1.depth", label: "LFO1 DEPTH A", short: "LFO1", bipolar: true,
+        midi: MidiMap { cc: Some(24), cc_lsb: Some(56), nrpn: Some((1, 87)) },
+        plock: None,
+    },
+    Param {
+        name: "lfo2.depth", label: "LFO2 DEPTH A", short: "LFO2", bipolar: true,
+        midi: MidiMap { cc: Some(26), cc_lsb: Some(58), nrpn: Some((1, 97)) },
+        plock: None,
+    },
+    Param {
+        name: "osc1.level", label: "OSC1 LEVEL", short: "OSC1", bipolar: false,
+        midi: MidiMap { cc: Some(69), cc_lsb: None, nrpn: Some((1, 4)) },
+        plock: None,
+    },
+    Param {
+        name: "osc2.level", label: "OSC2 LEVEL", short: "OSC2", bipolar: false,
+        midi: MidiMap { cc: Some(78), cc_lsb: None, nrpn: Some((1, 24)) },
+        plock: None,
+    },
+    Param {
+        name: "amp.volume", label: "AMP VOLUME", short: "VOL", bipolar: false,
+        midi: MidiMap { cc: Some(7), cc_lsb: None, nrpn: Some((1, 59)) },
+        plock: None,
+    },
+];
+
 // --- The track's own level -----------------------------------------------------
 
 /// The track LEVEL fader, per box: the one on the box's mixer, not the AMP
@@ -397,6 +498,11 @@ pub fn track_level_midi(device_kind: &str) -> Option<MidiMap> {
     match device_kind {
         "DT2" => Some(MidiMap { cc: Some(95), cc_lsb: None, nrpn: Some((1, 100)) }),
         "DN2" => Some(MidiMap { cc: Some(95), cc_lsb: None, nrpn: Some((1, 110)) }),
+        // Not in the OS 1.0 appendix — TRACK CC/NRPN arrived in a later OS and
+        // is documented in the Analog Keys OS 1.51C manual's Appendix D, which
+        // is the generation a current mk1 runs. Note it sides with the DT2 on
+        // the NRPN, not the DN2.
+        "A4" => Some(MidiMap { cc: Some(95), cc_lsb: None, nrpn: Some((1, 100)) }),
         _ => None,
     }
 }
@@ -419,6 +525,7 @@ pub fn param_table_for(kind: &str) -> &'static [Param] {
     match kind {
         "DT2" => DT2_PARAMS,
         "DN2" => DN2_PARAMS,
+        "A4" => A4_PARAMS,
         _ => &[],
     }
 }
@@ -738,11 +845,17 @@ lfo3.depth|LFO3 DEPTH|LFO3|true|||[1,72]|31|256|0|127|1|true|true"
         // published CC/NRPN charts; `writable` comes from the Phase 0 hardware
         // experiments of 2026-08-04 (DT2 build 0070, DN2 build 0049), which
         // measured the paramId and scaling for all eleven knobs on both boxes.
-        for kind in DEVICE_KINDS {
+        for kind in ["DT2", "DN2"] {
             assert_eq!(param_table_for(kind).len(), 11, "{kind}");
             assert_eq!(auditable_params_for(kind).len(), 11, "{kind}");
             assert_eq!(writable_params_for(kind).len(), 11, "{kind}");
         }
+        // The A4's thirteen are chart-only — hearable, none of them measured,
+        // so none writable. The day a paramId is captured on the box, this
+        // count is the assertion to move.
+        assert_eq!(param_table_for("A4").len(), 13);
+        assert_eq!(auditable_params_for("A4").len(), 13);
+        assert_eq!(writable_params_for("A4").len(), 0, "no A4 paramId has ever been measured");
         assert!(any_writable_params());
     }
 
@@ -840,15 +953,25 @@ lfo3.depth|LFO3 DEPTH|LFO3|true|||[1,72]|31|256|0|127|1|true|true"
     #[test]
     fn track_level_is_not_in_the_p_lock_tables_and_nothing_claims_cc_7() {
         // It has no measured paramId, so it must not be offered as a lane; and
-        // CC 7 is in neither appendix, so nothing in here may map to it.
+        // on the digis CC 7 is in neither appendix, so nothing may map to it.
         for kind in DEVICE_KINDS {
             assert!(param_by_name(param_table_for(kind), "track.level").is_none());
-            assert!(
-                param_table_for(kind).iter().all(|p| p.midi.cc != Some(7)),
-                "{kind}: CC 7 is Channel Volume and neither box answers it"
-            );
             assert_ne!(track_level_midi(kind).unwrap().cc, Some(7));
         }
+        for kind in ["DT2", "DN2"] {
+            assert!(
+                param_table_for(kind).iter().all(|p| p.midi.cc != Some(7)),
+                "{kind}: CC 7 is Channel Volume and neither digi answers it"
+            );
+        }
+        // The A4 is the exception that proves the entry: its AMP page's VOL
+        // *is* CC 7, straight from its appendix — one box's dead controller is
+        // another's published knob, which is the whole argument for per-box
+        // tables over a shared one.
+        assert_eq!(
+            param_by_name(param_table_for("A4"), "amp.volume").unwrap().midi.cc,
+            Some(7)
+        );
     }
 
     #[test]

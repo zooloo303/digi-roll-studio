@@ -24,9 +24,16 @@ use digi_engine::PLockMap;
 /// Resolves each lane against the table of the box it is bound for.
 #[derive(Debug, Clone, Default)]
 pub struct CuratedPLocks {
-    /// Which box each device is, as `Spec::device` spells it — `DT2` / `DN2`.
-    /// A device with no SysEx spec is absent, and a lane bound for it sends
-    /// nothing: we have no parameter table for a box we cannot name.
+    /// Which box each device is, as `params::DEVICE_KINDS` spells it — `DT2` /
+    /// `DN2` / `A4`. A device with no curated table is absent, and a lane
+    /// bound for it sends nothing: we have no parameters for a box we cannot
+    /// name.
+    ///
+    /// Keyed off the **param tables, not the SysEx spec** — until 2026-08-24
+    /// it was `model.spec()?.device`, which was the same set of boxes right up
+    /// to the moment the A4 shipped live-only: a box with published CC/NRPN
+    /// and no dump format. Hearing a lane and parsing a dump are different
+    /// capabilities, and this map is about hearing.
     kinds: HashMap<DeviceId, &'static str>,
 }
 
@@ -42,7 +49,9 @@ impl CuratedPLocks {
             kinds: session
                 .devices
                 .iter()
-                .filter_map(|d| Some((d.id, d.model.spec()?.device)))
+                .filter_map(|d| {
+                    Some((d.id, digi_protocol::params::device_kind_key(d.model.key)?))
+                })
                 .collect(),
         }
     }

@@ -178,16 +178,24 @@ pub fn ui(
         // sentence someone reads *because* their sync is already wrong. Same
         // decision, and the same reasoning, as `tracks::channel_note`.
         let mut takes_clock = session.device(id).is_some_and(|d| d.io.takes_clock);
+        // The menu path is the box's own, per model: the digis file SYNC under
+        // SETTINGS, the A4 mk1 under GLOBAL (its manual, OS 1.0 through 1.51).
+        // A wrong path here is read by exactly one person: the one whose sync
+        // is already broken.
+        let sync_path = match session.device(id).map(|d| d.model.key) {
+            Some("A4") => "GLOBAL > MIDI CONFIG > MIDI SYNC",
+            _ => "SETTINGS > MIDI CONFIG > SYNC",
+        };
         if ui
             .checkbox(&mut takes_clock, "Takes our clock")
-            .on_hover_text(
+            .on_hover_text(format!(
                 "Send this box the session's clock and transport.\n\n\
-                 On the box: SETTINGS > MIDI CONFIG > SYNC, with CLOCK RECEIVE and \
+                 On the box: {sync_path}, with CLOCK RECEIVE and \
                  TRANSPORT RECEIVE on — and CLOCK SEND off on every box. On a \
                  DIN-chained desk a box that sends clock feeds it to your other \
                  boxes, and they stop locking to us too.\n\n\
                  Turn this off for a box slaved to something else.",
-            )
+            ))
             .changed()
         {
             if let Some(d) = session.device_mut(id) {

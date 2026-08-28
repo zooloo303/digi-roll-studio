@@ -1,10 +1,11 @@
 // The device table, and one physical box in a session.
 //
 // The table is *data*. Track count is a field, never a constant and never an
-// enum arm with a hard-coded 16 in it — which is what lets a 4-track A4 or a
-// 12-track Syntakt be a row here later instead of a model rewrite. v1 ships DT2
-// and DN2 only; the tests prove the shape by constructing a 4-track,
-// no-SysEx model that this crate does not ship.
+// enum arm with a hard-coded 16 in it — which is what let the A4 become a row
+// here (2026-08-24) instead of a model rewrite, exactly as planned. v1 shipped
+// DT2 and DN2 only; the A4 is the first `sysex: None` row to ship, and the
+// tests still prove the shape by constructing a live-only model this crate
+// does not ship.
 
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, LazyLock};
@@ -58,6 +59,13 @@ pub struct DeviceModel {
     pub max_steps: u16,
     pub default_track_kind: TrackKind,
     pub sysex: Option<SpecFn>,
+    /// Whether this box answers the Elektron API identity request (opcode
+    /// 0x01/0x02). The DT2/DN2 generation does; the Analog Four mk1 predates
+    /// that API and is assumed silent until a real one proves otherwise.
+    /// `false` tells auto-connect to bind by port name instead of waiting on
+    /// a handshake that is never coming — the USB descriptor's name is the
+    /// only identification such a box offers.
+    pub answers_identity: bool,
 }
 
 impl DeviceModel {
@@ -88,6 +96,7 @@ pub static DT2: DeviceModel = DeviceModel {
     max_steps: 128,
     default_track_kind: TrackKind::Audio,
     sysex: Some(dt2_spec),
+    answers_identity: true,
 };
 
 pub static DN2: DeviceModel = DeviceModel {
@@ -98,10 +107,33 @@ pub static DN2: DeviceModel = DeviceModel {
     max_steps: 128,
     default_track_kind: TrackKind::Audio,
     sysex: Some(dn2_spec),
+    answers_identity: true,
 };
 
-/// The shipped roster. DT2 and DN2 only, per PLAN.md §2.
-pub static MODELS: &[&DeviceModel] = &[&DT2, &DN2];
+/// The Analog Four mk1 — the first live-only row to ship, 2026-08-24, ahead
+/// of the box itself (delivery 2026-08-28).
+///
+/// Six tracks as the sequencer counts them: four synth voices, the FX track
+/// and the CV track. 64 steps — four pages of sixteen, half a digi pattern.
+/// `sysex: None` because no A4 dump has ever been read by this code; the box
+/// still sequences live, takes clock, and answers CC/NRPN (see
+/// `protocol::params::A4_PARAMS`). `answers_identity: false` because the mk1
+/// predates the API the DT2/DN2 handshake speaks — flip it the day one
+/// answers, and capture the product id for `protocol::device::PRODUCTS`
+/// while you are there.
+pub static A4: DeviceModel = DeviceModel {
+    key: "A4",
+    display: "Analog Four",
+    slug: Some("analogfour"),
+    num_tracks: 6,
+    max_steps: 64,
+    default_track_kind: TrackKind::Audio,
+    sysex: None,
+    answers_identity: false,
+};
+
+/// The shipped roster. DT2 and DN2 per PLAN.md §2; A4 since 2026-08-24.
+pub static MODELS: &[&DeviceModel] = &[&DT2, &DN2, &A4];
 
 pub fn model_for_key(key: &str) -> Option<&'static DeviceModel> {
     MODELS.iter().copied().find(|m| m.key == key)

@@ -198,16 +198,17 @@ pub fn track_tooltip_text(track_number: usize, track: &Track, pattern_source: Op
     )
 }
 
-/// What a channel means on a *factory* DT2 or DN2, when it means something other
-/// than "this track". `None` for the eight that are exactly what they look like.
+/// What a channel means on a *factory* box, when it means something other
+/// than "this track". `None` for the channels that are exactly what they look
+/// like.
 ///
 /// The reason this exists is a bug report from 2026-08-18: trigs on tracks 9 and
-/// 10 of both boxes played nothing at all. The engine was correct —
+/// 10 of both digis played nothing at all. The engine was correct —
 /// `scheduler.rs`'s `every_track_of_a_box_plays_on_its_own_channel` proves it puts
 /// a note-on on all sixteen channels — and the app was still wrong, because it
 /// let someone put trigs on a channel their box was never going to hear.
 ///
-/// What both boxes actually ship with, in `SETTINGS → MIDI CONFIG → CHANNELS`:
+/// What a DT2/DN2 actually ships with, in `SETTINGS → MIDI CONFIG → CHANNELS`:
 ///
 /// - `TRACK 1–8 CH` = channels 1–8. **`TRACK 9–16 CH` = `OFF`.** Sixteen tracks,
 ///   eight of them addressable, until the user says otherwise.
@@ -220,11 +221,19 @@ pub fn track_tooltip_text(track_number: usize, track: &Track, pattern_source: Op
 ///   the box — so a trig aimed at track 10 comes out of whatever the user last
 ///   touched, which is worse than silence because it is intermittent.
 ///
+/// And a factory Analog Four, in `GLOBAL → MIDI CONFIG → MIDI CHANNELS`
+/// (manual, OS 1.0 through 1.51): `TRACK 1–4` = channels 1–4, `FX` = 5,
+/// `CV` = 6 — a perfect 1:1 with this app's six rows — and nothing listens
+/// above 6. The per-model split is why this takes the model key and the track
+/// index: channel 5 *is* the FX track's own channel and only a warning on the
+/// other five rows, where the digis' channel 9 is a warning on all sixteen.
+///
 /// **The 1:1 default in `Track::new` stays**, because it is the map to configure
 /// the boxes *to*: it is the only mapping where the app's track number and the
-/// box's agree, and any cleverer default would be a second thing to reconcile at
-/// the moment something sounds wrong. What the app owes is to say this next to the
-/// field where the channel is chosen, rather than to send trigs into the dark.
+/// box's agree — on an A4 it is the factory map outright — and any cleverer
+/// default would be a second thing to reconcile at the moment something sounds
+/// wrong. What the app owes is to say this next to the field where the channel
+/// is chosen, rather than to send trigs into the dark.
 ///
 /// Returned as `(label, why)` rather than drawn here so it can be tested without a
 /// window — and the label is a word, not `⚠`, which `super`'s glyph table records
@@ -233,26 +242,59 @@ pub fn track_tooltip_text(track_number: usize, track: &Track, pattern_source: Op
 /// suspect list, so it is spelled with `>`, and the ranges use `-` rather than the
 /// `–` nobody has drawn either. The prose in this doc comment is free to be
 /// typeset properly; it never reaches a font this app ships.
-pub fn channel_note(channel_1_based: u16) -> Option<(&'static str, &'static str)> {
-    match channel_1_based {
-        9 => Some((
-            "FX CTRL by default",
-            "Channel 9 is FX CONTROL CH on a factory DT2/DN2: notes sent there play no track at all, \
-             and on DT2 OS before 1.15A one could freeze the box. Set TRACK 9 CH and move FX \
-             CONTROL CH in SETTINGS > MIDI CONFIG > CHANNELS, or give this track another channel.",
-        )),
-        10 => Some((
-            "AUTO by default",
-            "Channel 10 is AUTO CHANNEL on a factory DT2/DN2: notes sent there play whichever track \
-             is selected on the box, not this one. Move AUTO CHANNEL off 10 and set TRACK 10 CH in \
-             SETTINGS > MIDI CONFIG > CHANNELS.",
-        )),
-        11..=16 => Some((
-            "unassigned by default",
-            "A factory DT2/DN2 gives channels to tracks 1-8 only; TRACK 9-16 CH are OFF, so this \
-             track stays silent until the box is told to listen. Set TRACK n CH in SETTINGS > MIDI \
-             CONFIG > CHANNELS.",
-        )),
+///
+/// An unknown model key gets no note at all: this function only speaks about
+/// boxes whose factory state it has actually read out of a manual.
+pub fn channel_note(
+    model_key: &str,
+    track_index: usize,
+    channel_1_based: u16,
+) -> Option<(&'static str, &'static str)> {
+    match model_key {
+        "DT2" | "DN2" => match channel_1_based {
+            9 => Some((
+                "FX CTRL by default",
+                "Channel 9 is FX CONTROL CH on a factory DT2/DN2: notes sent there play no track at \
+                 all, and on DT2 OS before 1.15A one could freeze the box. Set TRACK 9 CH and move FX \
+                 CONTROL CH in SETTINGS > MIDI CONFIG > CHANNELS, or give this track another channel.",
+            )),
+            10 => Some((
+                "AUTO by default",
+                "Channel 10 is AUTO CHANNEL on a factory DT2/DN2: notes sent there play whichever track \
+                 is selected on the box, not this one. Move AUTO CHANNEL off 10 and set TRACK 10 CH in \
+                 SETTINGS > MIDI CONFIG > CHANNELS.",
+            )),
+            11..=16 => Some((
+                "unassigned by default",
+                "A factory DT2/DN2 gives channels to tracks 1-8 only; TRACK 9-16 CH are OFF, so this \
+                 track stays silent until the box is told to listen. Set TRACK n CH in SETTINGS > MIDI \
+                 CONFIG > CHANNELS.",
+            )),
+            _ => None,
+        },
+        "A4" => match channel_1_based {
+            // Channel 5 is the FX track's own channel — a note only when some
+            // *other* row is aimed at it. Same shape for CV on 6.
+            5 if track_index != 4 => Some((
+                "FX track by default",
+                "Channel 5 belongs to the FX track on a factory Analog Four, so this track's notes \
+                 go to the FX track, not to a voice. Change either channel in GLOBAL > MIDI CONFIG > \
+                 MIDI CHANNELS.",
+            )),
+            6 if track_index != 5 => Some((
+                "CV track by default",
+                "Channel 6 belongs to the CV track on a factory Analog Four, so this track's notes \
+                 drive the CV outputs, not a voice. Change either channel in GLOBAL > MIDI CONFIG > \
+                 MIDI CHANNELS.",
+            )),
+            7..=16 => Some((
+                "unassigned by default",
+                "A factory Analog Four listens on channels 1-4 for its synth tracks, 5 for FX and 6 \
+                 for CV; nothing listens above 6 until the box is told to. Set the channel in \
+                 GLOBAL > MIDI CONFIG > MIDI CHANNELS.",
+            )),
+            _ => None,
+        },
         _ => None,
     }
 }
@@ -887,6 +929,10 @@ pub fn ui(ui: &mut Ui, session: &mut Session, selection: &mut Selection, engine:
             // --- the selected-track parameter row: unchanged from the old
             // pane apart from the label at its head (see this module's doc
             // comment for why "PRESET 1" is not reproduced). ---
+            // Read before `track_mut` takes the session: the CH note below is
+            // per-model, and a `&'static str` key is all it needs to survive
+            // the borrow.
+            let model_key = session.devices.get(selection.device).map(|d| d.model.key);
             let Some(track) = track_mut(session, *selection) else {
                 ui.weak("no track selected");
                 return;
@@ -980,7 +1026,9 @@ pub fn ui(ui: &mut Ui, session: &mut Session, selection: &mut Selection, engine:
                 // the way you wanted" and a trig on a channel the box does not
                 // listen on is exactly that: the app is sending it, and
                 // nothing will ever play it.
-                if let Some((label, why)) = channel_note(channel) {
+                if let Some((label, why)) =
+                    model_key.and_then(|k| channel_note(k, selection.track, channel))
+                {
                     ui.label(egui::RichText::new(label).color(super::CAUTION))
                         .on_hover_text(why);
                 }
@@ -1163,20 +1211,60 @@ mod tests {
     }
 
     #[test]
-    fn the_eight_channels_a_factory_box_listens_on_are_not_flagged_and_the_rest_are() {
-        for channel in 1..=8 {
-            assert_eq!(channel_note(channel), None, "channel {channel} is the track it says");
+    fn the_eight_channels_a_factory_digi_listens_on_are_not_flagged_and_the_rest_are() {
+        for kind in ["DT2", "DN2"] {
+            for channel in 1..=8 {
+                assert_eq!(
+                    channel_note(kind, 0, channel),
+                    None,
+                    "{kind} channel {channel} is the track it says"
+                );
+            }
+            for channel in 9..=16 {
+                assert!(
+                    channel_note(kind, 0, channel).is_some(),
+                    "{kind} channel {channel} needs the box set up before it plays anything"
+                );
+            }
+            // The two that are not merely unassigned but already spoken for, which
+            // is why they are named rather than lumped in with 11–16.
+            assert_eq!(channel_note(kind, 0, 9).map(|(l, _)| l), Some("FX CTRL by default"));
+            assert_eq!(channel_note(kind, 0, 10).map(|(l, _)| l), Some("AUTO by default"));
         }
-        for channel in 9..=16 {
-            assert!(
-                channel_note(channel).is_some(),
-                "channel {channel} needs the box set up before it plays anything"
+    }
+
+    #[test]
+    fn a_factory_analog_four_flags_exactly_the_channels_nothing_plays_on() {
+        // The factory map *is* this app's 1:1 default — tracks 1-6 on channels
+        // 1-6 — so the six rows of a fresh A4 draw no amber at all…
+        for (index, channel) in (0..6).zip(1..=6u16) {
+            assert_eq!(
+                channel_note("A4", index, channel),
+                None,
+                "A4 track {} on its own factory channel {channel}",
+                index + 1
             );
         }
-        // The two that are not merely unassigned but already spoken for, which is
-        // why they are named rather than lumped in with 11–16.
-        assert_eq!(channel_note(9).map(|(l, _)| l), Some("FX CTRL by default"));
-        assert_eq!(channel_note(10).map(|(l, _)| l), Some("AUTO by default"));
+        // …while a *synth* row aimed at the FX or CV track's channel is warned
+        // by name, and everything above 6 is dead air on a factory box.
+        assert_eq!(channel_note("A4", 0, 5).map(|(l, _)| l), Some("FX track by default"));
+        assert_eq!(channel_note("A4", 0, 6).map(|(l, _)| l), Some("CV track by default"));
+        for channel in 7..=16 {
+            assert_eq!(
+                channel_note("A4", 0, channel).map(|(l, _)| l),
+                Some("unassigned by default"),
+                "A4 channel {channel}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_box_this_function_has_not_read_the_manual_for_gets_no_note() {
+        // Speak about factory state only where a manual has been read out —
+        // a made-up key must not inherit the digis' warnings.
+        for channel in 1..=16 {
+            assert_eq!(channel_note("ST", 0, channel), None);
+        }
     }
 
     /// The default map and the note have to agree about which tracks are the
@@ -1188,8 +1276,24 @@ mod tests {
             .current_pattern(session.devices[0].id)
             .expect("the DT2 plays a pattern in the opening scene");
         for (t, track) in pattern.tracks().iter().enumerate() {
-            let flagged = channel_note(track.channel as u16 + 1).is_some();
+            let flagged = channel_note("DT2", t, track.channel as u16 + 1).is_some();
             assert_eq!(flagged, t >= 8, "track {} at channel {}", t + 1, track.channel + 1);
+        }
+    }
+
+    /// The A4 half of the same agreement: the 1:1 default lands every one of
+    /// its six rows on the factory channel, so a fresh A4 shows no amber.
+    #[test]
+    fn the_default_channel_map_flags_nothing_on_a_fresh_analog_four() {
+        let device = digi_core::Device::new("A4", &digi_core::A4, 16);
+        for (t, track) in device.pattern(0).unwrap().tracks().iter().enumerate() {
+            assert_eq!(
+                channel_note("A4", t, track.channel as u16 + 1),
+                None,
+                "track {} at channel {}",
+                t + 1,
+                track.channel + 1
+            );
         }
     }
 

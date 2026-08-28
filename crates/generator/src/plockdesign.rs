@@ -411,6 +411,13 @@ mod tests {
             let trigs = sample_trigs();
             let live: std::collections::HashSet<u32> = trigs.iter().map(|t| t.step).collect();
             let (lanes, _) = design_lanes(&bass_role(), Some(kind), &trigs, 32, 80, 128, &mut Rng::new(8));
+            // A kind with nothing writable — the A4, whose whole table is
+            // audition-only until a paramId is measured — must design *no*
+            // lanes rather than lanes the write seam then refuses.
+            if writable_params_for(kind).is_empty() {
+                assert!(lanes.is_empty(), "{kind} has nothing writable to design with");
+                continue;
+            }
             assert!(!lanes.is_empty());
             for lane in &lanes {
                 assert_eq!(lane.values.len(), 128);
@@ -519,6 +526,12 @@ mod tests {
         // (`digi_protocol::params`) would refuse otherwise.
         for kind in DEVICE_KINDS {
             let (lanes, _) = design_lanes(&bass_role(), Some(kind), &sample_trigs(), 32, 100, 128, &mut Rng::new(10));
+            // Same rule as above: the write seam accepts nothing for a kind
+            // with no measured paramIds, and the honest design is no lanes.
+            if writable_params_for(kind).is_empty() {
+                assert!(lanes.is_empty(), "{kind} has nothing writable to design with");
+                continue;
+            }
             assert!(!lanes.is_empty());
             for lane in &lanes {
                 let table = param_table_for(kind);
