@@ -875,3 +875,150 @@ What is carried forward as still owed a look:
 **A verification note should say whether a control was looked at or driven** —
 "present" and "usable" photograph identically, and that distinction has cost this
 project two bugs.
+
+**Feature requests from users**
+- transpose track
+- clicking on the piano itself should sound that midi note
+- draggable plock area height, users want to see the plock area taller to make changes to the settings easier
+- 'check for app updates' option
+-
+
+## 10. The kit builder — scope, 2026-08-26
+
+Phase 14, and the first phase scoped on top of a hardware session rather than
+ahead of one. §9's +Drive entry is the evidence base; this is what to build on it.
+
+The user workflow, as asked for: open a preset browser for the selected box and
+track, see the +Drive's presets by bank with their tags, double-click one to load
+it onto the current track, and once up to sixteen are placed, save the result as
+a kit on the device.
+
+**v1 is browse and load. Kit saving is deferred**, and when it comes it targets a
+`/kits/<bank>` file on the +Drive — the destination decided 2026-08-26, because
+that is what "saves to the device" means to someone who has used Transfer. §10.4
+records what that will cost, so the deferral is a schedule decision rather than an
+open question.
+
+### 10.1 The three steps are not equally built
+
+| step | protocol | what is missing |
+|---|---|---|
+| browse | `0x53` List ships, hardware-verified on both boxes | `0x54`/`0x55`/`0x56`, and a tag index |
+| load | the splice is arithmetic; sizes already match | a store opcode that is not a whole pattern |
+| save | nothing | everything, plus a widened write guard |
+
+### 10.2 Reading a preset — the real v1 work
+
+`0x54` Open, `0x55` Read and `0x56` Close exist as constants in `drive.rs` and are
+already admitted by `assert_read_only_file_op`. Nothing implements them. **The
+source document names them and does not specify their argument layout** — only
+List's body is written down — so this starts with a probe against a box, the same
+way `browse_drive_dn.rs` derived the entry layout from a real reply rather than
+inventing one. That example is the template: print bytes, derive the shape, then
+write the parser.
+
+Two things are already known and make the rest cheap. Every preset entry's size
+equals the `0x6b` payload size, so what comes back is a container
+`sound::decode_sound_dump` reads today, tag mask included. And the read path
+reports one crc32 per chunk — seeded with **zero**, not all-ones — which
+reproduces cleanly per slice.
+
+### 10.3 Tags are not in the listing, and that shapes the whole browser
+
+A `ListEntry` carries name, index, size, permissions and occupancy. It does **not**
+carry a tag mask. Tags live at sound-struct `+8`, inside the file. So the panel the
+user described — banks down the side, `Bass-Glitchy` visible before you click —
+cannot be drawn from a directory listing. It needs every preset read: **1,189 on
+the DN2**, 148 on the DT2.
+
+That is a scan, not a browse. So:
+
+- The index is built once, persisted, and keyed by device *and* bank, so a second
+  open of the panel is instant and a box that gains presets can have one bank
+  rebuilt rather than all eight.
+- The scan is cancellable and shows progress, because it is the longest-running
+  read this app has ever done and it is the first thing a user meets.
+- A bank with no index yet still lists — names and slots work immediately, tags
+  fill in behind. Browsing must never block on tagging.
+- `Sound::tags()` and the calibrated `TAG_NAMES` are already right, so the filter
+  UI is a bit-mask test and nothing more.
+
+**Paging is untested.** Every call in §9 used `start = 0, count = 0` and every
+collection fitted one reply, so `next_cursor` has never run. A 256-entry bank is
+the case that will find it.
+
+### 10.4 Loading onto a track — where "instantly" goes wrong
+
+The splice itself is trivial and already proven by the sizes: a preset file is
+`5 + sound_size`, a kit slot is `sound_size` at `kit_base + 60 + track*sound_size`,
+and DN2 359 / DT2 1109 match exactly on both sides.
+
+The problem is that **there is no "load a sound onto a track" store path in this
+codebase.** The only store is `store_pattern_kit`, an `0x50` carrying the whole
+pattern and kit, through the full `safe_write_tracks` ceremony — re-fetch, confirm,
+stash, backup, encode, send, read back, compare. Wired to a double-click that is
+one backup per audition, and the ring holds fifty. Twenty auditions evict twenty
+real backups: precisely the failure `safe_write_tracks`'s own doc says it was made
+plural to avoid, arrived at from the other direction.
+
+**Decided: audition mode.** One backup when the kit builder opens, then loads run
+without a per-click backup or dialog. Recovery is to the state the panel opened in,
+which is the honest unit here — nobody wants to step back through nineteen
+auditions. The panel must say so plainly; a quiet backup policy change is worse
+than a slow one.
+
+**The probe that could make this genuinely instant.** `0x6b` returns the *active*
+kit's per-track sound for index 0–15 — a 5-byte wrapper then one sound struct,
+confirmed against Overbridge's own KIT TRACK PRESETS pane. Every store in the dump
+namespace is its request minus `0x10`, and that is exactly how `store_pattern_kit`
+sends `0x50` against request `0x60`. So **`0x5b` with a track index is the shape a
+per-track sound store would take.** It has never been sent and nothing here claims
+it works. But if it does, a double-click becomes one small message instead of a
+127 KB pattern write, the backup question largely dissolves, and audition mode gets
+cheaper than the fallback. Probe it before building the `0x50` path — a negative
+result costs an afternoon and a positive one changes the design.
+
+Note also that `write_gate` keys on an OS-build allowlist, so loading is refused on
+any build not yet write-verified. That is correct and should stay; the panel needs
+to explain it rather than grey out silently.
+
+### 10.5 What saving a kit will cost, when it comes
+
+Recorded now so v2 starts from evidence:
+
+- **Multi-chunk +Drive writes are broken.** Six chunks at 2,048 and two at 8,192
+  both failed with `Invalid package checksum; corrupt transfer`, under every
+  checksum variant tried. Chunk *count* is the failing variable, not size. One
+  16,384-byte chunk committed and read back byte-exact.
+- A DN2 kit is **10,795 bytes** and fits that single chunk. A DT2 kit is roughly
+  17.8 KB and does not. So DN2 kit saving is reachable on today's knowledge and
+  DT2 kit saving is blocked on a reverse-engineering problem with no timeline —
+  settling it wants a capture of Transfer writing a multi-chunk file.
+- `assert_read_only_file_op` will have to admit `0x57`/`0x58`/`0x59`. It currently
+  admits List/Open/Read/Close and the module doc justifies that by saying there is
+  no kit-builder reason to mutate a +Drive. **That sentence stops being true in
+  v2**, and the guard should be widened deliberately, opcode by opcode, with
+  `0x5A` Move, `0x5B` Copy and `0x5C` **Delete** still refused. The safety property
+  in this namespace is the allowlist and nothing else.
+- `0x59` WriteClose is the commit. Nothing lands without it, which makes an
+  abandoned write harmless and is worth relying on.
+- Verify-after-write earns its keep here more than anywhere: a chunking bug that
+  silently truncates is exactly this API's failure mode. A stored kit stamps its
+  own slot index at container byte `+24`, so a correct copy into a different slot
+  legitimately differs in that one byte and a naive comparison will cry wolf.
+
+### 10.6 Order of work
+
+1. Probe `0x54`/`0x55`/`0x56` argument layouts against a box; derive, then parse.
+2. `ElektronDevice::drive_read_file`, read-only, guarded as `drive_list` is.
+3. Probe `0x5b` as a per-track sound store (§10.4). Decide the load path on the
+   result.
+4. The tag index: scan, persist, cancel, resume per bank.
+5. The panel — sixth rail slot, following `Sidebars`/`Tool`, worker thread and
+   `mpsc` like `transfer.rs` and `sync.rs`.
+6. Load-to-track on the path step 3 chose, with audition mode and its backup.
+7. Exercise paging on a 256-entry bank.
+
+Steps 1–3 are hardware work and cannot be done from a desk without a box. Steps
+4–7 can be built against fixtures and only need a box to be believed — which is
+§9's standard, and the one this project keeps.
