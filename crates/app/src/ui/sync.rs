@@ -1,21 +1,33 @@
-// SYNC TO BOXES: one button that puts every track of the session onto its box.
+// SEND: one button per box that puts a whole pattern onto one of its slots.
 //
 // **This is the riskiest thing in the app, multiplied.** `ui::write` overwrites
 // one track of one slot behind a dialog naming it; this does the same to up to
-// thirty-two tracks across two boxes behind *one* press. Read `ui::write`'s
-// header first — every safety rule this obeys is that file's, reached through
-// the same one function, and nothing here encodes a byte or decides a refusal of
-// its own.
+// sixteen tracks behind *one* press. Read `ui::write`'s header first — every
+// safety rule this obeys is that file's, reached through the same one function,
+// and nothing here encodes a byte or decides a refusal of its own.
+//
+// **It was a desk-wide sync until 2026-08-26, and what changed it was a wrong
+// write.** One button sent every box at once and — decision 4, as it then stood
+// — aimed each one by provenance, deliberately having no pickers. The SEND rows
+// three inches up *did* have pickers. So a DN2 row reading `to A02` and a
+// pattern imported from A01 were two answers to one question, and the button
+// used the one nobody could see: Neil pressed `Overwrite 7 tracks on 2 boxes`
+// and the DN2's tracks landed on A01. The fix is not a tie-break between the
+// two answers, it is that a box now has one destination and one place it is
+// chosen — this row's picker, which *starts* where provenance says and stays
+// where it is put. The whole-desk button went with it: OUT is per box now,
+// exactly as IN is, and the per-track panel it used to sit beside is behind
+// `setup::PER_TRACK_LABEL`.
 //
 // ## Six decisions
 //
-//  1. **One dialog, enumerating every destination, with a per-row opt-out.**
+//  1. **One dialog, enumerating every track, with a per-row opt-out.**
 //     Rule 4 says nothing is written without a dialog naming the slot, the
-//     track and the trigs being replaced. Thirty-two of those dialogs is not
+//     track and the trigs being replaced. Sixteen of those dialogs is not
 //     consent, it is a mash-through: by the fourth one nobody is reading. So
 //     the whole intent is one modal, one row per track, each row tickable, and
-//     the button names the count it is about to do — `Overwrite 12 tracks on
-//     2 boxes` — and re-counts as rows are unticked.
+//     its confirm button names the count it is about to do — `Overwrite 12
+//     tracks` — and re-counts as rows are unticked.
 //
 //  2. **One backup per *slot*, not per track**, which is why
 //     `protocol::safe_write::safe_write_tracks` exists. Rule 3 scales badly on
@@ -34,12 +46,15 @@
 //     `ui::write`'s per-track button is still there for a deliberate clear.
 //     Decided with Neil 2026-08-18.
 //
-//  4. **The scene on screen picks the source, and provenance picks the
-//     destination.** Same two rules as the single-track panel — the scene's slot
-//     per box, aimed back where the pattern was imported from, or at the slot of
-//     the same name when it has no provenance (`ui::write` decision 6). This
-//     button has no pickers at all: it is *sync*, and a sync with knobs on it is
-//     the panel three inches up.
+//  4. **Two pickers, and they are the two `ui::transfer` has, read backwards.**
+//     `send <this session's slot> to <the box's slot>`. What they *start* on is
+//     unchanged from the rules this file has always had: the scene's slot for
+//     the source, and `write::aim`'s answer for the destination — back where the
+//     pattern was imported from, or the slot of the same name when it has no
+//     provenance (`ui::write` decision 6). Each pins the moment it is touched,
+//     and an untouched destination still follows the source as it moves. The
+//     pickers exist because the alternative was two mechanisms disagreeing in
+//     silence; see the note at the top about how that was found.
 //
 //  5. **There are two fetches per slot, and the second one is the write's.**
 //     The dialog has to say how many trigs each destination track holds, and
@@ -51,19 +66,23 @@
 //     reads, that slot refuses rather than writing against consent given for
 //     different numbers.
 //
-//  6. **A backup that cannot be stored stops the whole run**, not just its own
-//     box. Rule 3 says such a write does not happen; with a store that has just
-//     failed, neither does the next one, and carrying on to try would be asking
-//     the same question and expecting a different answer while overwriting a
-//     second box unbacked. So the remaining boxes are reported as not attempted,
-//     naming why.
+//  6. **A backup that cannot be stored stops the run**, and everything after it
+//     in that run. Rule 3 says such a write does not happen; with a store that
+//     has just failed, neither does the next one, and carrying on to try would
+//     be asking the same question and expecting a different answer while
+//     overwriting a second slot unbacked. At one box per press that rule is
+//     about the box itself — but [`run`] still carries it across a list of jobs,
+//     because that is the shape the flow was verified in and `app/tests/sync.rs`
+//     drives it with two boxes to state the rule at all. The panel hands it one.
 //
 // **What this deliberately does not do.** It does not stop the transport, for
-// `ui::write`'s reason. It does not touch the session — a mass send claims no
-// provenance, per that file's decision 5. And it never sends to a box that is
-// not the box the row names: `write::wrong_box` refuses a mis-cabled desk here
-// exactly as it does there, which matters more at this scale, because one wrong
-// cable would otherwise take sixteen tracks with it.
+// `ui::write`'s reason. It does not touch the session — a whole-pattern send
+// claims no provenance, per that file's decision 5, which is why moving the
+// destination picker does not re-aim the *next* send: provenance is what the
+// picker starts from, and only an import writes it. And it never sends to a box
+// that is not the box the row names: `write::wrong_box` refuses a mis-cabled
+// desk here exactly as it does there, which matters more at this scale, because
+// one wrong cable would otherwise take sixteen tracks with it.
 
 use std::collections::HashMap;
 use std::sync::mpsc::{channel, Receiver, Sender};
@@ -82,8 +101,8 @@ use digi_protocol::safe_write::{
 };
 use eframe::egui::{self, Ui};
 
-use crate::ui::transfer::binding;
-use crate::ui::write::{aim, blocker, track_kind_label, wrong_box, PortsPresent};
+use crate::ui::transfer::{binding, slot_choices, wire_slots};
+use crate::ui::write::{aim, blocker, is_home, track_kind_label, wrong_box, PortsPresent};
 
 // --- the plan, which needs no box ------------------------------------------------
 
@@ -156,104 +175,131 @@ impl MassPlan {
     }
 }
 
-/// Everything the press captures, for every box, before a thread exists.
+/// Everything one box's press captures, before a thread exists.
 ///
 /// Pure: no ports, no I/O, no clock. The same bargain `ui::write::plan` makes,
-/// and the reason the whole shape of a sync is testable without a box —
+/// and the reason the whole shape of a send is testable without a box —
 /// including the two things easiest to get wrong at this scale, which tracks are
-/// skipped and where each box's slot is aimed.
-pub fn plan_all(session: &Session, present: PortsPresent<'_>) -> MassPlan {
+/// skipped and where the slot is aimed.
+///
+/// **`into` is the caller's, not this function's** — decision 4. The panel's
+/// picker decides it, and what that picker *starts* at is [`aim`]'s answer. A
+/// second opinion computed down here is the bug this signature exists to make
+/// unrepresentable.
+pub fn plan_box(
+    session: &Session,
+    present: PortsPresent<'_>,
+    id: DeviceId,
+    from: PatternRef,
+    into: PatternRef,
+) -> MassPlan {
     let mut plan = MassPlan::default();
-    for device in &session.devices {
-        let id = device.id;
-        if let Some(why) = blocker(device, present) {
-            plan.blocked.push(Blocked { device: id, name: device.name.clone(), why });
-            continue;
-        }
-        // `blocker` already refused a box without both ports and without a spec,
-        // so these three cannot fail — but they are unwrapped through the same
-        // `continue` rather than `expect`, because a refusal that reaches the
-        // panel is always better than a window that closes.
-        let (Some(input), Some(output), Some(spec)) =
-            (device.io.input.clone(), device.io.output.clone(), device.model.spec())
-        else {
-            plan.blocked.push(Blocked {
-                device: id,
-                name: device.name.clone(),
-                why: "this box has no ports or no pattern format".into(),
-            });
-            continue;
-        };
-
-        let from = session
-            .slot_in_scene(session.current_scene, id)
-            .unwrap_or_else(|| PatternRef::new(0, 0));
-        let pattern = device.pattern(from.slot());
-        let into = aim(pattern, device.model.slug, from);
-
-        let mut job = BoxJob {
+    let Some(device) = session.device(id) else { return plan };
+    if let Some(why) = blocker(device, present) {
+        plan.blocked.push(Blocked { device: id, name: device.name.clone(), why });
+        return plan;
+    }
+    // `blocker` already refused a box without both ports and without a spec, so
+    // these three cannot fail — but they are refused through the same list
+    // rather than `expect`, because a refusal that reaches the panel is always
+    // better than a window that closes.
+    let (Some(input), Some(output), Some(spec)) =
+        (device.io.input.clone(), device.io.output.clone(), device.model.spec())
+    else {
+        plan.blocked.push(Blocked {
             device: id,
             name: device.name.clone(),
-            display: device.model.display,
-            slug: device.model.slug,
-            input: binding(&input),
-            output: binding(&output),
-            spec,
-            from,
-            into,
-            pattern_name: pattern.map(|p| p.name.clone()).unwrap_or_default(),
-            writes: Vec::new(),
-            aims: Vec::new(),
-            skipped: Vec::new(),
-        };
+            why: "this box has no ports or no pattern format".into(),
+        });
+        return plan;
+    };
 
-        for track_index in 0..device.model.num_tracks {
-            let track = pattern.and_then(|p| p.track(track_index));
-            let notes = track.map(|t| t.notes.len()).unwrap_or(0);
-            if notes == 0 {
-                // Decision 3, and said out loud rather than left out.
-                job.skipped.push(Skipped {
-                    track_index,
-                    why: "nothing here — left as it is on the box".into(),
-                });
-                continue;
-            }
-            match session.track_write(spec, id, from, track_index, into) {
-                Ok(export) => {
-                    job.aims.push(TrackAim {
-                        track_index,
-                        name: track_name(device, from, track_index),
-                        notes,
-                        lanes: track.map(|t| t.plocks.len()).unwrap_or(0),
-                        warnings: export.warnings,
-                    });
-                    job.writes.push(export.write);
-                }
-                // `core` refusing a track is not a reason to refuse the box: the
-                // other fifteen are still describable, and the one that is not
-                // says so in the same list the empty ones do.
-                Err(e) => job.skipped.push(Skipped { track_index, why: e.to_string() }),
-            }
-        }
+    let pattern = device.pattern(from.slot());
+    let mut job = BoxJob {
+        device: id,
+        name: device.name.clone(),
+        display: device.model.display,
+        slug: device.model.slug,
+        input: binding(&input),
+        output: binding(&output),
+        spec,
+        from,
+        into,
+        pattern_name: pattern.map(|p| p.name.clone()).unwrap_or_default(),
+        writes: Vec::new(),
+        aims: Vec::new(),
+        skipped: Vec::new(),
+    };
 
-        if job.writes.is_empty() {
-            plan.blocked.push(Blocked {
-                device: id,
-                name: job.name.clone(),
-                why: format!("{} has no notes in {}", job.pattern_name_or_slot(), from.label()),
+    for track_index in 0..device.model.num_tracks {
+        let track = pattern.and_then(|p| p.track(track_index));
+        let notes = track.map(|t| t.notes.len()).unwrap_or(0);
+        if notes == 0 {
+            // Decision 3, and said out loud rather than left out.
+            job.skipped.push(Skipped {
+                track_index,
+                why: "nothing here — left as it is on the box".into(),
             });
             continue;
         }
-        plan.jobs.push(job);
+        match session.track_write(spec, id, from, track_index, into) {
+            Ok(export) => {
+                job.aims.push(TrackAim {
+                    track_index,
+                    name: track_name(device, from, track_index),
+                    notes,
+                    lanes: track.map(|t| t.plocks.len()).unwrap_or(0),
+                    warnings: export.warnings,
+                });
+                job.writes.push(export.write);
+            }
+            // `core` refusing a track is not a reason to refuse the box: the
+            // other fifteen are still describable, and the one that is not
+            // says so in the same list the empty ones do.
+            Err(e) => job.skipped.push(Skipped { track_index, why: e.to_string() }),
+        }
     }
+
+    if job.writes.is_empty() {
+        plan.blocked.push(Blocked {
+            device: id,
+            name: job.name.clone(),
+            why: format!("{} has no notes to send", job.pattern_name_or_slot()),
+        });
+        return plan;
+    }
+    plan.jobs.push(job);
     plan
 }
 
+/// Where this box's send row points when nobody has touched its pickers: the
+/// scene's slot as the source, and [`aim`]'s answer as the destination.
+pub fn defaults(session: &Session, id: DeviceId) -> (PatternRef, PatternRef) {
+    let from = session
+        .slot_in_scene(session.current_scene, id)
+        .unwrap_or_else(|| PatternRef::new(0, 0));
+    let into = session
+        .device(id)
+        .map(|d| aim(d.pattern(from.slot()), d.model.slug, from))
+        .unwrap_or(from);
+    (from, into)
+}
+
 impl BoxJob {
+    /// How to name this pattern in a sentence about it.
+    ///
+    /// **The slot is not repeated when the name *is* the slot.** A pattern
+    /// nobody has renamed is called "A01", so the obvious wording produced
+    /// `“A01” has no notes in A01` — which was tolerable buried in a whole-desk
+    /// summary and is not, now that this line sits under one box's own row as
+    /// the everyday answer to "why is that button grey". Seen on screen
+    /// 2026-08-26.
     fn pattern_name_or_slot(&self) -> String {
+        let slot = self.from.label();
         match self.pattern_name.trim() {
-            "" => self.from.label(),
-            name => format!("“{name}”"),
+            "" => slot,
+            name if name == slot => slot,
+            name => format!("“{name}” ({slot})"),
         }
     }
 }
@@ -401,12 +447,12 @@ pub struct Ask {
     pub reply: Sender<Option<Vec<(DeviceId, usize)>>>,
 }
 
-/// The button's words, which have to name the count rather than say OK.
+/// The dialog's confirm button, which has to name the count rather than say OK.
 ///
-/// Recomputed as rows are untocked, because a button that says twelve while nine
+/// Recomputed as rows are unticked, because a button that says twelve while nine
 /// are ticked is the same lie as one that says OK.
-pub fn headline(tracks: usize, boxes: usize) -> String {
-    format!("Overwrite {} on {}", plural(tracks, "track"), plural_2(boxes, "box", "boxes"))
+pub fn headline(tracks: usize) -> String {
+    format!("Overwrite {}", plural(tracks, "track"))
 }
 
 /// One row: what is going onto this track, and what it lands on.
@@ -446,11 +492,13 @@ pub fn ask_box(job: &BoxJob, survey: &Survey, playing: bool) -> AskBox {
         "" => String::new(),
         name => format!(" “{name}”"),
     };
+    // `plural`, not "{} tracks": with one box per press this heading is the first
+    // line of the everyday confirm dialog, and it read "1 tracks into A01" there.
     let heading = format!(
-        "{} · {} — {} tracks into {}{}",
+        "{} · {} — {} into {}{}",
         job.name,
         job.display,
-        job.writes.len(),
+        plural(job.writes.len(), "track"),
         job.into.label(),
         kit
     );
@@ -551,11 +599,6 @@ pub fn ask_box(job: &BoxJob, survey: &Survey, playing: bool) -> AskBox {
 
 fn plural(n: usize, word: &str) -> String {
     format!("{n} {word}{}", if n == 1 { "" } else { "s" })
-}
-
-/// The two-form plural, for the words English does not pluralise with an `s`.
-fn plural_2(n: usize, one: &str, many: &str) -> String {
-    format!("{n} {}", if n == 1 { one } else { many })
 }
 
 // --- the run --------------------------------------------------------------------
@@ -677,7 +720,7 @@ pub fn run<D: PatternIo>(
             report.boxes.push(BoxOutcome {
                 device: job.device,
                 name: job.name.clone(),
-                text: "Sync cancelled".into(),
+                text: "Send cancelled".into(),
                 is_error: false,
                 wrote: false,
                 log: None,
@@ -881,8 +924,10 @@ fn worker(plan: MassPlan, playing: bool, events: Sender<Event>) {
 
 // --- the panel --------------------------------------------------------------------
 
-/// A run in flight.
+/// A run in flight, and which box's row it belongs to — the spinner belongs on
+/// the row that was pressed, not on every row in the group.
 struct Pending {
+    device: DeviceId,
     rx: Receiver<Event>,
     status: String,
 }
@@ -899,13 +944,24 @@ enum Dialog {
     Alert { lines: Vec<String> },
 }
 
+/// One box's row: where the pattern is coming from and where it is going.
+///
+/// Both are `None` until someone picks, and `None` means *following* — the
+/// scene's slot for the source, [`aim`]'s answer for the destination. The same
+/// pin-on-touch rule `ui::transfer::Row` and `ui::write::Row` both keep, so all
+/// three rows of the panel behave identically under the same gesture.
+#[derive(Default)]
+struct Row {
+    from: Option<PatternRef>,
+    into: Option<PatternRef>,
+}
+
 #[derive(Default)]
 pub struct SyncPanel {
     pending: Option<Pending>,
     dialog: Option<Dialog>,
+    rows: HashMap<DeviceId, Row>,
     outcomes: HashMap<DeviceId, BoxOutcome>,
-    /// The order the last report listed the boxes in, so the rows do not shuffle.
-    order: Vec<DeviceId>,
 }
 
 impl SyncPanel {
@@ -926,110 +982,198 @@ impl SyncPanel {
         self.dialog_ui(ui);
     }
 
-    /// Draw the group. Never edits the session.
+    /// Draw the group: one row per box. Never edits the session.
     pub fn ui(&mut self, ui: &mut Ui, session: &Session, present: PortsPresent<'_>, blocked: bool, playing: bool) {
-        let plan = plan_all(session, present);
-        let busy = blocked || self.pending.is_some() || self.dialog.is_some();
+        if session.devices.is_empty() {
+            ui.weak("No boxes in this session.");
+            return;
+        }
+        let devices: Vec<DeviceId> = session.devices.iter().map(|d| d.id).collect();
+        let last = devices.len().saturating_sub(1);
+        for (position, id) in devices.into_iter().enumerate() {
+            self.device_ui(ui, session, present, id, blocked, playing);
+            if position != last {
+                ui.add_space(6.0);
+            }
+        }
+    }
 
-        if plan.is_empty() {
-            ui.weak(match plan.blocked.first() {
-                Some(first) => format!("Nothing to sync — {}", first.why),
-                None => "Nothing to sync — no boxes in this session.".into(),
-            });
+    /// One box's row: `send A01 to A02`, and the button that does it.
+    ///
+    /// Deliberately the same two pickers and the same layout as `ui::transfer`'s
+    /// fetch row, read the other way round — decision 1. The only asymmetry is
+    /// the verb on the button, which is `ui::write::is_home`'s and says whether
+    /// this is going back where the pattern came from.
+    fn device_ui(
+        &mut self,
+        ui: &mut Ui,
+        session: &Session,
+        present: PortsPresent<'_>,
+        id: DeviceId,
+        blocked: bool,
+        playing: bool,
+    ) {
+        let Some(device) = session.device(id) else { return };
+        ui.label(egui::RichText::new(&device.name).size(11.0).color(super::TEXT_SECONDARY));
+
+        // Why this box cannot be written to, if it cannot. Said before the
+        // pickers rather than behind a dead button — `ui::transfer`'s rule.
+        if let Some(reason) = blocker(device, present) {
+            ui.weak(reason);
             return;
         }
 
-        ui.add_enabled_ui(!busy, |ui| {
-            let label = headline(plan.tracks(), plan.jobs.len());
-            // Full width and left-aligned, per the design spec: this is the one
-            // button in the OUT block that speaks for the whole desk rather than
-            // one box, and the design gives it the row to itself rather than
-            // sizing it to its text like the per-box SEND buttons beside it.
-            ui.scope(|ui| {
-                let widgets = &mut ui.style_mut().visuals.widgets;
-                for state in [&mut widgets.inactive, &mut widgets.active] {
-                    state.weak_bg_fill = super::WARN_AMBER_FILL;
-                    state.bg_fill = super::WARN_AMBER_FILL;
-                    state.fg_stroke = egui::Stroke::new(1.0, super::WARN_AMBER_TEXT);
-                    state.bg_stroke = egui::Stroke::new(1.0, super::WARN_AMBER_BORDER);
-                }
-                widgets.hovered.weak_bg_fill = super::WARN_AMBER_FILL_HOVER;
-                widgets.hovered.bg_fill = super::WARN_AMBER_FILL_HOVER;
-                widgets.hovered.fg_stroke = egui::Stroke::new(1.0, super::WARN_AMBER_TEXT);
-                widgets.hovered.bg_stroke = egui::Stroke::new(1.0, super::WARN_AMBER_FILL_HOVER);
+        let (scene_slot, _) = defaults(session, id);
+        let row = self.rows.entry(id).or_default();
+        let (mut from, pinned_into) = (row.from.unwrap_or(scene_slot), row.into);
 
-                let clicked = ui
-                    .add_sized(
-                        [ui.available_width(), 0.0],
-                        egui::Button::new(egui::RichText::new(&label).size(10.5))
-                            .wrap_mode(egui::TextWrapMode::Extend),
-                    )
-                    .on_hover_text(
-                        "Put every track that has notes onto its box, in the slot each pattern \
-                         came from. One dialog lists every destination and you can untick any \
-                         of them; each slot is re-read and backed up whole before anything is \
-                         sent, and verified byte for byte afterwards.",
-                    )
-                    .clicked();
-                if clicked {
-                    self.start(plan, playing);
-                }
+        let busy = blocked || self.pending.is_some() || self.dialog.is_some();
+        let in_flight = self.pending.as_ref().is_some_and(|p| p.device == id);
+        let from_choices = slot_choices(device);
+        let mut send_clicked = false;
+
+        // **Planned before the row is drawn, because the button's enabled state
+        // is one of the plan's answers.** A pattern with no notes in it has
+        // nothing to send, and an enabled button that does nothing when pressed
+        // is worse than a disabled one that says why underneath. Built from
+        // where the pickers stand *now*; if one of them moves in this frame the
+        // plan is rebuilt below, which happens on the frames a person is
+        // choosing and on no others.
+        // Computed exactly as the closure below computes it, off the *row's*
+        // source rather than the scene's: a row whose source has been pinned
+        // elsewhere has its own provenance answer, and the two must agree or the
+        // button's enabled state is deciding on a destination the row is not
+        // showing.
+        let standing = (
+            from,
+            pinned_into
+                .unwrap_or_else(|| aim(device.pattern(from.slot()), device.model.slug, from)),
+        );
+        let mut plan = plan_box(session, present, id, standing.0, standing.1);
+        let sendable = !plan.is_empty();
+
+        // The destination is read *after* the source picker below, for
+        // `ui::write::device_ui`'s reason: `from` may move in this very frame,
+        // and provenance read before that would pin the destination to where the
+        // *previous* source pointed.
+        let mut into = standing.1;
+        let mut home = false;
+
+        // `horizontal_wrapped`, so the narrow end of a resizable panel folds the
+        // button onto a second line instead of pushing it off the edge.
+        ui.horizontal_wrapped(|ui| {
+            ui.weak("send");
+            let mut picked = from;
+            egui::ComboBox::from_id_salt(("sync-from", id.0))
+                .selected_text(egui::RichText::new(from.label()).color(super::TEXT_DIMMER))
+                .width(56.0)
+                .show_ui(ui, |ui| {
+                    for (slot, text) in &from_choices {
+                        ui.selectable_value(&mut picked, *slot, text);
+                    }
+                });
+            from = picked;
+
+            let pattern = device.pattern(from.slot());
+            into = pinned_into.unwrap_or_else(|| aim(pattern, device.model.slug, from));
+            home = is_home(pattern, device.model.slug, into);
+
+            ui.weak("to");
+            let mut picked = into;
+            egui::ComboBox::from_id_salt(("sync-into", id.0))
+                .selected_text(egui::RichText::new(into.label()).color(super::TEXT_DIMMER))
+                .width(56.0)
+                .show_ui(ui, |ui| {
+                    for slot in wire_slots() {
+                        ui.selectable_value(&mut picked, slot, slot.label());
+                    }
+                });
+            into = picked;
+
+            ui.add_enabled_ui(!busy && sendable, |ui| {
+                // "Write back" when it is going home, "Send" when it is not —
+                // `ui::write`'s distinction, kept word for word, because the two
+                // rows now differ only in how much they send and a person
+                // switching between them should not have to relearn the button.
+                let verb = if home { "Write back to" } else { "Send to" };
+                send_clicked = super::colored_button(
+                    ui,
+                    format!("{verb} {}", into.label()),
+                    super::WARN_AMBER_FILL,
+                    super::WARN_AMBER_TEXT,
+                    super::WARN_AMBER_BORDER,
+                    super::WARN_AMBER,
+                    super::WARN_AMBER_INK,
+                )
+                .on_hover_text(
+                    "Put every track of this pattern that has notes onto the box, in the slot \
+                     picked here. One dialog lists every track and you can untick any of them; \
+                     the slot is re-read and backed up whole before anything is sent, and \
+                     verified byte for byte afterwards.",
+                )
+                .clicked();
             });
-            if self.pending.is_some() || self.dialog.is_some() {
-                return;
-            }
-            // What the button would do, before the press — the same promise
-            // `ui::write` makes with its "n notes on A01 T3" line.
-            for job in &self.summary_of(session, present) {
-                ui.weak(job);
-            }
         });
 
-        if let Some(pending) = &self.pending {
-            ui.horizontal(|ui| {
-                ui.spinner();
-                ui.label(&pending.status);
-            });
-            return;
+        // Pin what the pickers ended up on. `into` is only *pinned* when it has
+        // been moved off what it was following, so a source change still drags
+        // an untouched destination with it.
+        let following = aim(device.pattern(from.slot()), device.model.slug, from);
+        let row = self.rows.entry(id).or_default();
+        row.from = Some(from);
+        if pinned_into.is_some() || into != following {
+            row.into = Some(into);
         }
-        self.outcomes_ui(ui);
-    }
 
-    /// One line per box, said before the press.
-    fn summary_of(&self, session: &Session, present: PortsPresent<'_>) -> Vec<String> {
-        let plan = plan_all(session, present);
-        let mut lines: Vec<String> = plan
-            .jobs
-            .iter()
-            .map(|job| {
-                // `>`, not `→`: same pre-existing tofu as `row_label` above,
-                // same fix, same reason.
-                format!(
-                    "{}: {} > {}",
-                    job.name,
+        if (from, into) != standing {
+            plan = plan_box(session, present, id, from, into);
+        }
+        if !in_flight && self.dialog.is_none() {
+            // What the button would do, before the press — the same promise
+            // `ui::transfer` makes with its "A01 has 17 notes" line.
+            match plan.jobs.first() {
+                // `>`, not `→`: pre-existing tofu, see `row_label`.
+                Some(job) => ui.weak(format!(
+                    "{} > {}",
                     plural(job.writes.len(), "track"),
                     job.into.label()
-                )
-            })
-            .collect();
-        lines.extend(plan.blocked.iter().map(|b| format!("{}: {}", b.name, b.why)));
-        lines
+                )),
+                None => ui.weak(match plan.blocked.first() {
+                    Some(first) => first.why.clone(),
+                    None => "Nothing to send from this box.".into(),
+                }),
+            };
+        }
+
+        if send_clicked && !plan.is_empty() {
+            self.start(plan, playing);
+        }
+
+        if let Some(pending) = &self.pending {
+            if in_flight {
+                ui.horizontal(|ui| {
+                    ui.spinner();
+                    ui.label(&pending.status);
+                });
+                return;
+            }
+        }
+        self.outcome_ui(ui, id);
     }
 
-    fn outcomes_ui(&mut self, ui: &mut Ui) {
-        for id in &self.order {
-            let Some(outcome) = self.outcomes.get(id) else { continue };
-            let colour = if outcome.is_error {
-                egui::Color32::LIGHT_RED
-            } else if outcome.wrote {
-                egui::Color32::LIGHT_GREEN
-            } else {
-                super::CAUTION
-            };
-            ui.colored_label(colour, format!("{}: {}", outcome.name, outcome.text));
-            if let Some(log) = &outcome.log {
-                ui.weak(log);
-            }
+    /// The last run's line for one box, if it was this box's run.
+    fn outcome_ui(&mut self, ui: &mut Ui, id: DeviceId) {
+        let Some(outcome) = self.outcomes.get(&id) else { return };
+        let colour = if outcome.is_error {
+            egui::Color32::LIGHT_RED
+        } else if outcome.wrote {
+            egui::Color32::LIGHT_GREEN
+        } else {
+            super::CAUTION
+        };
+        ui.colored_label(colour, &outcome.text);
+        if let Some(log) = &outcome.log {
+            ui.weak(log);
         }
     }
 
@@ -1037,11 +1181,14 @@ impl SyncPanel {
         if self.pending.is_some() || self.dialog.is_some() {
             return;
         }
-        self.outcomes.clear();
-        self.order.clear();
+        // Only this box's last line goes. The other row's result is still true —
+        // clearing the panel because a *different* box is being sent would throw
+        // away the byte-identical verdict a person may still be reading.
+        let Some(device) = plan.jobs.first().map(|j| j.device) else { return };
+        self.outcomes.remove(&device);
         let (tx, rx) = channel();
         std::thread::spawn(move || worker(plan, playing, tx));
-        self.pending = Some(Pending { rx, status: "Opening the boxes…".into() });
+        self.pending = Some(Pending { device, rx, status: "Opening the box…".into() });
     }
 
     fn poll(&mut self) {
@@ -1068,9 +1215,9 @@ impl SyncPanel {
                     if !loud.is_empty() {
                         self.dialog = Some(Dialog::Alert { lines: loud });
                     }
-                    self.order = report.boxes.iter().map(|b| b.device).collect();
-                    self.outcomes =
-                        report.boxes.into_iter().map(|b| (b.device, b)).collect();
+                    // Merged, not replaced: each row keeps its own last answer,
+                    // and a send of one box says nothing about the other.
+                    self.outcomes.extend(report.boxes.into_iter().map(|b| (b.device, b)));
                     self.pending = None;
                     return;
                 }
@@ -1087,7 +1234,7 @@ impl SyncPanel {
             ui.set_max_width(620.0);
             match dialog {
                 Dialog::Confirm { ask, ticked } => {
-                    ui.label(egui::RichText::new("Sync every track to the boxes").strong());
+                    ui.label(egui::RichText::new("Send every track to the box").strong());
                     ui.separator();
 
                     egui::ScrollArea::vertical().max_height(420.0).show(ui, |ui| {
@@ -1126,11 +1273,6 @@ impl SyncPanel {
                             }
                         }
                     }
-                    let boxes = ask
-                        .boxes
-                        .iter()
-                        .filter(|block| picked.iter().any(|(d, _)| *d == block.device))
-                        .count();
 
                     ui.horizontal(|ui| {
                         // Cancel first and on the left, because it is the answer
@@ -1139,14 +1281,14 @@ impl SyncPanel {
                             answer = Some(None);
                         }
                         ui.add_enabled_ui(!picked.is_empty(), |ui| {
-                            if ui.button(headline(picked.len(), boxes)).clicked() {
+                            if ui.button(headline(picked.len())).clicked() {
                                 answer = Some(Some(picked.clone()));
                             }
                         });
                     });
                 }
                 Dialog::Alert { lines } => {
-                    ui.label(egui::RichText::new("The sync did not go as asked").strong());
+                    ui.label(egui::RichText::new("The send did not go as asked").strong());
                     ui.separator();
                     for line in lines.iter() {
                         ui.label(line);
@@ -1261,8 +1403,8 @@ pub struct PatchJob {
     pub input: PortBinding,
     pub output: PortBinding,
     /// The session slot whose tracks get the patch records — the pattern on
-    /// screen for this box right now (the scene's slot, same choice
-    /// `plan_all` makes for a sync's `from`).
+    /// screen for this box right now (the scene's slot, same default
+    /// [`defaults`] offers a send's `from`).
     pub at: PatternRef,
     /// Which of the box's slots to ask for. Either the slot the pattern says
     /// it came from, or the one the caller named in the row's picker — never a
@@ -1756,11 +1898,11 @@ mod tests {
 
     #[test]
     fn the_button_names_the_count_and_gets_the_singulars_right() {
-        assert_eq!(headline(12, 2), "Overwrite 12 tracks on 2 boxes");
-        assert_eq!(headline(1, 1), "Overwrite 1 track on 1 box");
+        assert_eq!(headline(12), "Overwrite 12 tracks");
+        assert_eq!(headline(1), "Overwrite 1 track");
         // Nothing ticked is a button that is disabled rather than one that lies,
         // but the words still have to be right when it is drawn.
-        assert_eq!(headline(0, 0), "Overwrite 0 tracks on 0 boxes");
+        assert_eq!(headline(0), "Overwrite 0 tracks");
     }
 
     fn aim(notes: usize, lanes: usize, name: Option<&str>) -> TrackAim {

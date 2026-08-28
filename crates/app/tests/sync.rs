@@ -111,6 +111,14 @@ impl FakeBox {
         Self::new(identity(43, "0049", "1.10D"), capture)
     }
 
+    /// A second slot on the card, so a send can be aimed somewhere other than
+    /// the one the fixture came from — the survey fetches the *destination*, and
+    /// a box with one slot can only ever be written where provenance points.
+    fn with_slot(self, index: u8, capture: &str) -> Self {
+        self.card.borrow_mut().slots.insert(index, payload(capture));
+        self
+    }
+
     fn on_build(mut self, build: &str) -> Self {
         self.identity = identity(42, build, "1.15B");
         self
@@ -223,6 +231,27 @@ fn add_second_track(session: &mut Session, id: DeviceId) {
     pattern.track_mut(1).expect("T2").notes = source;
 }
 
+/// Every wired box's row, planned at the defaults its pickers start on, merged
+/// into one plan.
+///
+/// **The panel sends one box per press** — [`sync::plan_box`] — so nothing in the
+/// app builds a plan this wide any more. [`sync::run`] still takes a list,
+/// because the per-slot backup grouping and the store-failure rule are both
+/// written *across* one, and those are exactly the rules that need more than one
+/// box to state. So the desk is assembled here, in the test, rather than
+/// pretended to in the panel.
+fn plan_desk(session: &Session) -> MassPlan {
+    let ids: Vec<DeviceId> = session.devices.iter().map(|d| d.id).collect();
+    let mut plan = MassPlan::default();
+    for id in ids {
+        let (from, into) = sync::defaults(session, id);
+        let one = sync::plan_box(session, PortsPresent::unknown(), id, from, into);
+        plan.jobs.extend(one.jobs);
+        plan.blocked.extend(one.blocked);
+    }
+    plan
+}
+
 // --- driving it -------------------------------------------------------------------
 
 /// What the UI thread saw and did.
@@ -326,7 +355,7 @@ fn the_plan_sends_the_tracks_that_have_notes_and_names_the_ones_it_leaves() {
     // Decision 3, which is the one that can go wrong in silence: a skipped track
     // that is not listed reads as a track that was sent.
     let (session, dt2, _) = desk();
-    let plan = sync::plan_all(&session, PortsPresent::unknown());
+    let plan = plan_desk(&session);
 
     assert_eq!(plan.jobs.len(), 2, "both boxes are wired and both have notes");
     assert_eq!(plan.tracks(), 2, "one track each");
@@ -369,7 +398,7 @@ fn a_slot_aims_where_the_pattern_came_from_rather_than_where_it_is_sitting() {
     // Point the scene at A03 so that is the slot the sync reads from.
     session.set_slot_in_scene(0, dt2, PatternRef::new(0, 2));
 
-    let plan = sync::plan_all(&session, PortsPresent::unknown());
+    let plan = plan_desk(&session);
     let job = plan.jobs.iter().find(|j| j.device == dt2).expect("the DT2 is in the plan");
     assert_eq!(job.from, PatternRef::new(0, 2), "the scene's slot");
     assert_eq!(job.into, PatternRef::new(2, 5), "and the slot it was fetched from");
@@ -379,7 +408,7 @@ fn a_slot_aims_where_the_pattern_came_from_rather_than_where_it_is_sitting() {
 fn a_box_with_no_ports_is_left_out_of_the_plan_by_name_rather_than_ignored() {
     let (mut session, dt2, _) = desk();
     session.device_mut(dt2).expect("the DT2").io.output = None;
-    let plan = sync::plan_all(&session, PortsPresent::unknown());
+    let plan = plan_desk(&session);
 
     assert_eq!(plan.jobs.len(), 1, "the DN2 can still go");
     assert_eq!(plan.blocked.len(), 1);
@@ -399,7 +428,7 @@ fn a_box_whose_scene_slot_is_empty_is_left_out_rather_than_sent_nothing() {
         output: Some(port("out")),
         ..DeviceIo::default()
     };
-    let plan = sync::plan_all(&session, PortsPresent::unknown());
+    let plan = plan_desk(&session);
 
     assert!(plan.jobs.is_empty());
     assert!(plan.is_empty());
@@ -407,12 +436,73 @@ fn a_box_whose_scene_slot_is_empty_is_left_out_rather_than_sent_nothing() {
     assert!(plan.blocked[0].why.contains("no notes"), "{}", plan.blocked[0].why);
 }
 
+#[test]
+fn the_destination_is_the_one_the_row_names_and_provenance_only_suggests_it() {
+    // **The bug this signature exists to make unrepresentable.** Neil,
+    // 2026-08-26, on hardware: the desk-wide button aimed each box by provenance
+    // while the SEND row above it aimed by picker, so a DN2 pattern imported
+    // from A01 went to A01 while the row read `to A02`. `plan_box` takes `into`
+    // as a parameter and computes no second opinion — and this states it where it
+    // went wrong, which is in the bytes: they land in the slot the caller named,
+    // and the slot provenance remembers is not touched at all.
+    let (session, dt2, _) = desk();
+    let (from, suggested) = sync::defaults(&session, dt2);
+    assert_eq!(suggested, PatternRef::new(0, 0), "the fixture came off A01, so A01 is offered");
+
+    // What the picker says instead.
+    let into = PatternRef::new(0, 1);
+    let plan = sync::plan_box(&session, PortsPresent::unknown(), dt2, from, into);
+    assert_eq!(plan.jobs.len(), 1, "one press, one box");
+    assert_eq!(plan.jobs[0].into, into, "the row's destination, not provenance's");
+
+    let stash = tmp_stash("picker-wins");
+    let box_ = FakeBox::dt2(DT2_CAPTURE).with_slot(1, DT2_CAPTURE);
+    let (report, seen) = drive(&plan, &stash, vec![box_.clone()], Answer::All);
+
+    assert!(report.boxes.iter().all(|b| b.wrote && !b.is_error), "{:?}", report.boxes);
+    assert_eq!(box_.sends(), 1, "one slot, one send");
+    assert_eq!(box_.notes(spec_of("DT2"), 1, 0), 15, "the notes landed in A02");
+    assert_eq!(
+        box_.slot(0),
+        payload(DT2_CAPTURE),
+        "and A01 — where provenance points — is byte-for-byte as it was"
+    );
+    // The dialog said so before it happened, which is the half of the bug a
+    // person could have caught: the old button's summary line and its dialog
+    // both named the provenance slot while the picker said otherwise.
+    assert!(seen.asks[0][0].0.contains("into A02"), "{}", seen.asks[0][0].0);
+    let _ = std::fs::remove_dir_all(stash.dir());
+}
+
+#[test]
+fn a_row_nobody_has_touched_offers_the_scene_slot_and_the_slot_it_came_from() {
+    // What the two pickers start on, which is the whole of decision 4 that
+    // survived: provenance is still the *default*, it has just stopped being the
+    // only answer. The pattern sits in A03 of the session and came off C06.
+    let (mut session, dt2, _) = desk();
+    {
+        let device = session.device_mut(dt2).expect("the DT2");
+        let held = device.pattern(0).expect("A01").clone();
+        *device.pattern_mut(2).expect("A03") = held;
+        device.pattern_mut(2).expect("A03").source = Some(digi_core::model::Source {
+            device_slug: "digitakt2".into(),
+            bank: 2,
+            index: 5,
+        });
+    }
+    session.set_slot_in_scene(0, dt2, PatternRef::new(0, 2));
+
+    let (from, into) = sync::defaults(&session, dt2);
+    assert_eq!(from, PatternRef::new(0, 2), "the scene's slot");
+    assert_eq!(into, PatternRef::new(2, 5), "and the slot it was fetched from");
+}
+
 // --- the run ----------------------------------------------------------------------
 
 #[test]
 fn a_consented_sync_writes_every_box_once_and_verifies_each() {
     let (session, dt2, dn2) = desk();
-    let plan = sync::plan_all(&session, PortsPresent::unknown());
+    let plan = plan_desk(&session);
     let stash = tmp_stash("consented");
     let boxes = vec![FakeBox::dt2(DT2_CAPTURE), FakeBox::dn2(DN2_CAPTURE)];
     let (report, seen) = drive(&plan, &stash, boxes.clone(), Answer::All);
@@ -447,7 +537,7 @@ fn a_consented_sync_writes_every_box_once_and_verifies_each() {
     assert_eq!(seen.asks.len(), 1, "one press, one question");
     let ask = &seen.asks[0];
     assert_eq!(ask.len(), 2, "both boxes in it");
-    assert!(ask[0].0.starts_with("DT2 · Digitakt II — 1 tracks into A01"), "{}", ask[0].0);
+    assert!(ask[0].0.starts_with("DT2 · Digitakt II — 1 track into A01"), "{}", ask[0].0);
     assert_eq!(ask[0].1.len(), 1, "one row per track going");
     assert!(ask[0].1[0].starts_with("T1"), "{}", ask[0].1[0]);
     assert!(ask[0].3.len() == 15, "the fifteen it is not sending are in the dialog too");
@@ -471,7 +561,7 @@ fn the_dialog_says_the_slot_wide_changes_once_rather_than_once_per_track() {
     // it — the one impact line that reaches past the tracks being written.
     session.device_mut(dt2).expect("the DT2").pattern_mut(0).expect("A01").swing = 62;
 
-    let plan = sync::plan_all(&session, PortsPresent::unknown());
+    let plan = plan_desk(&session);
     let stash = tmp_stash("slot-wide");
     let boxes = vec![FakeBox::dt2(DT2_CAPTURE), FakeBox::dn2(DN2_CAPTURE)];
     let (_, seen) = drive(&plan, &stash, boxes, Answer::Cancel);
@@ -505,7 +595,7 @@ fn one_press_leaves_one_backup_per_slot_rather_than_one_per_track() {
         let notes = pattern.track(0).expect("T1").notes.clone();
         pattern.track_mut(track).expect("a track").notes = notes;
     }
-    let plan = sync::plan_all(&session, PortsPresent::unknown());
+    let plan = plan_desk(&session);
     assert_eq!(plan.tracks(), 7, "six on the DT2 and one on the DN2");
 
     let stash = tmp_stash("one-backup");
@@ -539,7 +629,7 @@ fn unticking_a_row_leaves_that_track_exactly_as_the_box_had_it() {
     // The per-row opt-out, proved on the bytes rather than on the dialog.
     let (mut session, dt2, dn2) = desk();
     add_second_track(&mut session, dt2);
-    let plan = sync::plan_all(&session, PortsPresent::unknown());
+    let plan = plan_desk(&session);
     assert_eq!(plan.tracks(), 3, "two on the DT2, one on the DN2");
 
     let stash = tmp_stash("opt-out");
@@ -566,14 +656,14 @@ fn unticking_a_row_leaves_that_track_exactly_as_the_box_had_it() {
 #[test]
 fn cancelling_the_dialog_writes_nothing_anywhere_and_takes_no_backup() {
     let (session, _, _) = desk();
-    let plan = sync::plan_all(&session, PortsPresent::unknown());
+    let plan = plan_desk(&session);
     let stash = tmp_stash("cancel");
     let boxes = vec![FakeBox::dt2(DT2_CAPTURE), FakeBox::dn2(DN2_CAPTURE)];
     let (report, _) = drive(&plan, &stash, boxes.clone(), Answer::Cancel);
 
     assert!(report.cancelled);
     assert!(report.boxes.iter().all(|b| !b.wrote && !b.is_error), "{:?}", report.boxes);
-    assert!(report.boxes.iter().all(|b| b.text == "Sync cancelled"), "{:?}", report.boxes);
+    assert!(report.boxes.iter().all(|b| b.text == "Send cancelled"), "{:?}", report.boxes);
     for box_ in &boxes {
         assert_eq!(box_.sends(), 0);
         assert_eq!(box_.fetches(), 1, "the survey read, and nothing after it");
@@ -587,7 +677,7 @@ fn a_dialog_that_is_never_answered_consents_to_nothing() {
     // The window closing mid-question. The worker's `recv` fails, and a failed
     // recv is the only direction that is safe.
     let (session, _, _) = desk();
-    let plan = sync::plan_all(&session, PortsPresent::unknown());
+    let plan = plan_desk(&session);
     let stash = tmp_stash("vanish");
     let boxes = vec![FakeBox::dt2(DT2_CAPTURE), FakeBox::dn2(DN2_CAPTURE)];
     let (report, _) = drive(&plan, &stash, boxes.clone(), Answer::Vanish);
@@ -606,7 +696,7 @@ fn a_box_that_is_not_the_one_the_row_names_is_refused_and_the_rest_still_go() {
     // box never reaches the dialog — and the count in the button is the count
     // that can actually happen.
     let (session, dt2, dn2) = desk();
-    let plan = sync::plan_all(&session, PortsPresent::unknown());
+    let plan = plan_desk(&session);
     let stash = tmp_stash("wrong-box");
     // A DN2 answering on the DT2's ports.
     let boxes = vec![FakeBox::dn2(DN2_CAPTURE), FakeBox::dn2(DN2_CAPTURE)];
@@ -629,7 +719,7 @@ fn a_firmware_the_format_was_never_verified_against_is_refused_before_the_dialog
     // is *listed as refused* instead of appearing as rows you can tick and
     // consent to.
     let (session, dt2, _) = desk();
-    let plan = sync::plan_all(&session, PortsPresent::unknown());
+    let plan = plan_desk(&session);
     let stash = tmp_stash("gate");
     let boxes = vec![FakeBox::dt2(DT2_CAPTURE).on_build("9999"), FakeBox::dn2(DN2_CAPTURE)];
     let (report, seen) = drive(&plan, &stash, boxes.clone(), Answer::All);
@@ -648,7 +738,7 @@ fn a_box_that_changed_while_the_dialog_was_open_refuses_rather_than_writing() {
     // survey and the write's own re-fetch the box moved, so the sentence agreed
     // to is not the sentence about to happen — and consent does not carry over.
     let (session, dt2, _) = desk();
-    let plan = sync::plan_all(&session, PortsPresent::unknown());
+    let plan = plan_desk(&session);
     let stash = tmp_stash("moved");
     let dt2_box = FakeBox::dt2(DT2_CAPTURE);
     // On the second fetch — the write's re-fetch — the slot becomes a different
@@ -709,7 +799,7 @@ fn a_store_that_fails_mid_run_stops_every_box_after_it() {
             ..DeviceIo::default()
         };
     }
-    let plan = sync::plan_all(&session, PortsPresent::unknown());
+    let plan = plan_desk(&session);
     assert_eq!(plan.jobs.len(), 3);
 
     let stash = tmp_stash("store-fails");

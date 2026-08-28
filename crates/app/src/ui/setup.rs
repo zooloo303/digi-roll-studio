@@ -52,10 +52,14 @@
 //   where a reader meets it a sentence before pressing one. The sentence itself
 //   is behind that rule's ⓘ as of 2026-08-20 — the eyebrow and the rule are
 //   still permanently on screen; see [`OUT_WARNING_EYEBROW`].
-// * **SYNC EVERY TRACK stops being a fold and becomes a button**, full width,
-//   at the foot of OUT — it already said what it was about to do in its own
-//   label (`sync::headline`); a fold in front of it was a second click for no
-//   second decision.
+// * **OUT is per box, and it mirrors IN.** It sends a whole pattern to a whole
+//   slot, one row and one button per box, the same shape and the same two
+//   pickers `ui::transfer` fetches with. The desk-wide `SYNC EVERY TRACK`
+//   button that used to sit at the foot of OUT is gone — it aimed by provenance
+//   while the row above it aimed by picker, and on 2026-08-26 those two answers
+//   disagreed on hardware. `ui::sync`'s header has the whole account. The
+//   per-track row it stood beside is still here, behind [`PER_TRACK_LABEL`], for
+//   the job it is actually good at.
 // * **BOXES & MIDI PORTS joins BACKUPS as a disclosure row.** The raw port
 //   lists ([`crate::ui::ports`]) are diagnostic UI for the one time auto-detect
 //   has failed, and the status strip above already catches that case — so the
@@ -102,6 +106,20 @@ const OUT_WARNING_BODY: &str =
     "Everything in here overwrites what is on the device. The destination is re-read and backed \
      up whole first, you agree to what it changes, and it is verified byte for byte afterwards.";
 
+/// OUT's mode toggle, and what it is for.
+///
+/// **Off is the standard, and that is the whole point of it existing.** OUT used
+/// to be per-track only, which made the everyday gesture — put this pattern back
+/// on the box — into a job of picking tracks one at a time, while a second
+/// full-desk button beside it aimed somewhere the pickers did not agree with.
+/// One press per box, whole pattern, mirroring IN, is what a person means; the
+/// per-track row is the specialist tool it was being used as a substitute for.
+/// Neil, 2026-08-26, after a send landed on the wrong slot.
+const PER_TRACK_LABEL: &str = "PER-TRACK";
+const PER_TRACK_TIP: &str =
+    "Off: send the whole pattern to one slot, the mirror of IN. On: pick one track and one \
+     destination track at a time.";
+
 /// The IN block's reassurance line, under the fetch rows.
 const IN_REASSURANCE: &str =
     "Reading is safe. It replaces the pattern here, never the one on the device.";
@@ -117,6 +135,9 @@ pub struct SetupPanel {
     devices_expanded: bool,
     ports_open: bool,
     backups_open: bool,
+    /// OUT's mode. Off — the default — is the whole-pattern send that mirrors
+    /// IN; on is `ui::write`'s one-track-at-a-time row. See [`PER_TRACK_LABEL`].
+    per_track_send: bool,
 }
 
 /// Draw the panel. Returns `(the session changed, the × was clicked)`.
@@ -216,28 +237,59 @@ pub fn ui(
 
                     // --- OUT -------------------------------------------------
                     egui::Frame::new().inner_margin(egui::Margin::symmetric(9, 8)).show(ui, |ui| {
-                        direction_header(ui, true, super::WARN_AMBER, "OUT", "write onto the box");
+                        direction_header_with(
+                            ui,
+                            true,
+                            super::WARN_AMBER,
+                            "OUT",
+                            "write onto the box",
+                            |ui| {
+                                // Right-aligned on the header row, where it reads
+                                // as a property *of* OUT rather than as another
+                                // control inside it — and above the amber rule,
+                                // so the warning still sits directly over the
+                                // buttons it is about.
+                                ui.with_layout(
+                                    egui::Layout::right_to_left(egui::Align::Center),
+                                    |ui| {
+                                        ui.checkbox(&mut panel.per_track_send, "")
+                                            .on_hover_text(PER_TRACK_TIP);
+                                        ui.label(
+                                            egui::RichText::new(PER_TRACK_LABEL)
+                                                .size(10.0)
+                                                .color(super::TEXT_DIM),
+                                        )
+                                        .on_hover_text(PER_TRACK_TIP);
+                                    },
+                                );
+                            },
+                        );
                         ui.add_space(8.0);
                         super::destructive_note_tip(ui, OUT_WARNING_EYEBROW, OUT_WARNING_BODY);
                         ui.add_space(9.0);
 
                         let busy = transfer.busy();
-                        write.ui(
-                            ui,
-                            session,
-                            present,
-                            selection,
-                            busy || restore.busy() || sync.busy(),
-                            engine.is_playing(),
-                        );
-                        ui.add_space(9.0);
-                        sync.ui(
-                            ui,
-                            session,
-                            present,
-                            busy || restore.busy() || write.busy(),
-                            engine.is_playing(),
-                        );
+                        // One or the other, never both: two send surfaces on
+                        // screen at once is how the destination came to have two
+                        // answers in the first place.
+                        if panel.per_track_send {
+                            write.ui(
+                                ui,
+                                session,
+                                present,
+                                selection,
+                                busy || restore.busy() || sync.busy(),
+                                engine.is_playing(),
+                            );
+                        } else {
+                            sync.ui(
+                                ui,
+                                session,
+                                present,
+                                busy || restore.busy() || write.busy(),
+                                engine.is_playing(),
+                            );
+                        }
                     });
                 });
 
@@ -369,12 +421,27 @@ fn empty_desk(ui: &mut Ui, autoconnect: &mut AutoConnect) {
 
 /// The `←`/`→` label row over each half of the transfer container.
 fn direction_header(ui: &mut Ui, pointing_right: bool, colour: egui::Color32, label: &str, description: &str) {
+    direction_header_with(ui, pointing_right, colour, label, description, |_| {});
+}
+
+/// The same row, with something of the caller's on the end of it — OUT's mode
+/// toggle. Kept as one function rather than two so the arrow, the sizes and the
+/// spacing cannot drift apart between the two halves of the container.
+fn direction_header_with(
+    ui: &mut Ui,
+    pointing_right: bool,
+    colour: egui::Color32,
+    label: &str,
+    description: &str,
+    trailing: impl FnOnce(&mut Ui),
+) {
     ui.horizontal(|ui| {
         ui.spacing_mut().item_spacing.x = 7.0;
         let (rect, _) = ui.allocate_exact_size(egui::vec2(11.0, 13.0), egui::Sense::hover());
         super::paint_direction_arrow(ui.painter(), rect, pointing_right, colour);
         ui.label(egui::RichText::new(label).size(10.0).color(colour));
         ui.label(egui::RichText::new(description).size(11.0).color(super::TEXT_DIM));
+        trailing(ui);
     });
 }
 

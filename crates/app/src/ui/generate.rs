@@ -15,10 +15,10 @@
 // p-lock lanes of the tracks its "on" rows name, exactly the way drawing in the
 // roll by hand would — undoable with Cmd+Z, playable through the app's own
 // engine immediately, and previewable before anything reaches a box. Getting a
-// generated track onto hardware is then one press of the already-built SEND TO
-// BOX or SYNC EVERY TRACK button in the Setup panel: both already know how to
-// read a track's notes and lanes and put them safely on a card, and neither
-// needs to know its content came from a generator rather than a hand.
+// generated track onto hardware is then one press of the already-built OUT
+// button in the Setup panel: it already knows how to read a track's notes and
+// lanes and put them safely on a card, and it does not need to know its content
+// came from a generator rather than a hand.
 //
 // **A row's ↻ writes on the press, the button asks first.** Both land in the
 // same place by the same path ([`GeneratePanel::apply`]); they differ only in
@@ -35,9 +35,9 @@
 // and worker-thread machinery inside this file for a second, parallel path to
 // a card — and it would mean a first pass at a generated arrangement can only
 // be judged by ear on a box, with no chance to look at it in the roll, tweak a
-// slider and try again first. Reusing SEND TO BOX / SYNC EVERY TRACK keeps
-// PLAN.md's rule 3 (reach for the plural write, never a bespoke second one) and
-// costs nothing: those buttons already read whatever is in a track.
+// slider and try again first. Reusing the OUT block's own send keeps PLAN.md's
+// rule 3 (reach for the plural write, never a bespoke second one) and costs
+// nothing: that button already reads whatever is in a track.
 //
 // ## Every "on" row's p-locks are designed for its *own* box
 //
@@ -288,7 +288,7 @@ fn cap_lane_pool(parts: &mut [ArrangedPart], session: &Session) -> Vec<String> {
 
 /// Build the whole plan a press of Generate would carry out. Pure — no session
 /// mutation — so the panel can call it every frame to decide whether the
-/// button is enabled and what it would say, the same way `ui::sync::plan_all`
+/// button is enabled and what it would say, the same way `ui::sync::plan_box`
 /// is read every frame.
 pub fn plan_generate(ctx: &GenContext, session: &Session) -> Result<GeneratePlan, PlanError> {
     for part in ctx.parts.iter().filter(|p| p.on) {
