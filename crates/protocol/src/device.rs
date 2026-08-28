@@ -19,28 +19,30 @@ pub struct Product {
     pub product_id: u8,
     pub name: &'static str,
     pub slug: &'static str,
-    pub family: u8,
+    /// `None` for a box that answers the identity API but has no dump family —
+    /// the Analog Four, whose supported-opcode list contains no `0x6x` request
+    /// at all (captured 2026-08-28). Being *identifiable* and being
+    /// *dumpable* were the same thing until that box was plugged in, and this
+    /// is where they come apart: a row may name a box without claiming its
+    /// dumps can be read.
+    pub family: Option<u8>,
 }
 
 // Both DT2 and DN2 values were captured from real hardware 2026-08-01 (the DN2
-// family byte via a 0x60 probe sweep).
+// family byte via a 0x60 probe sweep). The A4 row was captured 2026-08-28, off
+// the box itself, on the day it arrived.
 pub const PRODUCTS: &[Product] = &[
-    Product { product_id: 12, name: "Digitakt", slug: "digitakt", family: FAMILY_DIGITAKT },
-    Product { product_id: 42, name: "Digitakt II", slug: "digitakt2", family: FAMILY_DIGITAKT_2 },
-    Product { product_id: 43, name: "Digitone II", slug: "digitone2", family: FAMILY_DIGITONE_2 },
+    Product { product_id: 12, name: "Digitakt", slug: "digitakt", family: Some(FAMILY_DIGITAKT) },
+    Product { product_id: 42, name: "Digitakt II", slug: "digitakt2", family: Some(FAMILY_DIGITAKT_2) },
+    Product { product_id: 43, name: "Digitone II", slug: "digitone2", family: Some(FAMILY_DIGITONE_2) },
+    // Answers 0x01 with product id 4 and the name "Analog Four", on OS 1.55B
+    // (build 0195) — so the mk1 does *not* predate this API, which is what the
+    // 2026-08-24 guess had assumed. `family: None` because the same reply's
+    // supported-opcode list is 01,02,03,04,06,07,09 then 50-5e: every file and
+    // store opcode, and not one `0x6x` dump request. There is no dump family to
+    // capture, rather than one nobody has looked for yet.
+    Product { product_id: 4, name: "Analog Four", slug: "analogfour", family: None },
 ];
-
-/// Boxes recognisable by their port *name* that have no row in [`PRODUCTS`],
-/// because no product id has ever been captured for them — the Analog Four
-/// mk1 predates the API generation the DT2/DN2 answer, and until one is on a
-/// desk answering (or provably not answering) there is nothing honest to put
-/// in the wire table. This list feeds [`slug_from_port_name`] only; it can
-/// never claim an identity reply, which is what keeps a guessed id out of
-/// [`product_for_id`].
-///
-/// If an A4 turns out to answer opcode 0x01 after all, capture the id and
-/// family from the box and promote the row into [`PRODUCTS`].
-pub const NAME_ONLY_PRODUCTS: &[(&str, &str)] = &[("Analog Four", "analogfour")];
 
 pub fn product_for_id(product_id: u8) -> Option<&'static Product> {
     PRODUCTS.iter().find(|p| p.product_id == product_id)
@@ -57,7 +59,7 @@ pub fn product_for_id(product_id: u8) -> Option<&'static Product> {
 /// harmless, because whether a box can be *written* is
 /// [`crate::safe_write::write_gate`]'s decision and not this one's.
 pub fn product_for_family(family: u8) -> Option<&'static Product> {
-    PRODUCTS.iter().find(|p| p.family == family)
+    PRODUCTS.iter().find(|p| p.family == Some(family))
 }
 
 /// Which box a MIDI port name looks like, without asking it.
@@ -79,22 +81,8 @@ pub fn product_from_port_name(port_name: &str) -> Option<&'static Product> {
         .find(|p| lower.contains(&p.name.to_lowercase()))
 }
 
-/// [`product_from_port_name`] plus the boxes only a name can identify
-/// ([`NAME_ONLY_PRODUCTS`]). Same longest-name-first rule across the merged
-/// list, so a hypothetical "Analog Four II" entry could never be claimed by
-/// "Analog Four" first.
 pub fn slug_from_port_name(port_name: &str) -> Option<&'static str> {
-    let lower = port_name.to_lowercase();
-    let mut candidates: Vec<(&str, &str)> = PRODUCTS
-        .iter()
-        .map(|p| (p.name, p.slug))
-        .chain(NAME_ONLY_PRODUCTS.iter().copied())
-        .collect();
-    candidates.sort_by_key(|(name, _)| std::cmp::Reverse(name.len()));
-    candidates
-        .into_iter()
-        .find(|(name, _)| lower.contains(&name.to_lowercase()))
-        .map(|(_, slug)| slug)
+    product_from_port_name(port_name).map(|p| p.slug)
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -244,7 +232,7 @@ pub fn identity_from_responses(dev: &DeviceResponse, build: String, version: Str
         supported_ids: dev.supported_ids.clone(),
         name,
         slug: product.map(|p| p.slug.to_string()).unwrap_or_else(|| "elektron".into()),
-        family: product.map(|p| p.family),
+        family: product.and_then(|p| p.family),
         build,
         version,
     }

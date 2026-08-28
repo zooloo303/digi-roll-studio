@@ -35,6 +35,7 @@ fn main() {
         .expect("open ports");
     match device.identify() {
         Ok(id) => {
+            println!("  prod id {}", id.product_id);
             println!("  name    {}", id.name);
             println!("  slug    {}", id.slug);
             println!("  build   {}", id.build);

@@ -82,7 +82,10 @@ fn the_shipped_a4_is_live_only_and_six_tracks() {
     assert_eq!(digi_core::A4.max_steps, 64);
     assert!(!digi_core::A4.can_sysex());
     assert!(digi_core::A4.spec().is_none());
-    assert!(!digi_core::A4.answers_identity, "the mk1 predates the identity API");
+    // Corrected 2026-08-28 against the box: it answers 0x01 on the first try,
+    // product id 4, OS 1.55B. `sysex: None` survives that correction for its
+    // own reason — the same reply lists no `0x6x` dump request at all.
+    assert!(digi_core::A4.answers_identity, "the mk1 answers 0x01 — verified on hardware");
     let d = Device::new("A4", &digi_core::A4, 16);
     d.validate().expect("the shipped A4 model is coherent");
 }
@@ -100,9 +103,8 @@ fn the_shipped_models_can_do_sysex_and_say_so_truthfully() {
 #[test]
 fn an_identity_reply_binds_to_the_right_model() {
     // The slug is the link between protocol's wire identity and core's musical
-    // table — the binding Phase 3 could not do without a Session. The A4's is
-    // reachable only from a port *name* (`NAME_ONLY_PRODUCTS`), never from a
-    // handshake, but the table lookup is the same either way.
+    // table — the binding Phase 3 could not do without a Session. The A4
+    // reaches it from a real handshake like the others, since 2026-08-28.
     assert_eq!(model_for_slug("digitakt2").unwrap().key, "DT2");
     assert_eq!(model_for_slug("digitone2").unwrap().key, "DN2");
     assert_eq!(model_for_slug("analogfour").unwrap().key, "A4");

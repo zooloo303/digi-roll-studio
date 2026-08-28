@@ -74,13 +74,16 @@ fn store(stash: &Stash, index: u8, kind: &str, second: u32) -> StashEntry {
 }
 
 /// The dump family byte for a box, off `protocol`'s own product table — the same
-/// place an identity handshake gets it.
+/// place an identity handshake gets it. Panics for a box with no dump family
+/// (the A4 has a row and no `0x6x` request), which is correct: a restore
+/// fixture for such a box would be a backup that could never have been taken.
 fn family(slug: &str) -> u8 {
     digi_protocol::device::PRODUCTS
         .iter()
         .find(|p| p.slug == slug)
-        .map(|p| p.family)
         .unwrap_or_else(|| panic!("{slug} is not a product this repo knows"))
+        .family
+        .unwrap_or_else(|| panic!("{slug} has no dump family — it cannot be backed up"))
 }
 
 /// One headless frame of the group.

@@ -60,11 +60,15 @@ pub struct DeviceModel {
     pub default_track_kind: TrackKind,
     pub sysex: Option<SpecFn>,
     /// Whether this box answers the Elektron API identity request (opcode
-    /// 0x01/0x02). The DT2/DN2 generation does; the Analog Four mk1 predates
-    /// that API and is assumed silent until a real one proves otherwise.
-    /// `false` tells auto-connect to bind by port name instead of waiting on
-    /// a handshake that is never coming — the USB descriptor's name is the
-    /// only identification such a box offers.
+    /// 0x01/0x02). `false` tells auto-connect to bind by port name instead of
+    /// waiting on a handshake that is never coming.
+    ///
+    /// **Every shipped model answers, and no row sets this `false`.** It was
+    /// added 2026-08-24 for the Analog Four, on the guess that a 2013 box
+    /// predated the API — and on 2026-08-28 the box itself answered on the
+    /// first try (product id 4, OS 1.55B). The field and
+    /// `ui::autoconnect::adopt_by_name` are kept for the model that eventually
+    /// needs them; `MODELS` is the honest record that today none do.
     pub answers_identity: bool,
 }
 
@@ -111,16 +115,21 @@ pub static DN2: DeviceModel = DeviceModel {
 };
 
 /// The Analog Four mk1 — the first live-only row to ship, 2026-08-24, ahead
-/// of the box itself (delivery 2026-08-28).
+/// of the box itself, and corrected against it on 2026-08-28.
 ///
 /// Six tracks as the sequencer counts them: four synth voices, the FX track
 /// and the CV track. 64 steps — four pages of sixteen, half a digi pattern.
-/// `sysex: None` because no A4 dump has ever been read by this code; the box
-/// still sequences live, takes clock, and answers CC/NRPN (see
-/// `protocol::params::A4_PARAMS`). `answers_identity: false` because the mk1
-/// predates the API the DT2/DN2 handshake speaks — flip it the day one
-/// answers, and capture the product id for `protocol::device::PRODUCTS`
-/// while you are there.
+///
+/// `sysex: None` because no A4 dump has ever been read by this code — and the
+/// box's own supported-opcode list says none can be: it offers `0x50`-`0x5e`,
+/// every file and store opcode, and not one `0x6x` dump request. So this is
+/// not a gap waiting on a probe sweep the way the DN2's family byte was; it is
+/// what the box reports about itself. It still sequences live, takes clock,
+/// and answers CC/NRPN (see `protocol::params::A4_PARAMS`).
+///
+/// `answers_identity: true`, corrected the day the box arrived: it answers
+/// 0x01 with product id 4 and the name "Analog Four" on OS 1.55B, so it takes
+/// the ordinary handshake path and `protocol::device::PRODUCTS` has its row.
 pub static A4: DeviceModel = DeviceModel {
     key: "A4",
     display: "Analog Four",
@@ -129,10 +138,11 @@ pub static A4: DeviceModel = DeviceModel {
     max_steps: 64,
     default_track_kind: TrackKind::Audio,
     sysex: None,
-    answers_identity: false,
+    answers_identity: true,
 };
 
-/// The shipped roster. DT2 and DN2 per PLAN.md §2; A4 since 2026-08-24.
+/// The shipped roster. DT2 and DN2 per PLAN.md §2; A4 since 2026-08-24,
+/// hardware-verified 2026-08-28.
 pub static MODELS: &[&DeviceModel] = &[&DT2, &DN2, &A4];
 
 pub fn model_for_key(key: &str) -> Option<&'static DeviceModel> {

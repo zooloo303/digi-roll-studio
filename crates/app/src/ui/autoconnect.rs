@@ -49,15 +49,21 @@
 //     took off the clock stays off it, including across a replug, because
 //     rebinding an existing device leaves everything but the ports alone.
 //
-//     **One stated exception, 2026-08-24: a model with `answers_identity:
-//     false`** — the Analog Four mk1, which predates the API the handshake
-//     speaks. For such a box the handshake is not pending, it is *never
-//     coming*, so waiting for one means auto-connect simply never works for
-//     that model. The port name is then the identification: it comes off the
-//     USB device descriptor, which only the box itself writes. What rule 2
-//     still guarantees is unchanged for every model that *can* answer — an
-//     IAC bus is still never grabbed (no Elektron name, no candidate), and a
-//     port named for a DT2 still has to prove it is one.
+//     **One stated exception: a model with `answers_identity: false`.** For
+//     such a box the handshake is not pending, it is *never coming*, so
+//     waiting for one means auto-connect simply never works for that model.
+//     The port name is then the identification: it comes off the USB device
+//     descriptor, which only the box itself writes. What rule 2 still
+//     guarantees is unchanged for every model that *can* answer — an IAC bus
+//     is still never grabbed (no Elektron name, no candidate), and a port
+//     named for a DT2 still has to prove it is one.
+//
+//     **No shipped model takes this exception.** It was written 2026-08-24 for
+//     the Analog Four mk1, on the guess that a 2013 box predated the API; on
+//     2026-08-28 the box answered 0x01 on the first try and took the ordinary
+//     path instead. [`AutoConnect::adopt_by_name`] and its tests are kept
+//     against the model that eventually needs them, and the tests reach it by
+//     calling it rather than by any desk arriving at it.
 //
 // ## Shape
 //
@@ -737,10 +743,16 @@ mod tests {
 
     #[test]
     fn a_box_that_cannot_answer_is_adopted_on_its_port_name_alone() {
-        // The A4 mk1 path end to end: empty desk, a pair named for a box whose
-        // model has `answers_identity: false`. No handshake happens — the row
-        // is added and wired right here, six tracks, both ends bound, and *no*
-        // OS report, because nothing answered and claiming one would be a lie.
+        // The name-only path end to end: empty desk, a pair named for a box the
+        // model table knows. No handshake happens — the row is added and wired
+        // right here, six tracks, both ends bound, and *no* OS report, because
+        // nothing answered and claiming one would be a lie.
+        //
+        // It drives the A4 because `adopt_by_name` resolves a *shipped* slug
+        // and the A4 is the six-track row that makes the assertions legible.
+        // Since 2026-08-28 no desk reaches this path — the A4 answers — so the
+        // test calls the function directly and asserts what it would do for the
+        // model that one day sets `answers_identity: false`.
         let mut session = Session::default();
         let mut ac = AutoConnect::default();
         let candidate = Candidate {
@@ -769,9 +781,10 @@ mod tests {
 
     #[test]
     fn a_free_row_is_reused_before_a_second_one_is_added() {
-        // Same rule as `destination` on the handshake path: an A4 row someone
-        // added by hand (a session sketched before the box arrived) is exactly
-        // where its box should land, not beside a duplicate.
+        // Same rule as `destination` on the handshake path: a row someone added
+        // by hand (a session sketched before the box arrived) is exactly where
+        // its box should land, not beside a duplicate. Reached by calling in,
+        // as above.
         let mut session = Session::default();
         session.add_device(Device::new("A4", &A4, 16));
         let planned = session.devices[0].id;
