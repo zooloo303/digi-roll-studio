@@ -49,22 +49,6 @@
 //     took off the clock stays off it, including across a replug, because
 //     rebinding an existing device leaves everything but the ports alone.
 //
-//     **One stated exception: a model with `answers_identity: false`.** For
-//     such a box the handshake is not pending, it is *never coming*, so
-//     waiting for one means auto-connect simply never works for that model.
-//     The port name is then the identification: it comes off the USB device
-//     descriptor, which only the box itself writes. What rule 2 still
-//     guarantees is unchanged for every model that *can* answer — an IAC bus
-//     is still never grabbed (no Elektron name, no candidate), and a port
-//     named for a DT2 still has to prove it is one.
-//
-//     **No shipped model takes this exception.** It was written 2026-08-24 for
-//     the Analog Four mk1, on the guess that a 2013 box predated the API; on
-//     2026-08-28 the box answered 0x01 on the first try and took the ordinary
-//     path instead. [`AutoConnect::adopt_by_name`] and its tests are kept
-//     against the model that eventually needs them, and the tests reach it by
-//     calling it rather than by any desk arriving at it.
-//
 // ## Shape
 //
 // [`candidates`] and [`destination`] are pure and hold every rule above, so all
@@ -92,7 +76,7 @@ use std::collections::{HashMap, HashSet};
 use std::sync::mpsc::{channel, Receiver};
 use std::time::{Duration, Instant};
 
-use digi_core::device::{model_for_slug, PortEnd, PortRef};
+use digi_core::device::{model_for_slug, PortRef};
 use digi_core::{Device, DeviceId, Session};
 use digi_midi::{ElektronDevice, PortBinding, PortInfo};
 use digi_protocol::device::DeviceIdentity;
@@ -406,52 +390,9 @@ impl AutoConnect {
             }
             return false;
         };
-        // A model that cannot answer is not asked — rule 2's stated exception.
-        // The port name is the whole identification, so the bind happens right
-        // here on the UI thread: no worker, no backoff, and no entry in
-        // `tried` (there is no failure mode to remember — a *declined* pair
-        // never got this far, because the due-check above skipped it).
-        if model_for_slug(candidate.slug).is_some_and(|m| !m.answers_identity) {
-            return self.adopt_by_name(session, candidate);
-        }
         self.tried.entry(key).or_insert_with(Attempt::started).retry_at = None;
         self.start(candidate);
         false
-    }
-
-    /// Bind a box whose model never answers the identity request, on its port
-    /// name alone: onto a free device of that model, or onto a row added for
-    /// it. Through [`Session::set_device_port`] rather than `bind_identity_to`,
-    /// which keeps `build`/`version` empty — nothing answered, and an OS
-    /// report beside a name-guessed port would be exactly the plausible lie
-    /// that rule is there to prevent.
-    fn adopt_by_name(&mut self, session: &mut Session, candidate: Candidate) -> bool {
-        let Some(model) = model_for_slug(candidate.slug) else { return false };
-        let free = session
-            .devices
-            .iter()
-            .find(|d| d.model == model && !d.has_ports())
-            .map(|d| d.id);
-        let (device, added) = match free {
-            Some(id) => (id, false),
-            // One bank of slots, same as a handshaken box gets in `land`.
-            None => {
-                let name = session.suggested_name(model);
-                (session.add_device(Device::new(name, model, 16)), true)
-            }
-        };
-        session.set_device_port(device, PortEnd::Input, Some(candidate.input));
-        session.set_device_port(device, PortEnd::Output, Some(candidate.output));
-        let name = session.device(device).map(|d| d.name.clone()).unwrap_or_default();
-        // "by its port name" is load-bearing copy: it is the one honest
-        // difference from the handshaken lines above it, and the reader whose
-        // desk has a mislabelled port deserves to know which kind of claim
-        // this was.
-        self.said = Some(match added {
-            true => format!("Added {name} — {} by its port name", model.display),
-            false => format!("Connected {name} — {} by its port name", model.display),
-        });
-        true
     }
 
     fn start(&mut self, candidate: Candidate) {
@@ -564,7 +505,7 @@ impl AutoConnect {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use digi_core::device::{Device, DeviceIo, A4, DN2, DT2};
+    use digi_core::device::{Device, DeviceIo, DN2, DT2};
 
     fn info(id: &str, name: &str) -> PortInfo {
         PortInfo {
@@ -739,70 +680,6 @@ mod tests {
         assert_eq!(found[0].slug, "digitakt2");
         assert_eq!(found[1].slug, "digitone2");
         assert_eq!(found[2].slug, "analogfour");
-    }
-
-    #[test]
-    fn a_box_that_cannot_answer_is_adopted_on_its_port_name_alone() {
-        // The name-only path end to end: empty desk, a pair named for a box the
-        // model table knows. No handshake happens — the row is added and wired
-        // right here, six tracks, both ends bound, and *no* OS report, because
-        // nothing answered and claiming one would be a lie.
-        //
-        // It drives the A4 because `adopt_by_name` resolves a *shipped* slug
-        // and the A4 is the six-track row that makes the assertions legible.
-        // Since 2026-08-28 no desk reaches this path — the A4 answers — so the
-        // test calls the function directly and asserts what it would do for the
-        // model that one day sets `answers_identity: false`.
-        let mut session = Session::default();
-        let mut ac = AutoConnect::default();
-        let candidate = Candidate {
-            slug: "analogfour",
-            input: port("in-1", "Elektron Analog Four"),
-            output: port("out-1", "Elektron Analog Four"),
-        };
-        let changed = ac.adopt_by_name(&mut session, candidate);
-
-        assert!(changed);
-        assert_eq!(session.devices.len(), 1);
-        let a4 = &session.devices[0];
-        assert_eq!(a4.name, "A4");
-        assert_eq!(a4.model, &A4);
-        assert_eq!(a4.model.num_tracks, 6, "four voices, FX and CV");
-        assert_eq!(a4.io.input, Some(port("in-1", "Elektron Analog Four")));
-        assert_eq!(a4.io.output, Some(port("out-1", "Elektron Analog Four")));
-        assert_eq!(a4.io.build, None, "nothing answered, so no OS is claimed");
-        assert!(!a4.can_sysex(), "and it is live-only");
-        assert_eq!(
-            ac.said.as_deref(),
-            Some("Added A4 — Analog Four by its port name"),
-            "the copy says which kind of claim this was"
-        );
-    }
-
-    #[test]
-    fn a_free_row_is_reused_before_a_second_one_is_added() {
-        // Same rule as `destination` on the handshake path: a row someone added
-        // by hand (a session sketched before the box arrived) is exactly where
-        // its box should land, not beside a duplicate. Reached by calling in,
-        // as above.
-        let mut session = Session::default();
-        session.add_device(Device::new("A4", &A4, 16));
-        let planned = session.devices[0].id;
-        let mut ac = AutoConnect::default();
-        let candidate = Candidate {
-            slug: "analogfour",
-            input: port("in-1", "Elektron Analog Four"),
-            output: port("out-1", "Elektron Analog Four"),
-        };
-        assert!(ac.adopt_by_name(&mut session, candidate));
-
-        assert_eq!(session.devices.len(), 1, "no second row");
-        assert_eq!(session.devices[0].id, planned);
-        assert!(session.devices[0].io.input.is_some());
-        assert_eq!(
-            ac.said.as_deref(),
-            Some("Connected A4 — Analog Four by its port name")
-        );
     }
 
     #[test]

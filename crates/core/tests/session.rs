@@ -59,7 +59,6 @@ fn an_unshipped_live_only_model_constructs_correctly() {
         max_steps: 64,
         default_track_kind: TrackKind::Audio,
         sysex: None,
-        answers_identity: false,
     };
 
     let d = Device::new("ST", &SYNTAKT, 8);
@@ -82,10 +81,6 @@ fn the_shipped_a4_is_live_only_and_six_tracks() {
     assert_eq!(digi_core::A4.max_steps, 64);
     assert!(!digi_core::A4.can_sysex());
     assert!(digi_core::A4.spec().is_none());
-    // Corrected 2026-08-28 against the box: it answers 0x01 on the first try,
-    // product id 4, OS 1.55B. `sysex: None` survives that correction for its
-    // own reason — the same reply lists no `0x6x` dump request at all.
-    assert!(digi_core::A4.answers_identity, "the mk1 answers 0x01 — verified on hardware");
     let d = Device::new("A4", &digi_core::A4, 16);
     d.validate().expect("the shipped A4 model is coherent");
 }

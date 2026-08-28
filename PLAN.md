@@ -178,8 +178,12 @@ Decisions behind that shape:
 
 - **Track count comes from `DeviceModel`, never from a constant.** `tracks` is a
   `Vec` with a `len == num_tracks` invariant enforced at construction, not a
-  `[Track; 16]`. v1 ships DT2 and DN2 profiles only; A4 (4) and Syntakt (12) are
-  then a table entry plus a `sysex: None`, with no model surgery.
+  `[Track; 16]`. v1 shipped DT2 and DN2 profiles only; the A4 arrived on
+  2026-08-28 as exactly that — a table entry plus a `sysex: None`, no model
+  surgery, as predicted. Note the count this line guessed at was wrong: the A4
+  is **6** tracks, not 4, because the sequencer counts the FX and CV tracks
+  alongside the four voices. That the guess was wrong and cost nothing is the
+  argument for the field.
 - **`sysex: None` means sequence-live-only.** Such a device edits and plays
   normally over MIDI; fetch and write are unavailable, and the UI says so rather
   than failing at write time.
@@ -687,7 +691,7 @@ These are not up for renegotiation in the port.
 
 **Hardware is never part of the dev loop** (§7 rule 5). `cargo test --workspace`
 needs no system dependencies and no box. This section is the separate register of
-what has actually met a DT2 and a DN2, because a green suite cannot say. Every
+what has actually met hardware, because a green suite cannot say. Every
 entry below was recorded on a DT2 at OS 1.15B (build 0070) and a DN2 at OS 1.10D
 (build 0049). Both boxes moved to 1.15C (0071) and 1.10E (0050) on 2026-08-21;
 the fetch-edit-write round trip was re-run on the new OSes that day, and every
@@ -882,6 +886,44 @@ project two bugs.
 - draggable plock area height, users want to see the plock area taller to make changes to the settings easier
 - 'check for app updates' option
 -
+
+### The Analog Four arrives — 2026-08-28, A4 OS 1.55B (build 0195)
+
+Support for this box was written 2026-08-24, four days before it existed on the
+desk, from two of Elektron's manuals. **The central assumption was wrong, and
+one command found it.**
+
+**What was assumed:** that a 2013 box predates the identity API the DT2/DN2
+speak, so it would never answer `0x01` and auto-connect would have to bind it on
+its USB port name alone. This produced an `answers_identity` flag, a
+`NAME_ONLY_PRODUCTS` table, and an `adopt_by_name` path in `ui::autoconnect`.
+
+**What the box does:** answers on the first try — product id **4**, name
+"Analog Four", OS **1.55B**, build **0195**. It takes the ordinary handshake
+path. All three of those mechanisms were deleted on 2026-08-28; only the
+port-name guess (`Elektron Analog Four`) held.
+
+**The finding worth keeping.** The same reply lists the opcodes the box
+supports: `01,02,03,04,06,07,09` and then `50`–`5e`. That is every file and
+store opcode and **not one `0x6x` dump request**. So the A4 is *identifiable but
+not dumpable*, which had not been a distinction this codebase could express —
+`Product.family` was a `u8` because every box that could name itself could name
+its dump family too. It is an `Option<u8>` now. `sysex: None` is therefore
+correct on the box's own testimony, not for want of a probe sweep the way the
+DN2's family byte once was.
+
+**Which also means the A4 is a third box for §10**, since `0x53`–`0x56` and the
+`0x57`–`0x59` write trio are all in that list.
+
+**Not yet verified, and deliberately left for a session with ears on it:**
+clock and transport receive, live notes on channels 1–6, 64-step patterns, and
+the thirteen `A4_PARAMS` CC/NRPN entries — particularly Track Level CC 95 and
+Mute, which came from the Analog Keys OS 1.51C appendix rather than the mk1
+OS 1.0 one. That 1.55B sits in the AK OS line supports the sourcing choice
+without proving it. Until that session, the A4's entry in this register is
+"it identifies", and nothing more: a param table that is *present* and one that
+is *right* photograph identically, which is this section's whole reason to
+exist.
 
 ## 10. The kit builder — scope, 2026-08-26
 

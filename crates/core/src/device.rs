@@ -59,17 +59,6 @@ pub struct DeviceModel {
     pub max_steps: u16,
     pub default_track_kind: TrackKind,
     pub sysex: Option<SpecFn>,
-    /// Whether this box answers the Elektron API identity request (opcode
-    /// 0x01/0x02). `false` tells auto-connect to bind by port name instead of
-    /// waiting on a handshake that is never coming.
-    ///
-    /// **Every shipped model answers, and no row sets this `false`.** It was
-    /// added 2026-08-24 for the Analog Four, on the guess that a 2013 box
-    /// predated the API — and on 2026-08-28 the box itself answered on the
-    /// first try (product id 4, OS 1.55B). The field and
-    /// `ui::autoconnect::adopt_by_name` are kept for the model that eventually
-    /// needs them; `MODELS` is the honest record that today none do.
-    pub answers_identity: bool,
 }
 
 impl DeviceModel {
@@ -100,7 +89,6 @@ pub static DT2: DeviceModel = DeviceModel {
     max_steps: 128,
     default_track_kind: TrackKind::Audio,
     sysex: Some(dt2_spec),
-    answers_identity: true,
 };
 
 pub static DN2: DeviceModel = DeviceModel {
@@ -111,7 +99,6 @@ pub static DN2: DeviceModel = DeviceModel {
     max_steps: 128,
     default_track_kind: TrackKind::Audio,
     sysex: Some(dn2_spec),
-    answers_identity: true,
 };
 
 /// The Analog Four mk1 — the first live-only row to ship, 2026-08-24, ahead
@@ -127,9 +114,9 @@ pub static DN2: DeviceModel = DeviceModel {
 /// what the box reports about itself. It still sequences live, takes clock,
 /// and answers CC/NRPN (see `protocol::params::A4_PARAMS`).
 ///
-/// `answers_identity: true`, corrected the day the box arrived: it answers
-/// 0x01 with product id 4 and the name "Analog Four" on OS 1.55B, so it takes
-/// the ordinary handshake path and `protocol::device::PRODUCTS` has its row.
+/// It answers the identity handshake like every other shipped box — product id
+/// 4, name "Analog Four", OS 1.55B — which the 2026-08-24 guess had assumed it
+/// could not. `protocol::device::PRODUCTS` has its row.
 pub static A4: DeviceModel = DeviceModel {
     key: "A4",
     display: "Analog Four",
@@ -138,7 +125,6 @@ pub static A4: DeviceModel = DeviceModel {
     max_steps: 64,
     default_track_kind: TrackKind::Audio,
     sysex: None,
-    answers_identity: true,
 };
 
 /// The shipped roster. DT2 and DN2 per PLAN.md §2; A4 since 2026-08-24,

@@ -756,7 +756,6 @@ fn a_live_only_model_has_nothing_to_import_into() {
         max_steps: 64,
         default_track_kind: TrackKind::Audio,
         sysex: None,
-        answers_identity: false,
     };
     let spec = dt2_spec();
     let kit = synthetic_kit(&spec, 16, &[0]);
