@@ -27,12 +27,29 @@ pub const DUMP_PATTERN: u8 = 0x51;
 pub const DUMP_KIT: u8 = 0x52;
 pub const DUMP_SOUND: u8 = 0x53;
 pub const DUMP_PROJECT_SETTINGS: u8 = 0x54;
+/// One track's sound in the box's **active** kit, addressed by track index
+/// 0–15 rather than by a stored slot. The store half of
+/// [`DUMP_KIT_TRACK_SOUND_REQUEST`], by the minus-0x10 rule above.
+///
+/// **Named from the rule, not from a reply.** The request half is
+/// hardware-verified (PLAN.md §9, 2026-08-26); this one is what the rule
+/// predicts a per-track store would be, and `examples/probe_sound_store.rs` is
+/// the check. Read [`crate::safe_write::write_gate`]'s callers before sending
+/// it: under a *dump* header this is a store, and the +Drive API's unrelated
+/// `0x5B` Copy is a different namespace entirely (see [`crate::drive`]).
+pub const DUMP_KIT_TRACK_SOUND: u8 = 0x5b;
 
 pub const DUMP_PATTERN_KIT_REQUEST: u8 = 0x60;
 pub const DUMP_PATTERN_REQUEST: u8 = 0x61;
 pub const DUMP_KIT_REQUEST: u8 = 0x62;
 pub const DUMP_SOUND_REQUEST: u8 = 0x63;
 pub const DUMP_PROJECT_SETTINGS_REQUEST: u8 = 0x64;
+/// Fetch one track's sound from the box's active kit, index 0–15. Payload is a
+/// 5-byte wrapper then one whole sound struct — hardware-verified on a DT2 and
+/// a DN2 on 2026-08-26 against Overbridge's KIT TRACK PRESETS pane, all
+/// sixteen in order. Inside `assert_request_opcode`'s 0x60–0x6e range, so every
+/// existing fetch guard already admits it.
+pub const DUMP_KIT_TRACK_SOUND_REQUEST: u8 = 0x6b;
 pub const DUMP_WHOLE_PROJECT_REQUEST: u8 = 0x6f;
 
 pub const FAMILY_DIGITAKT: u8 = 0x0a;

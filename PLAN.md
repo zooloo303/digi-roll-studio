@@ -1078,6 +1078,51 @@ listens to incoming clock (`EngineLink::send_clock` is the only clock decision
 it makes, and it is a send) — so a second master on the desk is a desk problem
 that this register should name rather than a defect to chase in code.
 
+### `0x5b` stores one sound onto one track — 2026-08-28, DT2 0071
+
+§10.6 step 3, and the answer is **yes**. `0x5b` with a track index is a
+per-track sound store into the box's **active kit**, exactly as the
+response-is-request-minus-0x10 rule predicted from the working `0x6b`.
+
+- **The accepted payload is the `0x6b` payload verbatim**, 5-byte wrapper
+  included — the same relationship `store_pattern_kit`'s `0x50` has with `0x60`.
+  It worked on the first shape tried, so the *struct only* variant the probe
+  carries as its alternative has never had to run and remains untested.
+- **Verified on both witnesses.** The bytes read back as the name that was sent,
+  and the DT2's own screen showed it. That is §9's standard, and this section
+  claims nothing the screen did not also say.
+- **Restoring is the same call**: re-sending the original bytes puts the track
+  back, confirmed by re-read.
+- **Nothing was audible or destructive**, because the probe changed only the
+  16-byte name at struct +12 and carried every machine and parameter byte
+  verbatim. `examples/probe_sound_store.rs` is kept, the way
+  `probe_drive_read.rs` and `browse_drive_dn.rs` were.
+
+**The trap this probe had to be built around, and it is not the box's.** A store
+gets no reply, so the only evidence is a re-read — and if a box has MIDI thru or
+port echo on, **our own `0x5b` comes back at our input carrying the name we just
+sent**, which `fetch_kit_track_sound` cannot tell from the box answering. It
+fails in the one direction that matters: it manufactures a *positive*.
+`device.rs`'s header records this for loopback ports; a box with thru enabled is
+the same hazard on a real cable. The guard is **two reads that must agree** —
+`fetch_dump` drains before it sends, so a one-shot echo cannot be seen twice.
+Any future store probe in this namespace needs the same guard, because every one
+of them will be verified by re-reading.
+
+**A pause nothing drives is not a pause.** The first run restored the name a
+fifth of a second after storing it, so the screen witness this design rests on
+was unreachable — the run printed as though somebody had looked. The fix is
+`--hold`, and it is a **clock rather than a keypress**: these probes are launched
+through a pipe with no terminal on stdin, where `read_line` returns end-of-file
+immediately and the hold silently does not happen. Same shape as the cliclick
+note in `DEVELOPMENT.md` — a wait that nothing drives is not a wait.
+
+**Not yet tried:** the **DN2**, whose sound struct is 359 bytes against the DT2's
+1109, and which §10.1 treats as its own column. One box proving an opcode is one
+box. The **A4** cannot be tried at all — it answers no `0x6x` dump request, so it
+has no `0x6b` to mirror, and the probe skips it with that reason rather than
+silently.
+
 ## 10. The kit builder — scope, 2026-08-26
 
 Phase 14, and the first phase scoped on top of a hardware session rather than
@@ -1175,16 +1220,31 @@ which is the honest unit here — nobody wants to step back through nineteen
 auditions. The panel must say so plainly; a quiet backup policy change is worse
 than a slow one.
 
-**The probe that could make this genuinely instant.** `0x6b` returns the *active*
-kit's per-track sound for index 0–15 — a 5-byte wrapper then one sound struct,
-confirmed against Overbridge's own KIT TRACK PRESETS pane. Every store in the dump
-namespace is its request minus `0x10`, and that is exactly how `store_pattern_kit`
-sends `0x50` against request `0x60`. So **`0x5b` with a track index is the shape a
-per-track sound store would take.** It has never been sent and nothing here claims
-it works. But if it does, a double-click becomes one small message instead of a
-127 KB pattern write, the backup question largely dissolves, and audition mode gets
-cheaper than the fallback. Probe it before building the `0x50` path — a negative
-result costs an afternoon and a positive one changes the design.
+**The probe that makes this genuinely instant — run 2026-08-28, and it works.**
+`0x6b` returns the *active* kit's per-track sound for index 0–15, a 5-byte
+wrapper then one sound struct. Every store in the dump namespace is its request
+minus `0x10`, so `0x5b` with a track index was the shape a per-track sound store
+would take. **It is that store.** §9's entry is the evidence: the payload goes
+out exactly as `0x6b` returned it, the box's own screen shows the change, and
+re-sending the original bytes restores.
+
+So the load path is decided: **a double-click is one ~1 KB `0x5b`, not a 127 KB
+`0x50`.** That buys most of the problem this subsection was written about — a
+per-audition *pattern* write is what made backup-per-click ruinous, and at a
+kilobyte the ring pressure goes with it.
+
+`ElektronDevice::store_kit_track_sound` is the call, and its doc carries the
+caveat that outranks the convenience: **the active kit is a working buffer.**
+There is no `0x50` that puts one back, so what makes a load recoverable is the
+box discarding an unsaved kit when the pattern is reloaded — hardware behaviour,
+not a backup this code took. Audition mode still stands and the panel must still
+say plainly that recovery is to the state it opened in. What changed is that a
+load is now cheap, not that it is free.
+
+**Two things this does not settle.** The DN2 has never been sent an `0x5b` (359-
+byte struct against the DT2's 1109), and only the *wrapped* payload shape has
+ever been accepted — it worked first, so the struct-only alternative the probe
+carries has never run.
 
 Note also that `write_gate` keys on an OS-build allowlist, so loading is refused on
 any build not yet write-verified. That is correct and should stay; the panel needs
@@ -1219,14 +1279,18 @@ Recorded now so v2 starts from evidence:
 
 1. Probe `0x54`/`0x55`/`0x56` argument layouts against a box; derive, then parse.
 2. `ElektronDevice::drive_read_file`, read-only, guarded as `drive_list` is.
-3. Probe `0x5b` as a per-track sound store (§10.4). Decide the load path on the
-   result.
+3. ~~Probe `0x5b` as a per-track sound store (§10.4). Decide the load path on
+   the result.~~ **Done 2026-08-28, positive on a DT2** — see §9 and §10.4. The
+   load path is `0x5b`. What is left of this step is the DN2, and that is a
+   re-run of `examples/probe_sound_store.rs` against a throwaway project
+   rather than new work.
 4. The tag index: scan, persist, cancel, resume per bank.
 5. The panel — sixth rail slot, following `Sidebars`/`Tool`, worker thread and
    `mpsc` like `transfer.rs` and `sync.rs`.
 6. Load-to-track on the path step 3 chose, with audition mode and its backup.
 7. Exercise paging on a 256-entry bank.
 
-Steps 1–3 are hardware work and cannot be done from a desk without a box. Steps
-4–7 can be built against fixtures and only need a box to be believed — which is
+Steps 1–3 are hardware work and cannot be done from a desk without a box, and
+all three are now done bar the DN2 half of step 3. Steps 4–7 can be built
+against fixtures and only need a box to be believed — which is
 §9's standard, and the one this project keeps.

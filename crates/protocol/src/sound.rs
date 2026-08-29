@@ -155,6 +155,14 @@ pub fn decode_sound(bytes: &[u8], size: usize) -> Result<Sound, SoundError> {
 /// `KitSpec` to size it by, so the size has to be recovered from the bytes.
 pub const KNOWN_SOUND_SIZES: [usize; 3] = [341, 359, 1109];
 
+/// The bytes a `0x6b` kit-track-sound payload carries *before* the struct.
+///
+/// Measured on a DT2 and a DN2 on 2026-08-26: the payload is this wrapper and
+/// then one whole sound struct, head magic onward. Not interpreted — like the
+/// machine bytes above, it is carried verbatim, and it is named here only so
+/// that the offset appears once rather than as a `5` in every caller.
+pub const SOUND_WRAPPER: usize = 5;
+
 /// Decode a standalone sound dump (`0x53`) payload, whose struct size is not
 /// known up front.
 ///

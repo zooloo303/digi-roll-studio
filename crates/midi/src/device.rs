@@ -52,9 +52,11 @@ use digi_protocol::drive::{
 use digi_protocol::query::{parse_query_reply, query_args, QueryValue, API_QUERY};
 use digi_protocol::protocol::{
     build_api_message, build_dump_message, parse_sysex, API_DEVICE, API_RESPONSE, API_VERSION,
-    DUMP_PATTERN_KIT, DUMP_PATTERN_KIT_REQUEST, DUMP_PROJECT_SETTINGS,
-    DUMP_SOUND_REQUEST, DUMP_WHOLE_PROJECT_REQUEST, SysExKind,
+    DUMP_KIT_TRACK_SOUND, DUMP_KIT_TRACK_SOUND_REQUEST, DUMP_PATTERN_KIT,
+    DUMP_PATTERN_KIT_REQUEST, DUMP_PROJECT_SETTINGS, DUMP_SOUND_REQUEST,
+    DUMP_WHOLE_PROJECT_REQUEST, SysExKind,
 };
+use digi_protocol::sound::{decode_sound_dump, SOUND_WRAPPER};
 use digi_protocol::safe_write::{write_gate, PatternIo};
 
 use crate::ports::{resolve_input, resolve_output, PortBinding, CLIENT_NAME};
@@ -237,6 +239,76 @@ fn plan_store(
     // mirror worth writing here: the opcode is not a parameter, so there is
     // nothing for a guard to refuse.
     Ok(build_dump_message(family, DUMP_PATTERN_KIT, index, payload))
+}
+
+/// The number of tracks a kit addresses, and the bound on a `0x5b` index.
+///
+/// Sixteen because that is what `0x6b` answers for and nothing more: indices 0
+/// through 15 were read back on a DT2 and a DN2 and matched Overbridge's pane
+/// in order. What index 16 does is unknown, and an unknown index under a store
+/// opcode is the one experiment nobody should run by accident.
+pub const KIT_TRACKS: u8 = 16;
+
+/// Everything a per-track sound store decides before it touches a port.
+///
+/// The sibling of [`plan_store`], and deliberately its shape rather than a
+/// generalisation of it: the opcode is a constant here too, so no caller can
+/// choose which `0x5n` goes out. Same reasoning as `plan_store`'s — a guard can
+/// only refuse a parameter, so the safest store is one whose opcode is not one.
+///
+/// # This message has never been answered by a box
+///
+/// [`DUMP_KIT_TRACK_SOUND`] is derived from the response-is-request-minus-0x10
+/// rule and nothing else. It may not be a store; it may be a store of something
+/// other than a track's sound. So three things are checked before any of it
+/// reaches a cable, in the order that a wrong hypothesis would break them:
+///
+/// 1. **The firmware allowlist**, via the same [`write_gate`] `plan_store`
+///    uses. An unverified OS build is the case no backup was taken for, and
+///    that argument does not get weaker because the message is a probe.
+/// 2. **The track index**, against [`KIT_TRACKS`].
+/// 3. **That the payload contains a decodable sound struct**, at offset 0 or
+///    behind the 5-byte wrapper `0x6b` returns. The magic foot is what makes
+///    this worth doing (see [`decode_sound_dump`]): it does not validate at the
+///    wrong size, so "this is a sound" is checked rather than assumed. Sending
+///    bytes we cannot decode under an opcode we cannot predict is how a probe
+///    turns into a corrupted kit.
+fn plan_track_sound_store(
+    identity: Option<&DeviceIdentity>,
+    track: u8,
+    payload: &[u8],
+) -> Result<Vec<u8>, MidiError> {
+    let gate = write_gate(identity);
+    if !gate.ok {
+        return Err(MidiError::WriteRefused(gate.reason));
+    }
+    if track >= KIT_TRACKS {
+        return Err(MidiError::WriteRefused(format!(
+            "track {track} is outside a kit's 0-{} tracks",
+            KIT_TRACKS - 1
+        )));
+    }
+    // Either shape decodes: the wrapper is what `0x6b` hands back, and whether
+    // the store wants it is exactly what the probe is for.
+    let wrapped = payload.get(SOUND_WRAPPER..).map(decode_sound_dump);
+    if let Err(bare) = decode_sound_dump(payload) {
+        if !matches!(wrapped, Some(Ok(_))) {
+            return Err(MidiError::WriteRefused(format!(
+                "payload is not a sound struct at +0 ({bare}) or +{SOUND_WRAPPER} ({}) \
+                 — refusing to send it under a store opcode",
+                match wrapped {
+                    Some(Err(e)) => e.to_string(),
+                    _ => format!("only {} bytes", payload.len()),
+                }
+            )));
+        }
+    }
+    let family = identity.and_then(|i| i.family).ok_or_else(|| {
+        MidiError::Protocol(DeviceError::UnknownFamily(
+            identity.map(|i| i.name.clone()).unwrap_or_else(|| "this device".into()),
+        ))
+    })?;
+    Ok(build_dump_message(family, DUMP_KIT_TRACK_SOUND, track, payload))
 }
 
 /// One received SysEx frame: the bytes exactly as the box sent them.
@@ -777,6 +849,57 @@ impl ElektronDevice {
         Ok(self.fetch_dump(family, DUMP_SOUND_REQUEST, index)?.payload)
     }
 
+    /// One track's sound from the box's **active** kit (`0x6b` → `0x5b`), for
+    /// `track` in 0–15.
+    ///
+    /// Not a +Drive address and not a pool slot: this is the kit the box is
+    /// playing right now, which is why it is the only read here that changes
+    /// its answer when somebody turns a knob. Payload is
+    /// [`SOUND_WRAPPER`] bytes then one sound struct — see
+    /// [`digi_protocol::sound::decode_sound_dump`], which reads it from
+    /// `SOUND_WRAPPER` on.
+    ///
+    /// Read-only through the same `assert_request_opcode` as every other fetch.
+    pub fn fetch_kit_track_sound(&mut self, track: u8) -> Result<Vec<u8>, MidiError> {
+        let family = self.family()?;
+        Ok(self.fetch_dump(family, DUMP_KIT_TRACK_SOUND_REQUEST, track)?.payload)
+    }
+
+    /// Store one sound onto a track of the box's **active** kit — the store
+    /// `0x6b`'s existence predicts, and **the one message in this crate that
+    /// has never been answered by a box.**
+    ///
+    /// Read [`plan_track_sound_store`] before calling this; it holds the three
+    /// checks and the reasons for them. What that function cannot check is the
+    /// hypothesis itself: `0x5b` is named by arithmetic on `0x6b`, and whether
+    /// the box reads it as a per-track sound store is what
+    /// `examples/probe_sound_store.rs` exists to find out. **Until that probe
+    /// returns a positive on hardware, nothing in the app may call this** —
+    /// PLAN.md §10.6 step 3 is the decision, and §10.4 is what rides on it.
+    ///
+    /// # Why this is not `safe_write_tracks`
+    ///
+    /// It cannot be. Rule 1's ceremony is built on a slot that can be re-fetched
+    /// and restored, and the active kit is a working buffer: there is no `0x50`
+    /// that puts it back. What makes an active-kit write recoverable is the box
+    /// itself — reloading the pattern discards an unsaved kit — and that is a
+    /// property of the hardware rather than of a backup this code took. Anything
+    /// that ships on top of this has to say so plainly, which is what §10.4's
+    /// audition mode is.
+    ///
+    /// No reply comes back, exactly as for [`Self::store_pattern_kit`], so the
+    /// only way to know what happened is to read the track back.
+    pub fn store_kit_track_sound(&mut self, track: u8, payload: &[u8]) -> Result<(), MidiError> {
+        let msg = plan_track_sound_store(self.identity.as_ref(), track, payload)?;
+        let conn = &mut self.conn_out;
+        paced_send(
+            &msg,
+            SEND_CHUNK,
+            |chunk| conn.send(chunk).map_err(|e| MidiError::Send(e.to_string())),
+            sleep,
+        )
+    }
+
     /// Store a pattern-kit in a slot on the box, overwriting whatever is there.
     ///
     /// Port of `js/elektron/device.js`'s `sendPatternKit`. **Private on purpose**:
@@ -881,6 +1004,7 @@ mod tests {
     use super::*;
     use digi_protocol::device::DeviceResponse;
     use digi_protocol::protocol::{FAMILY_DIGITAKT_2, FAMILY_DIGITONE_2};
+    use digi_protocol::sound::{SOUND_MAGIC_FOOT, SOUND_MAGIC_HEAD};
 
     /// A box that answered the handshake. Product 42 is the DT2 and 43 the DN2, so
     /// the slug, name and dump family all come from the real product table rather
@@ -904,6 +1028,103 @@ mod tests {
     /// the JS's own `buildDumpMessage` under node against that fixture
     /// (`node /tmp/send-derive.mjs`, recipe in the git message).
     const DT2_STORE_BYTES: usize = 127_577;
+
+    /// A sound struct the size a DN2 uses, valid at both magics so that
+    /// `decode_sound_dump` accepts it. The bytes between are zeros: nothing in
+    /// the store path reads them, which is the point of carrying them verbatim.
+    fn sound_struct() -> Vec<u8> {
+        let mut bytes = vec![0u8; 359];
+        bytes[..4].copy_from_slice(&SOUND_MAGIC_HEAD.to_be_bytes());
+        bytes[355..].copy_from_slice(&SOUND_MAGIC_FOOT.to_be_bytes());
+        bytes
+    }
+
+    /// The same struct behind the 5-byte wrapper a `0x6b` fetch hands back.
+    fn wrapped_sound() -> Vec<u8> {
+        let mut bytes = vec![0u8; SOUND_WRAPPER];
+        bytes.extend(sound_struct());
+        bytes
+    }
+
+    // The whole reason `0x5b` gets its own planner rather than a `dump_type`
+    // argument on `plan_store`: an opcode that is not a parameter cannot be
+    // chosen wrongly. This pins that the message that goes out is the store the
+    // minus-0x10 rule predicts, addressed by track — and that it is *not* an
+    // 0x50, which would put a sound-sized payload into pattern slot `track`.
+    #[test]
+    fn a_track_sound_store_is_an_0x5b_addressed_by_track() {
+        let msg =
+            plan_track_sound_store(Some(&identity(43, "0050")), 9, &wrapped_sound()).unwrap();
+        // Header: F0, the Elektron id, family, 0x00, then opcode, version, index.
+        assert_eq!(msg[4], FAMILY_DIGITONE_2);
+        assert_eq!(msg[6], DUMP_KIT_TRACK_SOUND, "the opcode must be 0x5b");
+        assert_ne!(msg[6], DUMP_PATTERN_KIT, "and must never be the pattern-kit store");
+        assert_eq!(msg[9], 9, "index addresses the track");
+        assert_eq!(msg[6], DUMP_KIT_TRACK_SOUND_REQUEST - 0x10, "response-is-request-minus-0x10");
+    }
+
+    // Rule 1's firmware allowlist, on the probe path. The argument for it is
+    // *stronger* here than for `store_pattern_kit`, not weaker: this opcode has
+    // never been answered by any box, so an unverified OS build is two unknowns
+    // multiplied rather than one.
+    #[test]
+    fn a_track_sound_store_refuses_an_unverified_build() {
+        let err = plan_track_sound_store(Some(&identity(43, "9999")), 0, &wrapped_sound())
+            .unwrap_err();
+        assert!(
+            matches!(err, MidiError::WriteRefused(ref r) if r.contains("9999")),
+            "expected the build in the refusal, got {err:?}"
+        );
+        // And nothing was planned, so there are no bytes for a caller to send.
+        assert!(plan_track_sound_store(None, 0, &wrapped_sound()).is_err());
+    }
+
+    // Sixteen tracks, and index 16 is not a smaller mistake than index 200. An
+    // out-of-range index under an opcode whose meaning is a hypothesis is the
+    // experiment that has no recovery story, so it is refused before the gate
+    // has anything to send.
+    #[test]
+    fn a_track_sound_store_refuses_a_track_that_is_not_in_a_kit() {
+        for track in [KIT_TRACKS, 16, 100, 255] {
+            let err = plan_track_sound_store(Some(&identity(43, "0050")), track, &wrapped_sound())
+                .unwrap_err();
+            assert!(
+                matches!(err, MidiError::WriteRefused(ref r) if r.contains("outside")),
+                "track {track} should be refused, got {err:?}"
+            );
+        }
+        assert!(plan_track_sound_store(Some(&identity(43, "0050")), 15, &wrapped_sound()).is_ok());
+    }
+
+    // The check that stops a probe corrupting a kit. `decode_sound_dump` is
+    // trusted here for the reason its own doc gives — the foot magic does not
+    // validate at the wrong size — so this asserts the planner *consults* it, on
+    // both shapes, and refuses what neither accepts.
+    #[test]
+    fn a_track_sound_store_refuses_bytes_that_are_not_a_sound() {
+        let id = identity(43, "0050");
+        // Both shapes the probe may legitimately send.
+        assert!(plan_track_sound_store(Some(&id), 0, &sound_struct()).is_ok(), "bare struct");
+        assert!(plan_track_sound_store(Some(&id), 0, &wrapped_sound()).is_ok(), "wrapped struct");
+
+        // A struct whose foot magic is wrong: the head still reads, a name and a
+        // tag mask still decode, and it is still not a sound.
+        let mut broken = sound_struct();
+        broken[355] ^= 0xff;
+        let err = plan_track_sound_store(Some(&id), 0, &broken).unwrap_err();
+        assert!(
+            matches!(err, MidiError::WriteRefused(ref r) if r.contains("not a sound struct")),
+            "a bad foot must be refused, got {err:?}"
+        );
+
+        for junk in [vec![], vec![0u8; 8], vec![0xffu8; 359]] {
+            assert!(
+                plan_track_sound_store(Some(&id), 0, &junk).is_err(),
+                "{} bytes of junk must not reach a cable",
+                junk.len()
+            );
+        }
+    }
 
     // The read guard used to make this whole file incapable of writing. It no
     // longer does — `store_pattern_kit` sends an 0x50 — so what this pins now is
