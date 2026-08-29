@@ -24,14 +24,26 @@
 //!
 //! # The A4 stops the scan immediately, and that is not the same thing
 //!
-//! An A4's presets carry no foot magic, so **none** of them can be decoded (see
-//! `drive::decode_drive_preset`). Grinding through 128 slots to skip all 128 is
-//! not resilience, it is a hang with a progress bar. So the first
+//! An A4's presets do not decode (see `drive::decode_drive_preset`), so **none**
+//! of them can be indexed. Grinding through 128 slots to skip all 128 is not
+//! resilience, it is a hang with a progress bar. So the first
 //! [`DriveError::UndecodableContainer`] ends the scan with
 //! [`ScanError::BoxNotIndexable`], which is a distinct answer meaning *this box
 //! cannot be tagged at all* — the browser should list it and hide the tag grid,
 //! per §10.2. Distinguishing "this preset is odd" from "this box is not
 //! supported" is the whole reason these are two variants and not one.
+//!
+//! **What the refusal actually rests on**, corrected 2026-08-29 after the file
+//! layout was measured properly: not the missing foot magic. The A4's extent is
+//! knowable without one — its payload is 366 bytes and its container starts at
+//! byte zero of it — and in any case nothing consumes an extent, since the A4
+//! answers no `0x6x` dump request and so has no load-onto-track path at all.
+//! The real blocker is that **the tag mask at `+8` has never been calibrated
+//! against the A4's own display.** `sound::TAG_NAMES` was calibrated on a DN2,
+//! and the A4's masks differ in character from every digi capture. Indexing
+//! them would be publishing a guess about a field, which is what §9's standard
+//! exists to prevent. This variant should stop being returned when that
+//! calibration happens, and not before.
 
 use std::sync::atomic::{AtomicBool, Ordering};
 
@@ -102,6 +114,17 @@ pub struct ScanReport {
     /// Whether the caller's cancel flag ended it. The index is still valid and
     /// still worth saving — see the module doc.
     pub cancelled: bool,
+    /// Why the **first** skipped slot was skipped, in the box's or the parser's
+    /// own words.
+    ///
+    /// **Added 2026-08-29 after a scan reported "0 tagged, 388 skipped" and
+    /// nothing could be learned from it.** A count of skips answers *how many*
+    /// and never *what happened*, and at 388 of 388 the difference between "a
+    /// few odd presets" and "every read is failing" is the entire diagnosis —
+    /// which had to be reconstructed from index files on disk instead. The first
+    /// one rather than all of them because a cascade produces one cause and 388
+    /// copies of it; [`ScanReport::skipped`] already carries the multiplicity.
+    pub first_skip: Option<String>,
 }
 
 #[derive(Debug)]
@@ -161,7 +184,7 @@ pub fn scan_bank(
 
     let todo = index.missing(&slots);
     let total = todo.len() as u32;
-    let mut report = ScanReport { indexed: 0, skipped: 0, cancelled: false };
+    let mut report = ScanReport { indexed: 0, skipped: 0, cancelled: false, first_skip: None };
 
     for (n, slot) in todo.into_iter().enumerate() {
         // Checked before the read rather than after, so a cancel costs at most
@@ -192,13 +215,15 @@ pub fn scan_bank(
                 Err(why @ DriveError::UndecodableContainer { .. }) => {
                     return Err(ScanError::BoxNotIndexable { why });
                 }
-                Err(_) => {
+                Err(why) => {
                     report.skipped += 1;
+                    report.first_skip.get_or_insert_with(|| format!("{path}: {why}"));
                     None
                 }
             },
-            Err(_) => {
+            Err(why) => {
                 report.skipped += 1;
+                report.first_skip.get_or_insert_with(|| format!("{path}: {why}"));
                 None
             }
         };
@@ -373,6 +398,13 @@ mod tests {
         assert_eq!(report.skipped, 1);
         assert!(!index.entries.contains_key(&2));
         assert!(index.entries.contains_key(&6), "the scan carried on past the dead slot");
+
+        // **And it says why.** A count without a cause is what made a real
+        // "0 tagged, 388 skipped" on a DN2 impossible to read — see the field's
+        // own doc. The slot is named too, because "which one first" is the other
+        // half of the question.
+        let why = report.first_skip.expect("a skip must carry its reason");
+        assert!(why.contains("/soundbanks/A/2"), "{why}");
     }
 
     /// The A4 stops at the first preset rather than skipping all of them. A

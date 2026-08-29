@@ -1,0 +1,1570 @@
+// The +Drive preset browser: a box's whole soundbank library, searched and
+// filtered by tag.
+//
+// PLAN.md §10.6 step 5, and the first caller `preset_scan::scan_bank` has ever
+// had. Everything below this file already shipped and is tested — `drive_list`
+// → `parse_list_entries` for the names, `scan_bank` → `PresetIndex` for the
+// tags — so this file is the thread, the channel and the screen, and it holds
+// no byte offsets, no opcodes and no decode rules of its own.
+//
+// **Browse only. Nothing here loads a preset onto a track yet** — that is step
+// 6, and it is the half that writes to a box. Every wire this panel touches
+// goes through `drive::assert_read_only_file_op`, which admits List, Open, Read
+// and Close and refuses the write trio and `0x5C` Delete, so pressing anything
+// in here is the same safety class as Identify.
+//
+// ## Seven decisions
+//
+//  1. **The library is the unit, not the bank, and it opens on ALL.** The panel
+//     browsed one bank at a time until Neil put it on three boxes on
+//     2026-08-29, and the gap was immediate: the question a person actually has
+//     is *"where is there a bass patch"*, not *"what is in bank C"*. Eight
+//     banks behind a picker makes the user the search index. So the bank
+//     selector's first entry is ALL, that is the default, and a row carries the
+//     bank it came from rather than being defined by it. Per-bank stays,
+//     because a targeted rebuild of one bank is the difference between a
+//     five-second refresh and a nine-minute one — which is the reason
+//     `PresetIndex` keys by bank in the first place, and that storage decision
+//     is untouched by this. **The store is per bank; the browser is not.**
+//
+//  2. **It opens from the index, not from the box.** §10.3 promises that a
+//     second open of the panel is instant, and the only way that is true is if
+//     the first thing this panel does is read JSON files rather than a MIDI
+//     port. So the rows on screen come off disk when there is an index, and the
+//     box is asked nothing until somebody presses something. A consequence
+//     worth having on purpose: **the browser works with the box switched off**,
+//     which is when a good deal of arranging actually gets done.
+//
+//  3. **The listing and the tags are two different reads, and the panel never
+//     makes one wait for the other.** REFRESH is one round trip per bank and
+//     gives names and slots; SCAN opens and reads every preset and gives tags.
+//     §10.3's rule is that browsing must never block on tagging, so they are two
+//     buttons and the row list is drawn from whichever of the two the panel has.
+//     Tags are an overlay on rows, not a precondition for them.
+//
+//  4. **A box that cannot be tagged is a state — but the button that was
+//     pressed still has to answer.** `scan_bank` stops at the first A4 preset
+//     with `ScanError::BoxNotIndexable` rather than skipping 128 slots to find
+//     that out. Read that module's header for what the refusal actually rests
+//     on, because it is easy to get wrong and was wrong here first: **not** the
+//     missing foot magic, but the fact that the tag mask at `+8` has never been
+//     calibrated against the A4's own display — `TAG_NAMES` was calibrated on a
+//     DN2. This renders as [`Tagging::Unavailable`]: the bank still lists, the
+//     grid is gone, and there is **no retry**, because a retry cannot supply the
+//     one thing missing, which is a hardware session.
+//
+//     **What the A4 on the desk changed:** the first build expressed all of that
+//     by quietly *removing* the SCAN button, on the reasoning that a refusal
+//     belongs in the tag section as an explanation rather than on a red line
+//     under the buttons. Neil pressed SCAN on an A4 and reported that it "flashes
+//     and then the button disappears" — which is the panel answering a press by
+//     deleting the thing pressed, and reads as a bug rather than as an answer.
+//     So the state is still a state, and a [`Note::Warn`] now says so at the
+//     point of action as well. A control that vanishes is not a reply.
+//
+//  5. **The index is keyed by the box that answered, never by the row.** The
+//     store is one file per (model key, bank) and it outlives the session, so a
+//     mis-cabled desk does not merely import wrong bytes the way
+//     `ui::transfer`'s does — it writes a DT2's 148 presets into
+//     `digitone2-soundbanks-A.json` and every later session believes them. So
+//     the worker identifies first and [`mismatched_box`] refuses when the slug
+//     that answers is not the slug the row names. This is `ui::write`'s
+//     `wrong_box` rule, kept for a read, because of what the read persists.
+//
+//  6. **It follows the roll's selected box, and has no picker of its own.** §10
+//     asks for "the selected box and track", and the desk already learned on
+//     2026-08-28 what two surfaces answering one question costs: a SEND row
+//     said A02, provenance said A01, and the write landed on A01. A picker here
+//     would be a second answer to "which box" with the track lanes' selection
+//     three inches away. A job in flight still names the box it was started
+//     for, and [`PresetsPanel::poll`] enforces that rather than intending it.
+//
+//  7. **Closing the panel does not cancel the scan, and the worker is what
+//     saves — per bank, as it finishes each one.** `scan_bank`'s contract is
+//     that a cancelled scan still returns its work and a later one resumes from
+//     `BankIndex::missing`; the honest way to hold that across eight banks is to
+//     write each bank's index the moment that bank is done, so a library scan
+//     stopped at bank D keeps A, B and C whole. Nine minutes of reading must not
+//     be lost because a panel was collapsed. **Quitting the app mid-scan does
+//     lose the unsaved tail** — the thread is detached and the process does not
+//     wait for it — which is the one gap in this and is called out on screen.
+//
+// ## What has been verified, and what has not
+//
+// **On hardware, 2026-08-29:** bank select, REFRESH and SCAN on a DT2 and a DN2
+// return names and tags, and the tag filter narrows the list. The A4 lists and
+// refuses to be tagged, as designed. **Not yet:** no whole 1,189-preset library
+// has been scanned, so §10.3's timings remain arithmetic — which is why
+// [`rate_line`] reports presets-per-second and a projection from the run in
+// progress rather than from a constant.
+
+use std::collections::BTreeMap;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::mpsc::{channel, Receiver, Sender};
+use std::sync::Arc;
+use std::time::{Duration, Instant};
+
+use digi_core::device::{Device, PortRef};
+use digi_core::{DeviceId, Session};
+use digi_midi::preset_scan::{scan_bank, ScanError};
+use digi_midi::ElektronDevice;
+use digi_protocol::device::DeviceIdentity;
+use digi_protocol::drive::{parse_list_entries, ListEntry};
+use digi_protocol::preset_index::{BankIndex, PresetIndex};
+use digi_protocol::sound::TAG_NAMES;
+use eframe::egui::{self, Ui};
+
+use crate::ui::transfer::binding;
+
+/// The +Drive directory the preset banks live under. One constant rather than
+/// three literals, because the bank paths, the index keys and the worker's
+/// listing call all have to name the same place.
+pub const SOUNDBANKS: &str = "/soundbanks";
+
+/// The banks to offer before a box has been asked — **a guess, and marked as
+/// one.** §9 counted eight on both digis, so this is what the panel opens on
+/// when it is working from an index with the box switched off. The moment a
+/// listing comes back it is replaced by what the box actually said, so a box
+/// with a different shape corrects this rather than being mis-drawn by it.
+pub const DEFAULT_BANKS: [&str; 8] = ["A", "B", "C", "D", "E", "F", "G", "H"];
+
+/// One preset as a row on screen, whichever read it came from.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Row {
+    /// The bank it lives in. Carried on the row rather than implied by the view,
+    /// because the browser's default view is the whole library and a name with
+    /// no bank beside it is not an address — decision 1.
+    pub bank: String,
+    pub slot: u32,
+    pub name: String,
+    /// The struct's size in bytes. Per-preset rather than per-box: one DN2 bank
+    /// holds both 319 and 359, which is why `IndexEntry` carries it at all.
+    pub size: u32,
+    /// The tag mask, or `None` when this slot has not been scanned. `None` and
+    /// `Some(0)` are different answers — "not looked at" and "looked at, no
+    /// tags" — and a browser that showed them the same would make an unscanned
+    /// library look like a library of untagged presets.
+    pub tags: Option<u32>,
+}
+
+/// What a filter pass produced, and what it had to leave out to produce it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Filtered {
+    pub rows: Vec<Row>,
+    /// How many rows a tag filter hid **because they have no tags yet**, as
+    /// opposed to because their tags did not match. An unscanned preset cannot
+    /// be tested against a mask, and silently dropping it would make a
+    /// half-scanned library look like a fully-filtered one.
+    pub hidden_untagged: usize,
+    /// Rows before any filtering, so the panel can say "12 of 148".
+    pub total: usize,
+}
+
+/// How much of what is in view has tags, and whether it can ever have them.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Tagging {
+    /// Nothing scanned yet. The names are real and the tags are a press away.
+    NotScanned,
+    /// Some of it is tagged. `unread_banks` is the part of the count that is
+    /// **not knowable yet** — a bank nothing has listed or indexed contributes
+    /// no presets to `want`, so without this a library with one scanned bank
+    /// and seven untouched ones would read as complete.
+    Partial { have: u32, want: u32, unread_banks: usize },
+    Complete { count: u32 },
+    /// **This box's presets cannot be decoded at all** — the A4. Not a failure
+    /// of this bank or this cable, so there is no retry offered for it. See
+    /// decision 4.
+    Unavailable { why: String },
+}
+
+impl Tagging {
+    /// Whether the tag grid should be drawn. False for the one box that can
+    /// never fill it in.
+    pub fn shows_grid(&self) -> bool {
+        !matches!(self, Self::Unavailable { .. })
+    }
+
+    /// Whether offering a scan makes sense. False once everything in view is
+    /// tagged, and false for a box that cannot be indexed — the two reasons not
+    /// to press it are different and neither one is a failure.
+    pub fn offers_scan(&self) -> bool {
+        matches!(self, Self::NotScanned | Self::Partial { .. })
+    }
+
+    /// The BANK header's right-hand caption.
+    ///
+    /// **Short on purpose, and it was not on the first draft.** A section
+    /// caption sits on the header row and competes with the rule beside it, so
+    /// a whole sentence there both squeezes the rule out and — as the first
+    /// screenshot of this panel showed plainly — says almost exactly what the
+    /// TAGS section an inch below already says at length. The header states the
+    /// count; the explaining is done once, where the tags are.
+    pub fn caption(&self) -> String {
+        match self {
+            Self::NotScanned => "not scanned".into(),
+            Self::Partial { have, want, unread_banks: 0 } => format!("{have} of {want} tagged"),
+            Self::Partial { have, unread_banks, .. } => {
+                format!("{have} tagged · {unread_banks} bank(s) unread")
+            }
+            Self::Complete { count } => format!("{count} tagged"),
+            Self::Unavailable { .. } => "cannot be tagged".into(),
+        }
+    }
+}
+
+/// One bank's two reads.
+#[derive(Debug, Default, Clone)]
+pub struct BankData {
+    /// What the box's listing said, when it has been asked. `None` means the
+    /// rows below came off disk.
+    pub listing: Option<Vec<Row>>,
+    /// Last session's tags, off disk.
+    pub index: Option<BankIndex>,
+}
+
+impl BankData {
+    /// Whether this bank has been read at all, by either route.
+    fn known(&self) -> bool {
+        self.listing.is_some() || self.index.is_some()
+    }
+
+    /// How many presets this bank is believed to hold. The listing when there
+    /// is one — it is this session's truth — and the index's own recorded count
+    /// otherwise, which is the number the last scan wrote down rather than one
+    /// this session invented.
+    fn want(&self) -> u32 {
+        match (&self.listing, &self.index) {
+            (Some(rows), _) => rows.len() as u32,
+            (None, Some(index)) => index.occupied,
+            (None, None) => 0,
+        }
+    }
+}
+
+/// A box's whole soundbank library, as this panel knows it.
+///
+/// Split out of the panel so the render decision is a function of data a test
+/// can build — the panel is then a drawing of this and holds no state a test
+/// would have to reach through a `Ui` to see. Every method takes the banks in
+/// view rather than a mode, so ALL and one-bank are the same code path with a
+/// different list.
+#[derive(Debug, Default)]
+pub struct Library {
+    /// Every bank there is to pick from, guessed off [`DEFAULT_BANKS`] until the
+    /// box says otherwise.
+    pub banks: Vec<String>,
+    pub data: BTreeMap<String, BankData>,
+    /// Set when this box answered `BoxNotIndexable`. **A property of the box,
+    /// not of a bank**, which is why it lives here and not in [`BankData`]: the
+    /// A4 does not become indexable because a different bank was picked.
+    pub refused: Option<String>,
+}
+
+impl Library {
+    /// How much of `banks` carries tags.
+    pub fn tagging(&self, banks: &[String]) -> Tagging {
+        if let Some(why) = &self.refused {
+            return Tagging::Unavailable { why: why.clone() };
+        }
+        let mut have = 0u32;
+        let mut want = 0u32;
+        let mut unread_banks = 0usize;
+        for bank in banks {
+            match self.data.get(bank) {
+                Some(data) if data.known() => {
+                    have += data.index.as_ref().map(|i| i.entries.len() as u32).unwrap_or(0);
+                    want += data.want();
+                }
+                // Neither listed nor indexed: this bank's size is not merely
+                // zero, it is unknown, and the difference is what stops seven
+                // untouched banks reading as done.
+                _ => unread_banks += 1,
+            }
+        }
+        if have == 0 && unread_banks == banks.len() {
+            return Tagging::NotScanned;
+        }
+        if have == 0 {
+            return Tagging::NotScanned;
+        }
+        if unread_banks == 0 && have >= want {
+            return Tagging::Complete { count: have };
+        }
+        Tagging::Partial { have, want, unread_banks }
+    }
+
+    /// The rows to draw across `banks`, filtered by `mask` and a name substring.
+    ///
+    /// A bank's listing is its spine when there is one and its index is the
+    /// fallback, which is what makes an offline open show anything at all. A
+    /// row's *name* comes from the index when the index has one: that name and
+    /// its tag mask came out of the same read of the same file, and a row
+    /// wearing a name from the listing beside tags from the file would be the
+    /// two-reads-one-row mismatch `IndexEntry`'s own doc was written to avoid.
+    /// They have agreed in every capture taken so far.
+    pub fn filtered(&self, banks: &[String], mask: u32, search: &str) -> Filtered {
+        let needle = search.trim().to_ascii_uppercase();
+        let mut base: Vec<Row> = Vec::new();
+        for bank in banks {
+            let Some(data) = self.data.get(bank) else { continue };
+            match &data.listing {
+                Some(rows) => base.extend(rows.iter().map(|row| {
+                    let found = data.index.as_ref().and_then(|i| i.entries.get(&row.slot));
+                    Row {
+                        bank: bank.clone(),
+                        slot: row.slot,
+                        name: found.map(|e| e.name.clone()).unwrap_or_else(|| row.name.clone()),
+                        size: found.map(|e| e.size).unwrap_or(row.size),
+                        tags: found.map(|e| e.tag_mask),
+                    }
+                })),
+                None => base.extend(data.index.iter().flat_map(|i| i.entries.iter()).map(
+                    |(slot, e)| Row {
+                        bank: bank.clone(),
+                        slot: *slot,
+                        name: e.name.clone(),
+                        size: e.size,
+                        tags: Some(e.tag_mask),
+                    },
+                )),
+            }
+        }
+
+        let total = base.len();
+        let mut hidden_untagged = 0;
+        let rows = base
+            .into_iter()
+            .filter(|row| needle.is_empty() || row.name.to_ascii_uppercase().contains(&needle))
+            .filter(|row| {
+                if mask == 0 {
+                    return true;
+                }
+                match row.tags {
+                    Some(tags) => tags & mask != 0,
+                    // Not "does not match" — *cannot be asked*. Counted so the
+                    // panel can say so instead of quietly showing a short list.
+                    None => {
+                        hidden_untagged += 1;
+                        false
+                    }
+                }
+            })
+            .collect();
+        Filtered { rows, hidden_untagged, total }
+    }
+
+    /// Every tag that at least one indexed preset in `banks` carries, as
+    /// `(bit, name, count)`.
+    ///
+    /// Only the tags actually present, rather than all 32: a grid of 32 cells in
+    /// a 330px panel is four rows of noise, and most of them would be dead. The
+    /// counts come from the index, so a library half-scanned shows the tags
+    /// found so far and grows as the scan lands.
+    pub fn tag_cells(&self, banks: &[String]) -> Vec<(usize, &'static str, usize)> {
+        (0..32)
+            .filter_map(|bit| {
+                let count: usize = banks
+                    .iter()
+                    .filter_map(|b| self.data.get(b))
+                    .filter_map(|d| d.index.as_ref())
+                    .map(|i| i.entries.values().filter(|e| e.tag_mask & (1u32 << bit) != 0).count())
+                    .sum();
+                (count > 0).then_some((bit, TAG_NAMES[bit], count))
+            })
+            .collect()
+    }
+}
+
+/// The names of the tags in `mask`, for a row's tooltip.
+///
+/// Reads `TAG_NAMES` directly rather than through `Sound::tags`, because the
+/// index stores a mask and never keeps a `Sound` — which is §10.3's decision:
+/// a stored *label* rots the moment the calibration changes, and the mask
+/// cannot.
+pub fn tag_names(mask: u32) -> Vec<&'static str> {
+    (0..32).filter(|bit| mask & (1u32 << bit) != 0).map(|bit| TAG_NAMES[bit]).collect()
+}
+
+/// Why this box's +Drive cannot be read, or `None` if it can.
+///
+/// **This deliberately does not ask `Device::can_sysex`,** and that is the whole
+/// trap §10 was written around. `can_sysex` is false for the A4, because it has
+/// no `Spec` and no pattern dumps — and its +Drive was read on 2026-08-28
+/// anyway: it lists, opens and reads like the digis do. Gating a browse on the
+/// dump protocol would hide a working feature behind an unrelated capability,
+/// which is the exact shape of §9's level bug. The +Drive needs ports and
+/// nothing else.
+pub fn blocker(device: &Device) -> Option<String> {
+    match (&device.io.input, &device.io.output) {
+        (Some(_), Some(_)) => None,
+        (None, None) => Some("No ports set — pick an in and an out for this box above".into()),
+        (None, Some(_)) => Some("No in port — the +Drive's answers come back on the input".into()),
+        (Some(_), None) => Some("No out port — the request goes out on it".into()),
+    }
+}
+
+/// Why the box that answered must not be indexed as the box this row names, or
+/// `None`.
+///
+/// See decision 4: the refusal is about what the index *persists*. A slug is the
+/// index's filename, so a DT2 answering a DN2's ports would not merely be
+/// browsed wrongly once — it would leave 148 presets on disk under
+/// `digitone2-…` for every session after this one.
+pub fn mismatched_box(
+    expected: Option<&str>,
+    display: &str,
+    identity: &DeviceIdentity,
+) -> Option<String> {
+    match expected {
+        Some(slug) if slug == identity.slug => None,
+        Some(_) => Some(format!(
+            "this row is the {display} and the box on those ports says it's a {} — not reading \
+             its +Drive, because the tag index is kept on disk under the box's own name and \
+             would outlive the mistake",
+            identity.name
+        )),
+        None => Some(format!("{display} is not a box this build knows how to name an index for")),
+    }
+}
+
+/// The bank paths a `/soundbanks` listing offered, in the order the box gave
+/// them.
+///
+/// Directories only: `/soundbanks` answers in the short form, and a short-form
+/// entry is a bank while anything with a slot index would be a stray file.
+pub fn bank_paths(entries: &[ListEntry]) -> Vec<String> {
+    entries
+        .iter()
+        .filter(|e| e.is_dir && !e.name.is_empty())
+        .map(|e| format!("{SOUNDBANKS}/{}", e.name))
+        .collect()
+}
+
+/// The occupied presets in a bank listing, as rows.
+///
+/// The same three filters `preset_scan`'s `occupied_slots` applies, because the
+/// rows on screen and the slots a scan will read have to be the same set — a
+/// browser listing a preset the scan then never reaches would show a row that
+/// is permanently untagged for no visible reason.
+///
+/// Takes the bank so the row carries its own address: in the ALL view a name
+/// without a bank beside it cannot be found again.
+pub fn listing_rows(bank: &str, entries: &[ListEntry]) -> Vec<Row> {
+    entries
+        .iter()
+        .filter(|e| e.is_occupied() && e.children.is_none() && e.size.is_some_and(|s| s > 0))
+        .filter_map(|e| {
+            Some(Row {
+                bank: bank.to_string(),
+                slot: e.index?,
+                name: e.name.clone(),
+                size: e.size.unwrap_or(0),
+                tags: None,
+            })
+        })
+        .collect()
+}
+
+/// The last segment of a bank path, for a picker that has 330px to work in.
+pub fn bank_label(path: &str) -> &str {
+    path.rsplit('/').next().unwrap_or(path)
+}
+
+/// The progress line under a running scan: how far in, how fast, how much left.
+///
+/// **The rate is measured, not assumed, and that is the point of it.** §10.3's
+/// nine-minute figure is one round trip's arithmetic multiplied by 1,189, and
+/// no bank has ever been scanned against hardware — so the first real run of
+/// this panel is the measurement, and it should be readable off the screen while
+/// it happens rather than reconstructed from a stopwatch afterwards.
+///
+/// Silent about the rate until five presets are in: a projection from one round
+/// trip is a number with no information in it, and "9 hours remaining" flashing
+/// up on the first tick is worse than nothing.
+pub fn rate_line(done: u32, total: u32, elapsed: Duration) -> String {
+    let head = format!("{done} / {total}");
+    let seconds = elapsed.as_secs_f32();
+    if done < 5 || seconds <= 0.0 {
+        return head;
+    }
+    let rate = done as f32 / seconds;
+    if rate <= 0.0 {
+        return head;
+    }
+    let left = ((total.saturating_sub(done)) as f32 / rate).round() as u64;
+    format!("{head} · {rate:.1}/s · {} left", duration_words(left))
+}
+
+/// A whole number of seconds as something readable at a glance. Minutes once it
+/// is past a minute, because "413s left" is a number a person has to divide.
+fn duration_words(seconds: u64) -> String {
+    match seconds {
+        0..=59 => format!("{seconds}s"),
+        _ => {
+            let (m, s) = (seconds / 60, seconds % 60);
+            match m {
+                0..=59 => format!("{m}m {s:02}s"),
+                _ => format!("{}h {:02}m", m / 60, m % 60),
+            }
+        }
+    }
+}
+
+/// The one-line verdict a finished scan leaves on screen.
+///
+/// Takes the run's own totals rather than a `ScanReport`, because a library scan
+/// is up to eight of those and the number a person wants is what the *run* did.
+pub fn report_line(indexed: u32, skipped: u32, cancelled: bool, elapsed: Duration) -> String {
+    let took = duration_words(elapsed.as_secs());
+    let skipped = match skipped {
+        0 => String::new(),
+        n => format!(", {n} skipped"),
+    };
+    if cancelled {
+        format!(
+            "Stopped at {indexed} preset(s){skipped} after {took} — every bank that \
+             finished is saved, and SCAN picks up from here"
+        )
+    } else {
+        format!("Tagged {indexed} preset(s){skipped} in {took}")
+    }
+}
+
+// --- the worker -------------------------------------------------------------------
+
+/// What the worker says. Every error is a `String` by the time it crosses, for
+/// `ui::transfer`'s reason: five error types from four crates arrive at one
+/// label, and what matters is that each carries the box's or the protocol's own
+/// words.
+enum Event {
+    /// The listing landed, for every bank that was asked for. Carries the
+    /// identity that answered, because the index is keyed off it — decision 5 —
+    /// and the full bank list, because a bank set guessed off [`DEFAULT_BANKS`]
+    /// before the box was consulted is exactly that, and this reply is where the
+    /// box corrects it.
+    Listed {
+        model_key: String,
+        build: String,
+        banks: Vec<String>,
+        listings: Vec<(String, Vec<Row>)>,
+    },
+    /// One preset indexed. `done`/`total` are **within the current bank**, with
+    /// `bank_n`/`banks` saying where that bank sits in the run — rather than one
+    /// library-wide count, which cost eight List round trips to compute and is
+    /// what the 2026-08-29 DN2 failure came out of. See [`scan_worker`].
+    Progress {
+        done: u32,
+        total: u32,
+        bank: String,
+        bank_n: usize,
+        banks: usize,
+        name: Option<String>,
+    },
+    /// One bank finished and was written to disk. Sent per bank rather than once
+    /// at the end, so a library scan stopped at bank D leaves A, B and C on
+    /// screen as well as on disk — decision 7.
+    BankDone { bank: String, index: Box<BankIndex>, saved: Result<(), String> },
+    /// The whole run ended, completely or by cancel. `first_skip` is why the
+    /// first passed-over preset was passed over — the thing a bare count of
+    /// skips could not say.
+    Finished {
+        indexed: u32,
+        skipped: u32,
+        cancelled: bool,
+        save_error: Option<String>,
+        first_skip: Option<String>,
+    },
+    /// This box cannot be tagged at all. Its own event, not a `Failed`, because
+    /// the panel renders it as a state rather than as a fault — decision 4.
+    NotIndexable(String),
+    Failed(String),
+}
+
+/// One job in flight.
+struct Job {
+    /// The box it was started for. A scan belongs to the box that was selected
+    /// when it was pressed, not to whatever the roll is pointing at when it
+    /// lands — decision 6 — and [`PresetsPanel::poll`] enforces that rather
+    /// than leaving it as an intention.
+    device: DeviceId,
+    /// That box's name in the session, so a result arriving after the selection
+    /// has moved can say whose it was instead of appearing under the wrong one.
+    name: String,
+    /// Set when this is the long one, so the panel knows whether to offer STOP.
+    scanning: bool,
+    rx: Receiver<Event>,
+    /// Read by `scan_bank` before every preset, so a cancel costs at most one
+    /// round trip.
+    cancel: Arc<AtomicBool>,
+    started: Instant,
+    /// The last progress line's parts, for the readout: done, total, bank,
+    /// which bank of how many, and the preset just read.
+    progress: Option<(u32, u32, String, usize, usize, Option<String>)>,
+}
+
+/// Open the ports and identify, refusing a box that is not the one asked for.
+///
+/// The refusal is here, on the worker, rather than after the reply reaches the
+/// panel, so that nothing a mis-cabled desk said ever gets as far as a filename.
+fn open(
+    input: &PortRef,
+    output: &PortRef,
+    expected: Option<&str>,
+    display: &str,
+) -> Result<(ElektronDevice, DeviceIdentity), String> {
+    let mut device =
+        ElektronDevice::open(&binding(input), &binding(output)).map_err(|e| e.to_string())?;
+    let identity = device.identify().map_err(|e| e.to_string())?;
+    if let Some(why) = mismatched_box(expected, display, &identity) {
+        return Err(why);
+    }
+    Ok((device, identity))
+}
+
+/// List one directory and parse it, naming the path in any failure. Both
+/// workers need this and a listing that fails without saying *which* path
+/// failed is unhelpful in a run that touches nine of them.
+fn list(device: &mut ElektronDevice, path: &str) -> Result<Vec<ListEntry>, String> {
+    let reply = device.drive_list(path, 0, 0).map_err(|e| format!("could not list {path}: {e}"))?;
+    parse_list_entries(&reply.entry_bytes, reply.count)
+        .map_err(|e| format!("{path} did not parse: {e}"))
+}
+
+/// The listing half: the bank set, then every bank asked for.
+///
+/// `wanted` is `None` for the whole library — decision 1's default — and
+/// `Some(bank)` for a targeted refresh of one. Nine round trips against one,
+/// which is why both are offered rather than only the first.
+fn list_worker(
+    input: PortRef,
+    output: PortRef,
+    expected: Option<&'static str>,
+    display: String,
+    wanted: Option<String>,
+    events: Sender<Event>,
+) {
+    let (mut device, identity) = match open(&input, &output, expected, &display) {
+        Ok(pair) => pair,
+        Err(why) => {
+            let _ = events.send(Event::Failed(why));
+            return;
+        }
+    };
+
+    let banks = match list(&mut device, SOUNDBANKS).map(|e| bank_paths(&e)) {
+        Ok(banks) if !banks.is_empty() => banks,
+        Ok(_) => {
+            let _ = events.send(Event::Failed(format!("{SOUNDBANKS} has no banks in it")));
+            return;
+        }
+        Err(why) => {
+            let _ = events.send(Event::Failed(why));
+            return;
+        }
+    };
+
+    // A bank asked for that the box does not have is dropped rather than
+    // demanded: the request came from a guess, and the box has just corrected it.
+    let todo: Vec<String> = match wanted {
+        Some(one) if banks.contains(&one) => vec![one],
+        Some(_) | None => banks.clone(),
+    };
+
+    let mut listings = Vec::new();
+    for bank in todo {
+        match list(&mut device, &bank) {
+            Ok(entries) => listings.push((bank.clone(), listing_rows(&bank, &entries))),
+            Err(why) => {
+                let _ = events.send(Event::Failed(why));
+                return;
+            }
+        }
+    }
+
+    let _ = events.send(Event::Listed {
+        model_key: identity.slug.clone(),
+        build: identity.build.clone(),
+        banks,
+        listings,
+    });
+}
+
+/// The long half. `scan_bank` **is** the body of this — the loop, the cancel
+/// check, the skip-and-continue and the A4 stop all live there and are tested
+/// there, so what this adds is a thread, a channel, a save per bank, and the
+/// arithmetic that turns eight per-bank counts into one library-wide bar.
+#[allow(clippy::too_many_arguments)]
+fn scan_worker(
+    input: PortRef,
+    output: PortRef,
+    expected: Option<&'static str>,
+    display: String,
+    banks: Vec<String>,
+    existing: BTreeMap<String, BankIndex>,
+    // **Passed in rather than resolved here**, so the panel writes to the same
+    // place it reads from. A worker that called `default_index` itself would
+    // leave a test's injected directory readable and unwritable — which reads as
+    // "the scan found nothing" and is a fault nothing would fail on.
+    store: PresetIndex,
+    cancel: Arc<AtomicBool>,
+    events: Sender<Event>,
+) {
+    let (mut device, identity) = match open(&input, &output, expected, &display) {
+        Ok(pair) => pair,
+        Err(why) => {
+            let _ = events.send(Event::Failed(why));
+            return;
+        }
+    };
+
+    // **No pre-pass — and the reason recorded here first was wrong.**
+    //
+    // This loop used to open by asking every bank for its occupied slots, purely
+    // so the bar could show one library-wide "412 / 1189": eight extra List
+    // round trips before any read. When a DN2 run reported **0 tagged, 388
+    // skipped, in 2 seconds**, those eight Lists were the only thing that had
+    // changed in the read sequence, and this comment confidently blamed them —
+    // a stuck Open/Read/Close session cascading through every later read.
+    //
+    // **`ScanReport::first_skip` then said what actually happened**, which is
+    // why that field exists: `/soundbanks/B/205: no sound container magic in 407
+    // bytes`. The read *succeeded* — 407 bytes is exactly the length of a good
+    // DN2 preset file — and the **decode** failed. Nothing was stuck and nothing
+    // cascaded; those slots hold something this parser does not recognise, and
+    // the earlier per-bank scans skipped the very same ones (bank D indexed
+    // 1–100, skipped 101–228, then indexed 229–256 — a session that had died
+    // would never have come back).
+    //
+    // The pre-pass stays gone anyway, on its own merits rather than on that
+    // story: it bought one progress number for eight round trips, and the bank
+    // plus `(3/8)` below reads nearly as well for nothing. **A progress readout
+    // is not worth a round trip on the wire it is measuring.** But the diagnosis
+    // it was removed under was mistaken, and a comment that leaves a wrong cause
+    // standing is worse than no comment.
+    let (mut indexed, mut skipped) = (0u32, 0u32);
+    let mut save_error = None;
+    let mut cancelled = false;
+    let mut first_skip = None;
+    let banks_total = banks.len();
+
+    for (n, bank) in banks.into_iter().enumerate() {
+        if cancel.load(Ordering::Relaxed) {
+            cancelled = true;
+            break;
+        }
+
+        let progress = events.clone();
+        let label = bank.clone();
+        // An index loaded under a different build is still resumed from, not
+        // thrown away: `preset_index`'s doc records the build as a fact a caller
+        // may act on rather than as a guard, and discarding a nine-minute scan
+        // because a box was updated is the caller acting on it badly.
+        let scanned = scan_bank(
+            &mut device,
+            &identity.slug,
+            &identity.build,
+            &bank,
+            existing.get(&bank).cloned(),
+            &cancel,
+            |p| {
+                let _ = progress.send(Event::Progress {
+                    done: p.done,
+                    total: p.total,
+                    bank: label.clone(),
+                    bank_n: n + 1,
+                    banks: banks_total,
+                    name: p.name,
+                });
+            },
+        );
+
+        match scanned {
+            Ok((index, report)) => {
+                indexed += report.indexed;
+                skipped += report.skipped;
+                if first_skip.is_none() {
+                    first_skip = report.first_skip;
+                }
+                // A bank with nothing left to do returns an empty report and is
+                // not worth a disk write — `missing` was empty, so the file on
+                // disk is already what this would save.
+                if report.indexed > 0 || report.skipped > 0 {
+                    let saved = store.save(&index).map(|_| ()).map_err(|e| e.to_string());
+                    if let Err(e) = &saved {
+                        save_error = Some(e.clone());
+                    }
+                    // Written the moment this bank is done, so a library scan
+                    // stopped at D keeps A, B and C — decision 7.
+                    let _ = events.send(Event::BankDone {
+                        bank: bank.clone(),
+                        index: Box::new(index),
+                        saved,
+                    });
+                }
+                if report.cancelled {
+                    cancelled = true;
+                    break;
+                }
+            }
+            Err(ScanError::BoxNotIndexable { why }) => {
+                let _ = events.send(Event::NotIndexable(why.to_string()));
+                return;
+            }
+            Err(e) => {
+                let _ = events.send(Event::Failed(e.to_string()));
+                return;
+            }
+        }
+    }
+    let _ = events.send(Event::Finished {
+        indexed,
+        skipped,
+        cancelled,
+        save_error,
+        first_skip,
+    });
+}
+
+// --- the panel --------------------------------------------------------------------
+
+#[derive(Debug, Clone, Copy, Default)]
+pub struct Outcome {
+    pub close: bool,
+}
+
+/// Which banks the browser is showing.
+///
+/// `All` is the default, and decision 1 is why: the question is "where is there
+/// a bass patch", not "what is in bank C". `One` survives because a targeted
+/// rebuild of a single bank is the difference between a five-second refresh and
+/// a nine-minute one.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum View {
+    All,
+    One(String),
+}
+
+impl View {
+    /// The banks this view covers, given everything the box has.
+    pub fn banks(&self, all: &[String]) -> Vec<String> {
+        match self {
+            Self::All => all.to_vec(),
+            // Filtered against `all` rather than returned bare: the picker can
+            // hold a bank guessed off `DEFAULT_BANKS` that this box does not
+            // have, and a view of a bank that does not exist should be empty
+            // rather than a phantom row source.
+            Self::One(bank) => all.iter().filter(|b| *b == bank).cloned().collect(),
+        }
+    }
+
+    pub fn label(&self) -> String {
+        match self {
+            Self::All => "ALL".into(),
+            Self::One(bank) => bank_label(bank).to_string(),
+        }
+    }
+}
+
+/// The line under the buttons: what just happened, and how loudly to say it.
+enum Note {
+    /// It worked.
+    Good(String),
+    /// It did not fail, and it did not do what was asked either. **The A4's
+    /// answer** — see decision 4, and the hardware session that made this a
+    /// third variant rather than a bool.
+    Warn(String),
+    Bad(String),
+}
+
+impl Note {
+    fn text(&self) -> &str {
+        match self {
+            Self::Good(t) | Self::Warn(t) | Self::Bad(t) => t,
+        }
+    }
+
+    fn colour(&self) -> egui::Color32 {
+        match self {
+            Self::Good(_) => egui::Color32::LIGHT_GREEN,
+            Self::Warn(_) => super::CAUTION,
+            Self::Bad(_) => egui::Color32::LIGHT_RED,
+        }
+    }
+}
+
+pub struct PresetsPanel {
+    reference_visible: bool,
+    /// The box whose library is on screen, so a change of selection is something
+    /// this panel can notice rather than silently redraw under.
+    showing: Option<DeviceId>,
+    view: View,
+    library: Library,
+    /// The tag filter, as a mask — §10.3's "a bit-mask test and nothing more".
+    mask: u32,
+    search: String,
+    job: Option<Job>,
+    note: Option<Note>,
+    /// The store, held so tests can point it somewhere of their own.
+    store: Option<PresetIndex>,
+}
+
+impl Default for PresetsPanel {
+    fn default() -> Self {
+        Self {
+            reference_visible: false,
+            showing: None,
+            view: View::All,
+            library: Library {
+                banks: DEFAULT_BANKS.iter().map(|b| format!("{SOUNDBANKS}/{b}")).collect(),
+                ..Library::default()
+            },
+            mask: 0,
+            search: String::new(),
+            job: None,
+            note: None,
+            store: None,
+        }
+    }
+}
+
+impl PresetsPanel {
+    /// Point the index at a directory of the caller's choosing. Tests use it;
+    /// the app leaves it alone and gets `PresetIndex::default_index`.
+    pub fn with_store(store: PresetIndex) -> Self {
+        Self { store: Some(store), ..Self::default() }
+    }
+
+    /// Whether a read is in flight. The Setup panel's transfer and send buttons
+    /// ask, for the reason they ask each other: one desk, one person, and two
+    /// connections to one box is a state nothing here is good at.
+    pub fn busy(&self) -> bool {
+        self.job.is_some()
+    }
+
+    fn store(&self) -> Option<PresetIndex> {
+        self.store.clone().or_else(|| PresetIndex::default_index().ok())
+    }
+
+    /// Load every bank's tags off disk. **The whole of an offline open** — no
+    /// port is touched, and a library scanned in a previous session is browsable
+    /// before the box has been asked anything (decision 2), which is the only
+    /// reason §10.3's "a second open is instant" is true.
+    ///
+    /// Public because it is the one path in this panel worth asserting without a
+    /// `Ui`: it is a whole feature — searching the library with the box switched
+    /// off — reachable in one call, and the alternative is a claim in a header
+    /// comment that nothing checks.
+    pub fn load_library(&mut self, model_key: &str) -> &Library {
+        let store = self.store();
+        for bank in self.library.banks.clone() {
+            let index = store.as_ref().and_then(|s| s.load(model_key, &bank));
+            let entry = self.library.data.entry(bank).or_default();
+            entry.index = index;
+        }
+        &self.library
+    }
+
+    /// The banks the current view covers.
+    fn in_view(&self) -> Vec<String> {
+        self.view.banks(&self.library.banks)
+    }
+
+    /// Draw the panel.
+    ///
+    /// `blocked` holds the two read buttons off while the Setup panel is working
+    /// — a fetch, a write, a send or a restore. **One desk, one person, and the
+    /// hazard here is not merely two spinners:** `safe_write_tracks` is a
+    /// re-fetch, a confirm, a backup, a send and a read-back, and a scan holding
+    /// a second connection to the same box while that ceremony runs is a way to
+    /// make a write fail somewhere in the middle. Every group in Setup already
+    /// holds every other one off for this reason; this is the sixth surface
+    /// joining that rule rather than a seventh sitting outside it.
+    pub fn ui(
+        &mut self,
+        ui: &mut Ui,
+        session: &Session,
+        selected: usize,
+        blocked: bool,
+    ) -> Outcome {
+        let mut out = Outcome::default();
+        let device = session.devices.get(selected);
+
+        // **The selection is settled before the channel is drained, and the
+        // order is load-bearing.** [`Self::poll`] decides whether an answer is
+        // still for what is on screen by comparing against `showing`, so
+        // draining first would judge this frame's arrivals against last frame's
+        // box — and on the one frame the selection moves, that is exactly the
+        // frame a stale answer would be applied and then wiped by the reset
+        // below.
+        if self.showing != device.map(|d| d.id) {
+            self.showing = device.map(|d| d.id);
+            self.library = Library {
+                banks: DEFAULT_BANKS.iter().map(|b| format!("{SOUNDBANKS}/{b}")).collect(),
+                ..Library::default()
+            };
+            self.view = View::All;
+            self.mask = 0;
+            self.search.clear();
+            self.note = None;
+            if let Some(slug) = device.and_then(|d| d.model.slug) {
+                self.load_library(slug);
+            }
+        }
+        self.poll();
+        if self.job.is_some() {
+            // Nothing wakes the UI thread when a worker speaks, so keep asking
+            // while one is out — `ui::transfer`'s bargain, and at scan length it
+            // is also what keeps the progress line moving.
+            ui.ctx().request_repaint_after(Duration::from_millis(100));
+        }
+
+        let context = match device {
+            Some(d) => format!("{} · {}", d.name, self.view.label()),
+            None => String::from("no box"),
+        };
+        out.close = super::panel_title_bar(ui, "Presets", &context, &mut self.reference_visible);
+        if self.reference_visible {
+            reference_prose(ui);
+        }
+
+        let Some(device) = device else {
+            ui.weak("No boxes in this session.");
+            return out;
+        };
+
+        self.bank_section(ui, device, blocked);
+        ui.add_space(6.0);
+        self.tag_section(ui);
+        ui.add_space(6.0);
+        self.rows_section(ui);
+        out
+    }
+
+    /// The bank picker, the two reads, and whatever the last one said.
+    fn bank_section(&mut self, ui: &mut Ui, device: &Device, blocked: bool) {
+        let banks = self.in_view();
+        let tagging = self.library.tagging(&banks);
+        super::section_header(ui, "BANK", Some(&tagging.caption()));
+
+        if let Some(reason) = blocker(device) {
+            ui.weak(reason);
+            // Not a return: an index off disk is still worth browsing with the
+            // box unplugged, which is decision 2's whole point.
+        } else if blocked {
+            // Said, not left as a dead button. A greyed control with no reason
+            // beside it is the thing this codebase keeps deciding not to ship.
+            ui.weak("The Setup panel is talking to a box — reading the +Drive waits for it.");
+        }
+
+        let in_flight = self.job.is_some();
+        let mut picked = self.view.clone();
+        ui.horizontal_wrapped(|ui| {
+            egui::ComboBox::from_id_salt("preset-bank")
+                .selected_text(
+                    egui::RichText::new(self.view.label()).color(super::TEXT_DIMMER),
+                )
+                .width(56.0)
+                .show_ui(ui, |ui| {
+                    // ALL first, because it is the default and the common case —
+                    // decision 1.
+                    ui.selectable_value(&mut picked, View::All, "ALL");
+                    for bank in &self.library.banks {
+                        ui.selectable_value(
+                            &mut picked,
+                            View::One(bank.clone()),
+                            bank_label(bank),
+                        );
+                    }
+                });
+
+            let ready = !blocked && blocker(device).is_none() && !in_flight;
+            ui.add_enabled_ui(ready, |ui| {
+                if super::colored_button(
+                    ui,
+                    "REFRESH",
+                    super::CYAN_FILL,
+                    super::CYAN_TEXT,
+                    super::CYAN,
+                    super::CYAN,
+                    super::CYAN_INK,
+                )
+                .on_hover_text(
+                    "Read-only: asks the box which banks it has and what is in the ones \
+                     in view. Names and slots only — one round trip per bank, not a scan.",
+                )
+                .clicked()
+                {
+                    self.start_list(device);
+                }
+            });
+
+            if tagging.offers_scan() {
+                ui.add_enabled_ui(ready, |ui| {
+                    if super::colored_button(
+                        ui,
+                        "SCAN",
+                        super::CYAN_FILL,
+                        super::CYAN_TEXT,
+                        super::CYAN,
+                        super::CYAN,
+                        super::CYAN_INK,
+                    )
+                    .on_hover_text(
+                        "Read-only: opens and reads every preset in view to find its tags. \
+                         The whole library is minutes, not seconds — it can be stopped, and \
+                         each bank is saved as it finishes.",
+                    )
+                    .clicked()
+                    {
+                        self.start_scan(device);
+                    }
+                });
+            }
+        });
+
+        if picked != self.view {
+            self.view = picked;
+            self.note = None;
+        }
+
+        self.job_ui(ui);
+        if let Some(note) = &self.note {
+            ui.colored_label(note.colour(), note.text());
+        }
+    }
+
+    /// The running job's spinner, progress and STOP.
+    fn job_ui(&mut self, ui: &mut Ui) {
+        let Some(job) = &self.job else { return };
+        let elapsed = job.started.elapsed();
+        let scanning = job.scanning;
+        let (line, last) = match &job.progress {
+            // "C (3/8) · 142 / 236 · 4.1/s · 23s left" — the bank, where it sits
+            // in the run, and the measured rate. The elapsed clock is the whole
+            // run's, so the rate is a run rate rather than a per-bank one that
+            // restarts eight times.
+            Some((done, total, bank, bank_n, banks, name)) => (
+                format!(
+                    "{} ({bank_n}/{banks}) · {}",
+                    bank_label(bank),
+                    rate_line(*done, *total, elapsed)
+                ),
+                name.clone(),
+            ),
+            None if scanning => (String::from("reading the library…"), None),
+            None => (String::from("listing…"), None),
+        };
+        // Whose job this is, said out loud only when it is not the box on
+        // screen — decision 6's other half. A spinner with no owner beside a
+        // box that was never asked anything is the confusing case.
+        let elsewhere = (Some(job.device) != self.showing).then(|| job.name.clone());
+
+        ui.horizontal(|ui| {
+            ui.spinner();
+            ui.label(line);
+        });
+        if let Some(whose) = elsewhere {
+            ui.weak(format!("on {whose}, which is not the box selected"));
+        }
+        if let Some(name) = last {
+            ui.weak(name);
+        }
+        if scanning {
+            if ui
+                .small_button("STOP")
+                .on_hover_text(
+                    "Stop after the preset in flight. Every bank already finished is \
+                     saved, and SCAN resumes from there.",
+                )
+                .clicked()
+            {
+                // The flag `scan_bank` reads before each preset. Not a thread
+                // kill: the scan has to reach its own exit to return the index
+                // it has built, which is what makes a resume possible.
+                if let Some(job) = &self.job {
+                    job.cancel.store(true, Ordering::Relaxed);
+                }
+            }
+            super::consequence_line(
+                ui,
+                "Closing this panel does not stop the scan — it keeps reading and saves \
+                 each bank as it finishes. Quitting the app does lose the bank in progress.",
+            );
+        }
+    }
+
+    /// The tag grid: one chip per tag any preset in view carries.
+    fn tag_section(&mut self, ui: &mut Ui) {
+        let banks = self.in_view();
+        let tagging = self.library.tagging(&banks);
+        if !tagging.shows_grid() {
+            // Decision 4: the A4. Said plainly, with no retry, and the library
+            // below stays exactly as browsable as it was.
+            super::section_header(ui, "TAGS", None);
+            super::consequence_line(
+                ui,
+                "This box's tag names have never been checked against its own display, so \
+                 filtering by them would be showing you a guess. The presets still list, \
+                 and every one of them can still be browsed and searched by name.",
+            );
+            return;
+        }
+
+        let cells = self.library.tag_cells(&banks);
+        let caption = match self.mask {
+            0 => String::from("no filter"),
+            mask => tag_names(mask).join(" · "),
+        };
+        super::section_header(ui, "TAGS", Some(&caption));
+
+        if cells.is_empty() {
+            super::consequence_line(
+                ui,
+                "No tags yet. They live inside each preset file, not in the bank's listing, \
+                 so they only appear once a scan has read them.",
+            );
+            return;
+        }
+
+        ui.horizontal_wrapped(|ui| {
+            for (bit, name, count) in cells {
+                let bit_mask = 1u32 << bit;
+                let mut on = self.mask & bit_mask != 0;
+                if ui
+                    .toggle_value(&mut on, format!("{name} {count}"))
+                    .on_hover_text(format!("{count} preset(s) in view tagged {name}"))
+                    .changed()
+                {
+                    // Any of the ticked tags, not all of them — `BankIndex::matching`
+                    // is an OR, and the box's own browser reads the same way.
+                    self.mask ^= bit_mask;
+                }
+            }
+            if self.mask != 0 && ui.small_button("clear").clicked() {
+                self.mask = 0;
+            }
+        });
+
+        if let Tagging::Partial { have, want, unread_banks } = tagging {
+            let unread = match unread_banks {
+                0 => String::new(),
+                n => format!(", and {n} bank(s) have not been read at all"),
+            };
+            super::consequence_line(
+                ui,
+                &format!(
+                    "{have} of {want} read so far{unread}. This grid is what has been \
+                     found rather than what is there; SCAN picks up where it left off.",
+                ),
+            );
+        }
+    }
+
+    /// The presets themselves.
+    fn rows_section(&mut self, ui: &mut Ui) {
+        let banks = self.in_view();
+        let filtered = self.library.filtered(&banks, self.mask, &self.search);
+        let caption = format!("{} of {}", filtered.rows.len(), filtered.total);
+        super::section_header(ui, "PRESETS", Some(&caption));
+
+        ui.horizontal(|ui| {
+            ui.weak("find");
+            ui.add(
+                egui::TextEdit::singleline(&mut self.search)
+                    .hint_text("name, across every bank in view")
+                    .desired_width(ui.available_width()),
+            );
+        });
+
+        if filtered.hidden_untagged > 0 {
+            super::consequence_line(
+                ui,
+                &format!(
+                    "{} preset(s) are hidden because they have not been scanned — a tag \
+                     filter cannot ask a preset nothing has read.",
+                    filtered.hidden_untagged
+                ),
+            );
+        }
+
+        if filtered.total == 0 {
+            ui.weak(match self.view {
+                View::All => "Nothing read yet — REFRESH lists this box's banks.",
+                View::One(_) => "Nothing read yet — REFRESH lists this bank.",
+            });
+            return;
+        }
+
+        // The bank column earns its place only when more than one is in view.
+        let show_bank = matches!(self.view, View::All);
+        egui::ScrollArea::vertical().max_height(360.0).show(ui, |ui| {
+            for row in &filtered.rows {
+                ui.horizontal(|ui| {
+                    if show_bank {
+                        ui.label(
+                            egui::RichText::new(bank_label(&row.bank))
+                                .monospace()
+                                .size(10.0)
+                                .color(super::TEXT_DIMMEST),
+                        );
+                    }
+                    ui.label(
+                        egui::RichText::new(format!("{:>3}", row.slot))
+                            .monospace()
+                            .size(10.0)
+                            .color(super::TEXT_DIMMER),
+                    );
+                    let label = ui.label(
+                        egui::RichText::new(&row.name).size(11.0).color(super::TEXT_PRIMARY),
+                    );
+                    let where_it_is = format!("{}/{}", bank_label(&row.bank), row.slot);
+                    match row.tags {
+                        Some(0) => {
+                            label.on_hover_text(format!(
+                                "{where_it_is} · {} bytes · no tags",
+                                row.size
+                            ));
+                        }
+                        Some(mask) => {
+                            label.on_hover_text(format!(
+                                "{where_it_is} · {} bytes · {}",
+                                row.size,
+                                tag_names(mask).join(", ")
+                            ));
+                        }
+                        None => {
+                            label.on_hover_text(format!(
+                                "{where_it_is} · {} bytes · not scanned, so its tags are unknown",
+                                row.size
+                            ));
+                        }
+                    }
+                });
+            }
+        });
+
+        // Step 6, named rather than left as a row that mysteriously does
+        // nothing when double-clicked. A labelled gap is a decision; a missing
+        // one is a question asked again every session.
+        super::consequence_line(
+            ui,
+            "Loading a preset onto a track is not built yet. When it is, it will be one \
+             ~1 KB store to the active kit, in an audition mode that takes one backup when \
+             this panel opens rather than one per click.",
+        );
+    }
+
+    /// Put the listing job out.
+    fn start_list(&mut self, device: &Device) {
+        if self.job.is_some() {
+            return;
+        }
+        let (Some(input), Some(output)) = (device.io.input.clone(), device.io.output.clone())
+        else {
+            return;
+        };
+        self.note = None;
+        let (tx, rx) = channel();
+        let (expected, display) = (device.model.slug, device.model.display.to_string());
+        let wanted = match &self.view {
+            View::All => None,
+            View::One(bank) => Some(bank.clone()),
+        };
+        std::thread::spawn(move || {
+            list_worker(input, output, expected, display, wanted, tx);
+        });
+        self.job = Some(Job {
+            device: device.id,
+            name: device.name.clone(),
+            scanning: false,
+            rx,
+            cancel: Arc::new(AtomicBool::new(false)),
+            started: Instant::now(),
+            progress: None,
+        });
+    }
+
+    /// Put the scan out, resuming from whatever each bank's index already holds.
+    fn start_scan(&mut self, device: &Device) {
+        if self.job.is_some() {
+            return;
+        }
+        let (Some(input), Some(output)) = (device.io.input.clone(), device.io.output.clone())
+        else {
+            return;
+        };
+        let Some(store) = self.store() else {
+            self.note = Some(Note::Bad(
+                "there is nowhere to keep the tag index, so a scan would read for nothing"
+                    .into(),
+            ));
+            return;
+        };
+        self.note = None;
+        let banks = self.in_view();
+        let existing: BTreeMap<String, BankIndex> = banks
+            .iter()
+            .filter_map(|b| {
+                self.library.data.get(b).and_then(|d| d.index.clone()).map(|i| (b.clone(), i))
+            })
+            .collect();
+        let cancel = Arc::new(AtomicBool::new(false));
+        let flag = Arc::clone(&cancel);
+        let (tx, rx) = channel();
+        let (expected, display) = (device.model.slug, device.model.display.to_string());
+        std::thread::spawn(move || {
+            scan_worker(input, output, expected, display, banks, existing, store, flag, tx);
+        });
+        self.job = Some(Job {
+            device: device.id,
+            name: device.name.clone(),
+            scanning: true,
+            rx,
+            cancel,
+            started: Instant::now(),
+            progress: None,
+        });
+    }
+
+    /// Take whatever the worker has said.
+    ///
+    /// **Every arm asks whether the answer is still for what is on screen**, and
+    /// that is not a nicety. A scan is minutes long and the roll's selection is
+    /// one click away, so "the reply lands on whatever box is selected when it
+    /// arrives" is a defect with a very ordinary gesture behind it: pick a DN2,
+    /// press SCAN, click a DT2 track while you wait, and 1,189 Digitone presets
+    /// appear under the Digitakt. `ui::transfer` captures its destination at the
+    /// press for the same reason; this captures its box.
+    ///
+    /// A result for a box that has since been left is **not** thrown away — the
+    /// worker has already written each finished bank to disk, so switching back
+    /// and letting [`Self::load_library`] read it is what recovers it. What is
+    /// dropped is only this panel's copy of a view that is no longer on screen.
+    fn poll(&mut self) {
+        loop {
+            let Some(job) = &mut self.job else { return };
+            let Ok(event) = job.rx.try_recv() else { return };
+            let mine = Some(job.device) == self.showing;
+            let whose = job.name.clone();
+            let elapsed = job.started.elapsed();
+            // Prefixed when it belongs to a box that is no longer on screen: a
+            // nine-minute scan that ends in silence is worse than one that ends
+            // in a line naming whose it was.
+            let attribute =
+                |text: String| if mine { text } else { format!("{whose}: {text}") };
+
+            match event {
+                // The one event that arrives many times, so the job stays open
+                // and nothing is cloned beyond the line itself.
+                Event::Progress { done, total, bank, bank_n, banks, name } => {
+                    job.progress = Some((done, total, bank, bank_n, banks, name));
+                }
+                Event::BankDone { bank, index, saved } => {
+                    if mine {
+                        self.library.data.entry(bank).or_default().index = Some(*index);
+                    }
+                    if let Err(e) = saved {
+                        self.note = Some(Note::Bad(attribute(format!(
+                            "a bank's index could not be saved ({e}), so it will have to be \
+                             read again next time"
+                        ))));
+                    }
+                }
+                Event::Listed { model_key, build, banks, listings } => {
+                    self.job = None;
+                    if !mine {
+                        self.note = Some(Note::Good(attribute("listed".into())));
+                        return;
+                    }
+                    self.library.banks = banks;
+                    // A view pointing at a bank the box does not have is put
+                    // back to ALL rather than left showing nothing: the picker
+                    // was a guess and the box has just corrected it.
+                    if let View::One(bank) = &self.view {
+                        if !self.library.banks.contains(bank) {
+                            self.view = View::All;
+                        }
+                    }
+                    let count: usize = listings.iter().map(|(_, r)| r.len()).sum();
+                    for (bank, rows) in listings {
+                        self.library.data.entry(bank).or_default().listing = Some(rows);
+                    }
+                    self.load_library(&model_key);
+                    self.note = Some(Note::Good(format!(
+                        "{model_key} · OS build {build} · {count} preset(s)"
+                    )));
+                    return;
+                }
+                Event::Finished { indexed, skipped, cancelled, save_error, first_skip } => {
+                    self.job = None;
+                    let line = report_line(indexed, skipped, cancelled, elapsed);
+                    // **The reason rides with the count.** A bare "388 skipped"
+                    // is what made a real DN2 failure unreadable; the box's own
+                    // words about the first one are the diagnosis.
+                    let line = match &first_skip {
+                        Some(why) => format!("{line}\nfirst skip — {why}"),
+                        None => line,
+                    };
+                    self.note = Some(match (save_error, skipped > 0) {
+                        (Some(e), _) => Note::Bad(attribute(format!("{line} — but {e}"))),
+                        // Everything skipped and nothing tagged is not a
+                        // partial success, it is a failed run wearing one.
+                        (None, true) if indexed == 0 => Note::Bad(attribute(line)),
+                        (None, true) => Note::Warn(attribute(line)),
+                        (None, false) => Note::Good(attribute(line)),
+                    });
+                    return;
+                }
+                Event::NotIndexable(why) => {
+                    self.job = None;
+                    // A property of the *box*, not of a bank, so it sticks for
+                    // the session and hides the grid everywhere.
+                    //
+                    // **And it also answers out loud**, which the first build did
+                    // not do: it expressed this purely by removing the SCAN
+                    // button, and on an A4 that reads as a press deleting its own
+                    // control. Decision 4 carries the session that found it.
+                    if mine {
+                        self.library.refused = Some(why);
+                    }
+                    self.note = Some(Note::Warn(attribute(
+                        "this box's presets cannot be tagged — its tag names have never \
+                         been checked against its own display, so the browser lists them \
+                         by name instead"
+                            .into(),
+                    )));
+                    return;
+                }
+                Event::Failed(e) => {
+                    self.job = None;
+                    self.note = Some(Note::Bad(attribute(e)));
+                    return;
+                }
+            }
+        }
+    }
+}
+
+/// The `?` reveal.
+fn reference_prose(ui: &mut Ui) {
+    super::consequence_line(
+        ui,
+        "The bank picker opens on ALL, so the search box and the tag chips work across \
+         this box's whole library rather than one bank at a time. Pick a single bank when \
+         you want to re-read just that one.",
+    );
+    super::consequence_line(
+        ui,
+        "REFRESH asks the box for names and slots — one round trip per bank. SCAN opens \
+         and reads every preset to find its tags, because tags live inside each file and \
+         not in a bank's listing; on a Digitone II that is 1,189 files and it takes \
+         minutes. It can be stopped at any point, each bank is saved as it finishes, and \
+         it picks up where it left off — so opening this panel again is instant and works \
+         with the box switched off.",
+    );
+    super::consequence_line(
+        ui,
+        "Everything this panel sends is read-only: List, Open, Read and Close. It cannot \
+         write to or delete anything on the +Drive.",
+    );
+}

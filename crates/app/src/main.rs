@@ -14,6 +14,7 @@
 
 use digi_roll_studio::engine::EngineLink;
 use digi_roll_studio::ui::edit::EditPanel;
+use digi_roll_studio::ui::presets::PresetsPanel;
 use digi_roll_studio::ui::song::SongPanel;
 use digi_roll_studio::ui::generate::GeneratePanel;
 use digi_roll_studio::ui::harmony::HarmonyPanel;
@@ -85,6 +86,7 @@ struct App {
     /// scenes, ROW PLAY COUNT, ROW LENGTH and ROW MUTE, and the SONG/PATTERN
     /// mode it shares with the transport bar.
     song: SongPanel,
+    presets: PresetsPanel,
     /// Undo and redo, over the music only. `core::history` has the argument for
     /// where that line is; the shell's job is the two calls below that decide
     /// where one step ends.
@@ -263,6 +265,13 @@ impl eframe::App for App {
                     &mut self.harmony,
                     &mut self.generate,
                     &mut self.song,
+                    &mut self.presets,
+                    // One desk, one person: the +Drive browser joins the rule
+                    // the four Setup groups already hold over each other.
+                    self.transfer.busy()
+                        || self.write.busy()
+                        || self.sync.busy()
+                        || self.restore.busy(),
                     &mut self.session,
                     &mut self.engine,
                     self.selection,
@@ -298,6 +307,7 @@ impl eframe::App for App {
                     &mut self.write,
                     &mut self.sync,
                     &mut self.restore,
+                    self.presets.busy(),
                     self.selection,
                 )
             },

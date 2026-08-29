@@ -1,11 +1,16 @@
 // The left panel: one body per rail tool.
 //
-// **All five are real panels now.** Song took a fifth position on 2026-08-22
+// **All six are real panels now.** Song took a fifth position on 2026-08-22
 // with PLAN.md §6 phase 12 and is drawn by `ui::song` — the arrangement, and the
 // one panel here that reads the engine as well as the session, because a row is
 // only meaningful beside the pointer walking it.
 //
-// The four before it: Session took the rail's fourth position when
+// Presets took a sixth on 2026-08-29 with PLAN.md §10.6 step 5 and is drawn by
+// `ui::presets` — the selected box's +Drive soundbanks, and the first caller
+// `preset_scan::scan_bank` has ever had. It sits *above* Session in the rail
+// rather than below it; `ui::rail::Tool::ALL` carries why.
+//
+// The four before those: Session took the rail's fourth position when
 // banks were cut on 2026-08-18 and is drawn by `ui::session`; Edit stopped being a
 // slot in Phase 9 (`ui::edit`); Harmony in Phase 11 (`ui::harmony`); and Generate
 // — the last one, `crates/generator` having shipped its five build stages with
@@ -34,6 +39,7 @@ use crate::ui::edit::EditPanel;
 use crate::ui::generate::GeneratePanel;
 use crate::ui::harmony::HarmonyPanel;
 use crate::ui::pianoroll::PianoRoll;
+use crate::ui::presets::PresetsPanel;
 use crate::ui::rail::Tool;
 use crate::ui::session::SessionPanel;
 use crate::ui::song::SongPanel;
@@ -68,6 +74,9 @@ pub fn ui(
     harmony_panel: &mut HarmonyPanel,
     generate_panel: &mut GeneratePanel,
     song_panel: &mut SongPanel,
+    presets_panel: &mut PresetsPanel,
+    // Whether the Setup panel has a box busy — see `PresetsPanel::ui`.
+    transfers_busy: bool,
     session: &mut Session,
     engine: &mut EngineLink,
     selection: Selection,
@@ -121,6 +130,15 @@ pub fn ui(
                 edited: out.edited,
                 stepped: false,
             }
+        }
+        // The one panel here that reports nothing but its own `×`. Browsing a
+        // box's +Drive is read-only in both directions: it does not change the
+        // session, and it does not write to the box. That stops being true at
+        // §10.6 step 6, when loading a preset onto a track lands — and the
+        // `edited` this arm passes up will be the sign it has.
+        Tool::Presets => {
+            let out = presets_panel.ui(ui, session, selection.device, transfers_busy);
+            Outcome { close: out.close, reloaded: false, edited: false, stepped: false }
         }
     }
 }

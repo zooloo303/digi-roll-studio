@@ -150,6 +150,7 @@ pub mod generate;
 pub mod harmony;
 pub mod pianoroll;
 pub mod plocklane;
+pub mod presets;
 pub mod ports;
 pub mod rail;
 pub mod restore;

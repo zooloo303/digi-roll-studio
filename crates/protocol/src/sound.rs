@@ -39,16 +39,23 @@ pub const SOUND_NAME_OFFSET: usize = 12;
 
 /// The 32 tags in the +Drive browser's filter grid, in bit order.
 ///
-/// **Unverified ordering.** The mask is a `u32` and the grid has exactly 32
-/// cells, so the width is certain; which bit lights which cell is not. These
-/// names are the grid read left-to-right, top-to-bottom, and they are here to
-/// be calibrated against a box rather than trusted. [`Sound::tags`] is the only
-/// thing that reads them, and every caller of it should treat the result as a
-/// label for a bit, not as ground truth.
+/// **Calibrated on 2026-08-26, on a DN2** — this doc said "unverified ordering"
+/// until 2026-08-29 and by then it had been wrong for three days. The check was
+/// the one this comment used to ask for: DN2 pool slot 1 `BD BRASSY KICK` reads
+/// `0x04100021`, which these names decode to Kick, Percussion, Noisy, Vintage,
+/// matching the box's own display bit for bit. See PLAN.md §9.
 ///
-/// Calibrating it needs one preset whose tags are known from the device's own
-/// display, fetched and compared. Until that has happened, [`Sound::tag_mask`]
-/// is the value to store and compare on; these strings are for the eye.
+/// **Calibrated on the digis, and on nothing else.** The A4's masks differ in
+/// character from every digi capture and have never been held against that
+/// box's display, which is what `preset_scan::ScanError::BoxNotIndexable`
+/// actually rests on — see that module. So these names are ground truth for a
+/// DT2 and a DN2 and a guess for anything else, and a caller naming bits for a
+/// third box is publishing that guess.
+///
+/// [`Sound::tag_mask`] remains the value to **store and compare on**, for a
+/// reason calibration does not retire: PLAN.md §10.3's index keeps the raw mask
+/// because a stored *label* would rot the next time this array moves, and this
+/// array has moved once already.
 pub const TAG_NAMES: [&str; 32] = [
     "Kick", "Snare", "Rimshot", "Clap", "Tom", "Percussion", "Hi-Hat", "Cymbal",
     "Cowbell", "Synth", "Bass", "Lead", "Pad", "Texture", "Chord", "Sound Fx",

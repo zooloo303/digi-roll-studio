@@ -29,6 +29,13 @@
 //!     because the failure mode worth guarding is a future change that "fixes"
 //!     the A4 by relaxing the head magic and silently returns a sound of the
 //!     wrong length.
+//!
+//! A fourth was added once the layout was measured rather than assumed: every
+//! file is a **31-byte header, a payload, and a 12-byte trailer**, on all three
+//! boxes. The digis' container sits five bytes further in than the A4's because
+//! their payload opens with a `SOUND_WRAPPER`, not because their header is
+//! longer — which is what `container_offset`'s doc originally said and what one
+//! of the assertions below used to repeat.
 
 use std::path::PathBuf;
 
@@ -112,7 +119,7 @@ fn an_a4_preset_is_refused_as_the_a4_rather_than_as_corruption() {
     match decode_drive_preset(&file) {
         Err(DriveError::UndecodableContainer { magic, at }) => {
             assert_eq!(magic, A4_CONTAINER_MAGIC);
-            assert_eq!(at, 31, "the A4's header is 31 bytes where the digis' is 36");
+            assert_eq!(at, 31, "flush with the payload: the A4 has no five-byte wrapper");
         }
         other => panic!("expected UndecodableContainer, got {other:?}"),
     }
@@ -162,4 +169,74 @@ fn every_capture_either_decodes_or_is_refused_with_a_reason() {
         assert_eq!(sound.bytes.len(), expected, "{name}");
         assert!(!sound.name.is_empty(), "{name} decoded to an empty name");
     }
+}
+
+/// The file layout, measured across every capture on 2026-08-29 and pinned here
+/// because the first reading of it was wrong.
+///
+/// `container_offset`'s doc used to say the header was 36 bytes on a digi and
+/// 31 on an A4. It is **31 on all three**; the digis' container sits five bytes
+/// further in because their payload opens with the same five-byte wrapper a
+/// `0x6b` kit-track-sound payload carries. A trailer of twelve bytes closes
+/// every file: something checksum-shaped, the payload length again, and the
+/// magic `AAA1DAAA`.
+#[test]
+fn every_capture_has_a_31_byte_header_and_a_12_byte_trailer() {
+    let dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/drive");
+    let mut checked = 0;
+
+    for entry in std::fs::read_dir(&dir).expect("fixtures/drive") {
+        let path = entry.expect("dir entry").path();
+        if path.extension().and_then(|e| e.to_str()) != Some("bin") {
+            continue;
+        }
+        let file = std::fs::read(&path).expect("capture");
+        let name = path.file_name().unwrap().to_string_lossy().to_string();
+
+        let declared = digi_protocol::drive::file_declared_size(&file)
+            .unwrap_or_else(|| panic!("{name} has no declared size")) as usize;
+
+        assert_eq!(&file[file.len() - 4..], b"\xaa\xa1\xda\xaa", "{name} trailer magic");
+        let tail_len = u32::from_be_bytes(
+            file[file.len() - 8..file.len() - 4].try_into().unwrap(),
+        ) as usize;
+        assert_eq!(tail_len, declared, "{name}: the trailer repeats the payload length");
+
+        // header + payload + 12-byte trailer accounts for the whole file.
+        assert_eq!(file.len() - 12 - declared, 31, "{name}: header is 31 bytes on every box");
+
+        // And the container lands where the wrapper says it should: flush with
+        // the payload on an A4, five bytes in on a digi.
+        let at = container_offset(&file).unwrap_or_else(|| panic!("{name} has no container"));
+        let wrapper = at - 31;
+        assert!(
+            wrapper == 0 || wrapper == digi_protocol::sound::SOUND_WRAPPER,
+            "{name}: container at {at} is neither flush nor one wrapper past the header"
+        );
+        checked += 1;
+    }
+    assert_eq!(checked, 24, "all 24 captures should be covered");
+}
+
+/// **The error a 2026-08-29 DN2 scan could not be read from.** 388 presets came
+/// back as `no sound container magic in 407 bytes` — and 407 is exactly the
+/// length of a *good* DN2 preset file, so the length said nothing about what had
+/// actually arrived. The message now carries the head bytes, which is what tells
+/// "a file this parser does not know" apart from "not a file at all".
+#[test]
+fn a_file_with_no_container_says_what_it_found_instead() {
+    // A good DN2 file's own opening, with the magic removed: the exact shape the
+    // failure has to be distinguishable from.
+    let mut not_a_preset = vec![0xac, 0x11, 0xd3, 0x03, 0x02, 0x00, 0x05, 0x00];
+    not_a_preset.extend(std::iter::repeat_n(0u8, 399));
+    assert_eq!(not_a_preset.len(), 407, "the length a real DN2 preset also has");
+
+    let err = decode_drive_preset(&not_a_preset).expect_err("no magic anywhere");
+    let text = err.to_string();
+    assert!(text.contains("407"), "{text}");
+    assert!(text.contains("ac11d303"), "the head has to be in the message: {text}");
+
+    // An empty read is its own answer rather than an empty pair of brackets.
+    let err = decode_drive_preset(&[]).expect_err("nothing at all");
+    assert!(err.to_string().contains("nothing"), "{err}");
 }

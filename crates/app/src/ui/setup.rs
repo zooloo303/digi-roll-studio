@@ -162,6 +162,11 @@ pub fn ui(
     write: &mut WritePanel,
     sync: &mut SyncPanel,
     restore: &mut RestorePanel,
+    // Whether the Presets panel is reading a box's +Drive. The exclusion below
+    // has to run **both** ways: a browser that refuses while a write is out, but
+    // a write that goes ahead while a nine-minute scan is out, is not a rule —
+    // it is a rule with the dangerous half missing.
+    browsing: bool,
     selection: Selection,
 ) -> (bool, bool) {
     let close = super::panel_header(ui, "Setup");
@@ -221,7 +226,7 @@ pub fn ui(
                         ui.add_space(8.0);
                         // One transfer at a time, in any direction: each group's
                         // button is held off while any other is working.
-                        let elsewhere = write.busy() || restore.busy() || sync.busy();
+                        let elsewhere = browsing || write.busy() || restore.busy() || sync.busy();
                         changed |= transfer.ui(ui, session, engine, elsewhere);
                         ui.add_space(7.0);
                         ui.label(
@@ -278,7 +283,7 @@ pub fn ui(
                                 session,
                                 present,
                                 selection,
-                                busy || restore.busy() || sync.busy(),
+                                browsing || busy || restore.busy() || sync.busy(),
                                 engine.is_playing(),
                             );
                         } else {
@@ -286,7 +291,7 @@ pub fn ui(
                                 ui,
                                 session,
                                 present,
-                                busy || restore.busy() || write.busy(),
+                                browsing || busy || restore.busy() || write.busy(),
                                 engine.is_playing(),
                             );
                         }
@@ -296,7 +301,7 @@ pub fn ui(
             ui.add_space(10.0);
             // Disclosure rows: the two things nobody needs on every visit.
             super::disclosure_row(ui, &mut panel.backups_open, "BACKUPS", "put a slot back", |ui| {
-                restore.ui(ui, session, present, write.busy() || sync.busy() || transfer.busy(), engine.is_playing());
+                restore.ui(ui, session, present, browsing || write.busy() || sync.busy() || transfer.busy(), engine.is_playing());
             });
             super::disclosure_row(ui, &mut panel.ports_open, "BOXES & MIDI PORTS", "auto-detected", |ui| {
                 ports.ui(ui, session);

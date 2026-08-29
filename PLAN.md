@@ -917,6 +917,152 @@ What is carried forward as still owed a look:
 "present" and "usable" photograph identically, and that distinction has cost this
 project two bugs.
 
+### The Presets panel on three boxes — 2026-08-29, DT2 0071 / DN2 0050 / A4 0195
+
+Neil's session, the first time anything in §10 met hardware from inside the app.
+
+**Working:** on the DT2 and the DN2, pick a bank, REFRESH, SCAN — names and tags
+come back for that bank's presets, and the tag chips narrow the list. That is
+§10.6 steps 2, 4 and 5 confirmed end to end against two boxes.
+
+**The A4 lists and refuses to be tagged, which is the design** — REFRESH returns
+its patch names, SCAN stops at the first preset. Its tag calibration is the next
+session's work.
+
+**Two things the session changed, and neither was a bug in the protocol layer:**
+
+1. **The browser was scoped to one bank and it should never have been.** See
+   §10.6 step 5 — the picker now opens on ALL and the search crosses the library.
+2. **The A4's refusal answered by deleting its own button.** Also §10.6 step 5.
+   Worth keeping as a general note: *a control that disappears is not a reply to
+   the press that made it disappear.* The state was right and the reporting of it
+   was not, and no test could have found that — the state machine was correct.
+
+### The scan that tagged nothing — 2026-08-29, DN2 0050
+
+**`Tagged 0 preset(s), 388 skipped in 2s`**, and then, on the next run,
+**`first skip — /soundbanks/B/205: no sound container magic in 407 bytes`**.
+Recorded in full, including a wrong diagnosis, because the wrong one is the
+instructive part.
+
+**The arithmetic, from the index files:** DN2 banks A (256/256), E (162/162) and
+H (3/3) were complete; B held 204 of 256, C held 48 of 256, D held 128 of 256.
+801 tagged, 1,189 occupied, **388 missing — and 388 skipped.** `scan_bank`
+selected exactly the right work and every read of it was passed over.
+
+**The wrong answer, believed for one round.** A pre-pass added the same day asked
+all eight banks for their slots before reading anything, to show one library-wide
+count — eight extra List round trips, and the only change to the read sequence
+between scans that had worked and one that did not. `drive_read_file` is
+Open/Read/Close with no recovery, so a failed Open never Closes and every later
+read fails: a tidy cascade that explained "zero successes" perfectly. It was
+wrong.
+
+**What it actually is.** 407 bytes is *exactly* the length of a good DN2 preset
+file — every committed capture is 407 with `BEEFBACE` at offset 36. So the read
+**succeeded** and the **decode** failed: those slots hold something this parser
+does not recognise. The per-bank scan history says the same thing and had done
+all along — bank D indexed 1–100, skipped 101–228, then indexed **229–256**. A
+box whose transfer session had died does not come back for the last 28.
+
+**Two things this leaves, and one of them is the real defect:**
+
+- **Open: what is in those 388 files.** They are the right size and carry no
+  container magic. A contiguous run of them, in three banks, on a box whose other
+  801 presets decode cleanly. `DriveError::NoContainer` now carries the head
+  bytes, so the next run says what it found instead of only how much of it there
+  was — every good file opens `ac11d303 02000500 …`, and whether these do is the
+  whole question.
+- **Closed: a skip that could not be read.** `ScanReport` counted skips and
+  discarded every reason, so 388 of them said nothing, and the first diagnosis
+  had to be reconstructed by parsing index files with Python — which produced a
+  confident wrong answer. `first_skip` carries the box's own words, the panel
+  prints them under the count, and **a run that tags nothing is red rather than
+  amber**: everything skipped is a failed run wearing a partial success. The
+  lesson is not about presets. **A count of failures is not a diagnosis, and an
+  error that reports only a magnitude will be guessed at.** Both fixes landed
+  before the cause was known, and the second one is what found it.
+
+Two smaller things the same session settled: a bank with nothing left to do no
+longer rewrites its index file, and DN2 banks F and G hold no presets, so the
+1,189 live in six banks and not eight.
+
+### The Presets panel on a screen — 2026-08-29, two shots
+
+Taken with the `Sidebars::default` flip, and with a real index seeded from the
+committed captures through `PresetIndex` so the populated state was the app's own
+read path rather than a mock. **Closed by looking:**
+
+- **The rail draws six rows** — Edit, Harmony, Generate, Song, Presets, Session
+  — with Presets marked by the cyan left border and no clipping at 86px. The
+  placement decision reads correctly: the composing tools run together and
+  Session stays at the foot.
+- **Both empty states draw** at the pinned 330px, and the buttons behave: SCAN
+  is offered on an unscanned bank and **gone** on a complete one, which is
+  `Tagging::offers_scan` doing its job where it can be seen.
+- **The tag chips wrap onto two rows rather than clipping** — eight of them at
+  330px, `Percussion 1 … Soft 1`.
+- **`BLÅ LOFI BASS`, `BLÅ MEOW`, `BLÅ SQ CHIP` and `BLÅ VIND` render with their
+  Å**. The Windows-1252 fix of the same date had never been seen on a screen;
+  the whole point of that bug was that only a file with an `Å` in its name could
+  show it, and this is that file drawn in the app.
+
+**And one thing the shot found that no test would have.** The BANK header's
+caption was the whole sentence `No tags yet — SCAN reads every preset in this
+bank`, which squeezed out the section rule and said very nearly what the TAGS
+section says an inch below. Split: `Tagging::caption` is the count for the header
+(`not scanned`, `8 tagged`, `412 of 1189 tagged`) and the explaining happens once,
+in the section that is about tags. This is `DEVELOPMENT.md` lesson 8 paying for
+itself again — a green suite and duplicated prose photograph identically.
+
+**A second, unlooked-for result: the tag calibration is corroborated on a DT2.**
+§9 calibrated `TAG_NAMES` against one DN2 preset's display. The eight DT2
+captures decode, through those same names, to `BLUE HH` → Hi-Hat, `BAM BASS` →
+Bass, `BAM TICK` → Percussion, `ACIDD` → Synth, `BLÅ MEOW` → Sound Fx and `BLÅ
+VIND` → Texture, Noisy, Soft. Eight for eight semantically, on a second box, from
+files nobody chose for this purpose. Not a calibration against a display and so
+not a replacement for one — but it is exactly the check a wrong bit order would
+have failed, and it did not.
+
+### Still not verified on a screen — the Presets panel, 2026-08-29
+
+What the two shots could not reach, itemised so it cannot be closed by a sweep:
+
+- **The preset list's `ScrollArea` at its 360px cap against a bank of 256.** The
+  shot had eight rows.
+- **The tag chips as controls.** They drew, and nothing hovered or clicked one:
+  an unselected `toggle_value` at rest looks like a label in this style, so
+  whether a chip reads as pressable — and what a *selected* one looks like — is
+  unanswered. The filtered state, and the "N hidden because they have not been
+  scanned" line with it, has never been on screen.
+- **A half-scanned bank**, which is the only state that draws the partial line
+  under the grid.
+- **The whole ALL view as it now stands.** The two shots above were taken of the
+  one-bank browser, before Neil's session rescoped it, so the bank column on each
+  row, the ALL entry at the top of the picker, and the `N bank(s) unread` caption
+  have never been drawn. The findings those shots *did* close — six rail rows, the
+  chips wrapping, `BLÅ` rendering — are unaffected, because none of them moved.
+- **The A4's state**, which is the one that must not read as a fault: the tag
+  grid gone, the bank still listing, no retry button, and the explanation
+  saying *why* — the tag bits have never been checked against that box's display
+  — rather than something that sounds like a broken cable.
+- **A scan running**, on hardware: the progress line moving per preset, STOP
+  taking effect within one round trip, and the note it leaves saying the work was
+  kept. Also the panel **closed** mid-scan and reopened, which is the path where
+  the worker's own save is the only thing that keeps nine minutes of reading.
+- **A selection change mid-scan.** Press SCAN on a DN2, click a DT2 track, and
+  the DN2's presets must not appear under the DT2. This is guarded in `poll` and
+  the guard has never been exercised by a hand.
+- **The two panels holding each other off**: SCAN greyed with its reason while
+  Setup is sending, and OUT greyed while a scan runs. Both are one-line
+  conditions and neither has been seen refusing anything.
+
+**And the measurement, which is the reason to do this early rather than last:**
+no bank of 1,189 has ever been scanned against a box. §10.3's nine minutes is
+arithmetic. The panel's rate readout is built to answer it in one run, and until
+that run happens the cancel/resume design is justified by a number nobody has
+seen.
+
 **Feature requests from users**
 - transpose track
 - clicking on the piano itself should sound that midi note
@@ -1198,7 +1344,47 @@ works on both digis and, again, not on the A4.
 | A4 | 31 | `BEEFBABA` | 5 | **no foot** | 409 |
 
 Every file is `declared + 43` bytes on all three boxes, declared being the size
-at +27 — so the 43-byte tail is a constant worth naming and is not yet read.
+at +27.
+
+### The 43 bytes, and a correction — 2026-08-29, same captures
+
+The line above was as far as measuring got the first time, and reading it as
+"a 43-byte tail" was wrong. The 43 splits, and the split is the same on all 24
+files:
+
+```text
+  31-byte header | payload (= declared) | 12-byte trailer
+                                           crc?  len  AAA1DAAA
+```
+
+**The header is 31 bytes on every box, not 36 on the digis and 31 on the A4.**
+That is what §10.2 and `container_offset`'s doc both said, and it was an
+inference from where the container landed rather than a measurement. What
+actually differs is that **the digis' payload opens with the five-byte
+`SOUND_WRAPPER`** — the same wrapper a `0x6b` kit-track-sound payload carries in
+front of its struct — and the A4's does not. So the container is flush with the
+payload on an A4 and five bytes into it on a digi.
+
+The trailer repeats the payload length as a u32 and closes with `AAA1DAAA`.
+The four bytes before that are checksum-shaped and are **not** a zlib crc32 of
+the payload under a zero seed, which was the obvious guess given the read path's
+crc32 is zero-seeded. Unidentified, and nothing needs it yet.
+
+`every_capture_has_a_31_byte_header_and_a_12_byte_trailer` pins all of this
+across all 24 files, so the next reading of it is a measurement too.
+
+**Why this matters beyond tidiness: it dissolves the A4's extent problem.** Its
+payload is 366 bytes and its container starts at byte zero of that payload, so
+the struct is the declared length and needs no foot magic to find. §10.2 had
+this filed as an open reverse-engineering question with no timeline; it is not
+one.
+
+**And then it turns out nothing needs the answer.** An extent buys the ability
+to splice a sound into a kit slot, and **the A4 answers no `0x6x` dump request
+at all** — no `0x6b`, so no `0x5b`, so no load-onto-track path exists for it in
+this codebase regardless of what its files look like. The extent was never on
+the critical path; it only looked like it was because the foot check is what
+`decode_sound` happens to be built around.
 
 **Tag masks came back populated and varied** (`0x00902000`, `0x04880804`,
 `0x0400c088`), which is what §10.3's index needs and the reason the captures
@@ -1240,7 +1426,7 @@ both do. That is the trap §9's level bug already sprang once.
 
 | step | protocol | what is missing |
 |---|---|---|
-| browse | List, read and the container layer all ship, verified on all three boxes | a tag index; the A4 decodes not at all |
+| browse | List, read, the container layer, the tag index and the panel all ship | nothing on a screen, and no bank scanned against a box |
 | load | `0x5b` per-track sound store, hardware-verified on both digis | the panel and audition mode; the A4 has no path at all |
 | save | nothing | everything, plus a widened write guard |
 
@@ -1271,12 +1457,25 @@ the fourth thing is the one that stayed open:
 - **The A4 is refused by name**, `DriveError::UndecodableContainer`, rather than
   falling out as a `BadHead` that reads like corruption.
 
-**The open question, and it is not small: the A4 has no foot magic at all.** Not
-once in any of eight files, which `no_a4_capture_contains_a_foot_magic_anywhere`
-asserts directly so that a firmware which starts emitting one is a failing test
-rather than a discovery nobody makes. The foot is what lets `decode_sound` trust
-a size, so the A4 needs its extent established some other way — the `+4` word,
-the 43-byte tail, or a capture of Transfer reading one.
+**The A4 has no foot magic at all** — not once in any of eight files, which
+`no_a4_capture_contains_a_foot_magic_anywhere` asserts directly so that a
+firmware which starts emitting one is a failing test rather than a discovery
+nobody makes. The foot is what lets `decode_sound` trust a size.
+
+**This was filed as an open reverse-engineering problem and it is not one.**
+Measuring the layout (§9, same date) gives the A4's extent for free: its payload
+is 366 bytes and its container starts at byte zero of it. And nothing consumes
+an extent anyway — the A4 has no `0x6b`, so no `0x5b`, so no load-onto-track
+path at all.
+
+**The real blocker is one afternoon of calibration.** `sound::TAG_NAMES` was
+calibrated on a DN2, and the A4's masks differ in character from every digi
+capture — low bits set, which no digi file shows. Indexing them would publish a
+guess about a field, which is exactly what §9's standard exists to stop. The
+recipe is `digitone2-tagged-sounds-2026-08-01.syx`'s, pointed at an A4: tag
+known sounds from the box's own display in a known pattern, capture, compare.
+`ScanError::BoxNotIndexable` should stop being returned when that happens and
+not before.
 
 **The trap that shaped the API, and it is worth naming.** The obvious fix was to
 let the head magic vary, since `container_offset` already accepts both. That
@@ -1332,6 +1531,16 @@ this section had left open:
 - **A bank path is filtered before it becomes a filename.** A +Drive path is
   data from a box, and a box that answered with a `..` in a directory name must
   not get to choose where this crate writes.
+
+**The timings are still unmeasured, and the panel is now the instrument.** Every
+figure in this section is one round trip's arithmetic multiplied by 1,189. So the
+progress line reports **presets per second and a projection from the run in
+progress** rather than from a constant, and it stays silent until five presets are
+in — a projection from one round trip carries no information, and "9 hours left"
+on the first tick is worse than nothing. The first real scan of a DN2 bank is
+therefore the measurement, readable off the screen while it happens instead of
+reconstructed from a stopwatch afterwards. That run wants a box on the desk and
+has not happened.
 
 `scan_bank` takes a `PresetSource` trait rather than an `ElektronDevice`, so
 cancel, resume, skip-and-continue and the A4 stop are *tested* rather than
@@ -1439,12 +1648,75 @@ Recorded now so v2 starts from evidence:
 4. ~~The tag index: scan, persist, cancel, resume per bank.~~ **Done
    2026-08-29** — `preset_index.rs` persists one file per (device, bank) and
    `preset_scan.rs` fills it, cancellable per slot and resuming from what the
-   index lacks. Fourteen tests, driven through the committed captures. **No
-   caller yet**: wiring it to a panel is step 5, so nothing has scanned a whole
-   1,189-preset bank against hardware and the timing claims here are still
-   arithmetic rather than measurement.
-5. The panel — sixth rail slot, following `Sidebars`/`Tool`, worker thread and
-   `mpsc` like `transfer.rs` and `sync.rs`.
+   index lacks. Fourteen tests, driven through the committed captures. **It has
+   a caller as of step 5** — and still no hardware run: nothing has scanned a
+   whole 1,189-preset bank against a box, so the timing claims here remain
+   arithmetic. The panel is built to *measure* rather than restate them; see
+   below.
+5. ~~The panel — sixth rail slot, following `Sidebars`/`Tool`, worker thread and
+   `mpsc` like `transfer.rs` and `sync.rs`.~~ **Built 2026-08-29**, `ui/presets.rs`,
+   fifth in the rail rather than sixth — above Session, because Session is the
+   file panel and has been the last row since banks were cut. `scan_bank` is the
+   worker's body unchanged; what the panel adds is a thread, a channel, an
+   `AtomicBool` and a screen. Twenty-six tests, none of which needs a box, and
+   two screenshots — see §9. Seven things the panel settled that this section had left open:
+
+   - **It opens from the index, not from the box.** §10.3 promises a second open
+     is instant, and the only way that is true is if the first thing the panel
+     touches is a JSON file rather than a MIDI port. The consequence is worth
+     having on purpose: **the browser works with the box switched off**, which
+     is when a good deal of arranging actually happens. REFRESH and SCAN are the
+     only two things that open a port, and they are two buttons because they are
+     two reads — one round trip against up to 1,189 — which is how "browsing must
+     never block on tagging" stops being a rule somebody has to remember.
+   - **The index is keyed by the box that answered, and the refusal is stricter
+     here than in `ui::transfer`.** A mis-cabled fetch imports wrong bytes into
+     a session slot; a mis-cabled *scan* writes a DT2's 148 presets into
+     `digitone2-soundbanks-A.json`, where every later session believes them. The
+     store outlives the mistake, so the worker identifies before it lists.
+   - **A result belongs to the box it was asked for, and that needed enforcing
+     rather than intending.** A scan is minutes and the roll's selection is one
+     click away: pick a DN2, press SCAN, click a DT2 track while waiting, and
+     1,189 Digitone presets land under the Digitakt. `poll` compares against the
+     box on screen, and the selection is settled *before* the channel is drained
+     — on the one frame the selection moves, the other order applies a stale
+     answer and then wipes it.
+   - **The library is the browsing unit, not the bank** — added the same day
+     after Neil put the panel on three boxes. The first build had a bank picker
+     and nothing else, and the gap was immediate: the question a person has is
+     *"where is there a bass patch"*, not *"what is in bank C"*, and eight banks
+     behind a picker makes the user the search index. The picker now opens on
+     **ALL**, the search box and the tag chips work across every bank at once,
+     and a row carries the bank it came from because a name without an address
+     cannot be acted on. Per-bank survives for a targeted rebuild — five seconds
+     against nine minutes — which is the same reason `PresetIndex` keys by bank.
+     **The store is per bank; the browser is not**, and that split is the whole
+     change: not one line of `preset_index.rs` or `preset_scan.rs` moved.
+
+     The trap it introduced, and the test that pins it: one scanned bank beside
+     seven untouched ones reported *complete* — every preset it knew about was
+     tagged — and took the SCAN button away with it, in exactly the state that
+     most needs it. `Tagging::Partial` therefore counts `unread_banks`
+     separately, because a bank nothing has listed or indexed has an **unknown**
+     size rather than a zero one.
+   - **A control that vanishes is not a reply.** The A4's refusal was expressed
+     purely by removing the SCAN button, on the reasoning that the explanation
+     belongs in the tag section. Neil pressed SCAN on an A4 and reported that it
+     "flashes and then the button disappears" — a press answered by deleting the
+     thing pressed, which reads as a bug. The state is still a state; a
+     `Note::Warn` now says so at the point of action as well.
+   - **The one-desk rule now has a sixth surface, and it runs both ways.** The
+     four Setup groups already hold each other off; a browser that refused while
+     a write was out but let a write start during a nine-minute scan would be
+     the rule with its dangerous half missing. `safe_write_tracks` is a
+     re-fetch, a confirm, a backup, a send and a read-back, and a second
+     connection held open across that ceremony is a way to fail it in the
+     middle. `PresetsPanel::busy` blocks Setup and Setup blocks the panel.
+   - **`sound::TAG_NAMES` still said "unverified ordering"**, three days after
+     §9 calibrated it against a DN2's own display. The panel puts those names in
+     front of a user as fact, so the doc was corrected — and with the distinction
+     the A4 makes necessary: calibrated on the digis, a guess on anything else,
+     which is what `BoxNotIndexable` actually rests on.
 6. Load-to-track on the path step 3 chose, with audition mode and its backup.
 7. Exercise paging on a 256-entry bank.
 

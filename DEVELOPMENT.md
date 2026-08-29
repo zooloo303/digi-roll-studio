@@ -492,6 +492,47 @@ special case usually wants a missing field.
 
 ---
 
+### 11. A count of failures is not a diagnosis, and one will be guessed at
+
+The Presets panel's first library scan on a DN2 reported **`Tagged 0 preset(s),
+388 skipped in 2s`** and nothing else. `ScanReport` counted skips and discarded
+every reason, so 388 of them said exactly as much as one would have.
+
+What followed is the part worth keeping. The only way to learn anything was to
+parse the on-disk index files with Python — 801 tagged of 1,189 occupied, missing
+exactly 388, spread across three banks. From that, a tidy story: a pre-pass added
+the same day made eight extra List round trips before any read, `drive_read_file`
+is Open/Read/Close with no recovery, so a failed Open never Closes and every later
+read fails. It explained "zero successes" perfectly, it was the only thing that
+had changed, and **it was wrong.**
+
+Adding `ScanReport::first_skip` took ten minutes and the next run said
+`/soundbanks/B/205: no sound container magic in 407 bytes`. The read had
+*succeeded* — 407 bytes is exactly the length of a good DN2 preset file — and the
+**decode** had failed. Nothing was stuck and nothing cascaded. The disproof had
+even been in the data all along: bank D indexed 1–100, skipped 101–228, then
+indexed **229–256**, and a dead transfer session does not come back for the last
+28. It was read as a cascade because a cascade was already in mind.
+
+Three things this leaves:
+
+- **An error that reports only a magnitude will be guessed at**, and the guess
+  will be confident, because a plausible mechanism plus a correlation in time
+  feels like evidence. The cost is not the wrong theory; it is that the wrong
+  theory gets *acted* on — a working feature was removed on it.
+- **The cheapest fix was the diagnostic one.** Carrying the first failure's own
+  words cost a struct field, and it settled in one run what an afternoon of
+  inference had got backwards. Build it before the investigation, not after.
+- **`407` is the trap in miniature.** The number was in the message from the
+  start and looked like a fault, when it was the one length that proved the read
+  had worked. `DriveError::NoContainer` now carries the head bytes too: a size
+  that is also the correct size describes nothing.
+
+Same shape as lesson 8's "present and usable photograph identically", one layer
+down — here it was *failed* and *failed for this reason*.
+
+---
+
 ## Rules that are not up for renegotiation
 
 Full list in `PLAN.md` §7. The five that govern anything touching a box:

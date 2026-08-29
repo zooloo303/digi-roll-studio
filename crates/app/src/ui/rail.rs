@@ -19,12 +19,18 @@ pub enum Tool {
     Harmony,
     Generate,
     Song,
+    Presets,
     Session,
 }
 
 impl Tool {
-    pub const ALL: [Self; 5] =
-        [Self::Edit, Self::Harmony, Self::Generate, Self::Song, Self::Session];
+    // **Presets sits fifth, above Session, and not at the bottom.** The rail is
+    // in workflow order and Session is the file panel — save and open — which
+    // has been the last row since banks were cut. A browser you pick sounds
+    // from belongs with the things you compose with, not below the thing you
+    // close the session with.
+    pub const ALL: [Self; 6] =
+        [Self::Edit, Self::Harmony, Self::Generate, Self::Song, Self::Presets, Self::Session];
 
     pub fn title(self) -> &'static str {
         match self {
@@ -32,6 +38,7 @@ impl Tool {
             Self::Harmony => "Harmony",
             Self::Generate => "Generate",
             Self::Song => "Song",
+            Self::Presets => "Presets",
             Self::Session => "Session",
         }
     }
@@ -43,6 +50,7 @@ impl Tool {
             Self::Harmony => "Key and scale, scale-tinted rows, chord draw, and a chord under everything selected",
             Self::Generate => "Bass, chords, lead and a kick/snare/hat kit, generated to agree with each other",
             Self::Song => "The arrangement: rows of scenes, played in order",
+            Self::Presets => "The selected box's +Drive soundbanks, by bank, filtered by tag",
             Self::Session => "Save and open the session file",
         }
     }
@@ -264,10 +272,11 @@ pub fn ui(ui: &mut Ui, bars: &mut Sidebars) {
 
 #[cfg(test)]
 mod tests {
-    /// How many rail rows open a panel — Edit, Harmony, Generate, Song, Session.
+    /// How many rail rows open a panel — Edit, Harmony, Generate, Song,
+    /// Presets, Session.
     /// One number rather than a literal in each test, so the next tool added
     /// moves it once and both assertions below keep meaning what they say.
-    const PANEL_TOOLS: usize = 5;
+    const PANEL_TOOLS: usize = 6;
 
     use super::*;
 

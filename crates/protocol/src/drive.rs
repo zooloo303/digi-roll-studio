@@ -118,7 +118,15 @@ pub enum DriveError {
     TransferComplete,
     /// No sound container magic anywhere in the file — so this is not a preset
     /// file, or not one this parser recognises at all.
-    NoContainer { len: usize },
+    ///
+    /// **Carries the head bytes, and that was learned the hard way.** On
+    /// 2026-08-29 a DN2 scan reported `no sound container magic in 407 bytes`
+    /// for 388 presets — and 407 is *exactly* the length of a good DN2 preset
+    /// file, so the length alone said nothing at all about what had arrived.
+    /// Every working capture starts `ac11d303 02000500 …` with the magic at 36;
+    /// printing the first bytes is the difference between "a file this parser
+    /// does not know" and "not a file at all", and it costs nothing to carry.
+    NoContainer { len: usize, head: String },
     /// A container this crate can find but cannot decode. In practice this is
     /// the **A4**, whose [`A4_CONTAINER_MAGIC`] container carries no foot magic
     /// and therefore no discoverable length. Named rather than folded into a
@@ -168,9 +176,10 @@ impl std::fmt::Display for DriveError {
             DriveError::TransferComplete => {
                 write!(f, "the box says the transfer is already complete")
             }
-            DriveError::NoContainer { len } => write!(
+            DriveError::NoContainer { len, head } => write!(
                 f,
-                "no sound container magic in {len} bytes — this is not a preset file"
+                "no sound container magic in {len} bytes — this is not a preset file \
+                 (starts {head})"
             ),
             DriveError::UndecodableContainer { magic, at } => write!(
                 f,
@@ -982,10 +991,26 @@ pub fn file_declared_size(file: &[u8]) -> Option<u16> {
 /// Where the sound container starts inside a file, found by its magic rather
 /// than by a fixed header length.
 ///
-/// **A constant would be wrong.** The header is 36 bytes on a DT2 and a DN2 and
-/// 31 on an A4, and the A4's container magic is `BEEFBABA` where the digis'
-/// is `BEEFBACE` — so both the offset and the magic vary by box, and the only
-/// thing that does not is that the container announces itself.
+/// **A constant would be wrong**, though not for the reason first recorded. The
+/// container sits at 36 on a DT2 and a DN2 and at 31 on an A4, and the original
+/// note here read that as two different header lengths. Measuring all 24
+/// captures on 2026-08-29 says otherwise:
+///
+/// ```text
+///   31-byte header | payload (= file_declared_size) | 12-byte trailer
+///                                                     crc?  len  AAA1DAAA
+/// ```
+///
+/// **The header is 31 bytes on all three boxes.** The digis' container is five
+/// bytes further in because their payload opens with a five-byte wrapper — the
+/// same [`crate::sound::SOUND_WRAPPER`] that a `0x6b` kit-track-sound payload
+/// carries in front of its struct. The A4 has no wrapper, so its container is
+/// flush with the start of its payload.
+///
+/// So the offset still must not be a constant, but what varies is the presence
+/// of a wrapper rather than the size of a header — and the magic still varies
+/// too, `BEEFBACE` against `BEEFBABA`. Searching for the magic covers both
+/// without needing to know which box answered.
 pub fn container_offset(file: &[u8]) -> Option<usize> {
     file.windows(4).position(|w| {
         w == [0xbe, 0xef, 0xba, 0xce] || w == [0xbe, 0xef, 0xba, 0xba]
@@ -1019,6 +1044,19 @@ fn struct_size(body: &[u8]) -> Option<usize> {
         .map(|(at, _)| at + 4)
 }
 
+/// The first bytes of a file, as hex, for an error that has to describe
+/// something it could not parse.
+///
+/// Sixteen bytes: enough to show the 36-byte head's opening — every good capture
+/// begins `ac11d303 02000500 0f303035 30…`, the box's own build string included —
+/// and short enough to sit in a one-line message on a 330px panel.
+fn head_hex(file: &[u8]) -> String {
+    if file.is_empty() {
+        return String::from("nothing");
+    }
+    file.iter().take(16).map(|b| format!("{b:02x}")).collect::<Vec<_>>().join("")
+}
+
 /// Decode a whole +Drive preset file into the [`Sound`] it contains.
 ///
 /// This is the container layer PLAN.md §10.2 is about, and the thing standing
@@ -1034,18 +1072,32 @@ fn struct_size(body: &[u8]) -> Option<usize> {
 ///
 /// Its container announces itself with [`A4_CONTAINER_MAGIC`] and **carries no
 /// foot magic at all** — not once in any of the eight files captured on
-/// 2026-08-29. [`decode_sound`] leans on the foot to make a size safe, so there
-/// is no honest way to decode an A4 preset yet and this returns
-/// [`DriveError::UndecodableContainer`] rather than guessing an extent.
+/// 2026-08-29. [`decode_sound`] leans on the foot to make a size safe, so this
+/// returns [`DriveError::UndecodableContainer`] rather than guessing an extent.
 ///
 /// The tempting fix was to let the head magic vary, since [`container_offset`]
 /// already accepts both. That would have produced a `Sound` with a plausible
 /// name, a plausible tag mask and a wrong length — the exact failure the foot
-/// check exists to prevent. A browser can still *list* an A4's +Drive; it
-/// cannot tag it, and §10.2 says to ship that rather than block two boxes on
-/// the third.
+/// check exists to prevent.
+///
+/// **The extent is not actually the blocker, though, and saying so was a
+/// mis-framing worth correcting.** Once the file layout was measured properly
+/// (see [`container_offset`]) the A4's extent became obvious: its payload is
+/// 366 bytes and its container starts at byte zero of that payload, so the
+/// struct is the declared length and needs no foot to find. What makes that
+/// uninteresting is that **nothing consumes it** — the A4 answers no `0x6x`
+/// dump request, so it has no `0x6b`, no `0x5b`, and no load-onto-track path in
+/// this codebase at all. Knowing how long its sound struct is buys nothing.
+///
+/// What genuinely blocks an A4 here is narrower and fixable: **the tag mask at
+/// `+8` has never been calibrated against the A4's own display.** `TAG_NAMES`
+/// was calibrated on a DN2, and the A4's masks differ in character from every
+/// digi capture — low bits set, which no digi file shows. Reading them would be
+/// guessing at a field, which is the one thing §9 exists to stop. Calibrating
+/// it is the `digitone2-tagged-sounds-2026-08-01.syx` recipe pointed at an A4.
 pub fn decode_drive_preset(file: &[u8]) -> Result<Sound, DriveError> {
-    let at = container_offset(file).ok_or(DriveError::NoContainer { len: file.len() })?;
+    let at = container_offset(file)
+        .ok_or_else(|| DriveError::NoContainer { len: file.len(), head: head_hex(file) })?;
     let body = &file[at..];
     let magic = u32::from_be_bytes([body[0], body[1], body[2], body[3]]);
     if magic != SOUND_MAGIC_HEAD {
