@@ -97,6 +97,24 @@ pub enum DriveError {
     UnknownEntryForm { at: usize, found: u8 },
     /// The entry walk did not yield the count the reply header declared.
     EntryCountMismatch { expected: u32, got: u32 },
+    /// The box refused a file operation and said why. The message is the
+    /// device's own — "Invalid sequence number", "Reader did not complete",
+    /// "File transfer is not active" — and is carried verbatim because it has
+    /// been more useful than anything this end could infer.
+    DeviceRefused { what: &'static str, message: String },
+    /// A read assembled a different number of bytes than the box said it sent.
+    ShortRead { expected: u32, got: usize },
+    /// A chunk arrived under a sequence number the reader did not ask for.
+    /// Assembling it would produce a plausible, wrong file.
+    SequenceOutOfOrder { expected: u32, got: u32 },
+    /// The box says the file has already been delivered in full.
+    ///
+    /// **This is an end-of-file, not a fault**, and it is a distinct variant so
+    /// that a reader can match on the type rather than on English. Reading past
+    /// the last chunk is refused rather than answered with an empty one, which
+    /// is the opposite of what this crate first assumed — see
+    /// [`END_OF_TRANSFER`].
+    TransferComplete,
 }
 
 impl std::fmt::Display for DriveError {
@@ -127,6 +145,21 @@ impl std::fmt::Display for DriveError {
             DriveError::NotABooleanByte { at, found } => write!(
                 f,
                 "locked byte at {at} is {found}, not 0 or 1 — entry layout is not as expected"
+            ),
+            DriveError::DeviceRefused { what, message } => {
+                write!(f, "the box refused {what}: {message}")
+            }
+            DriveError::TransferComplete => {
+                write!(f, "the box says the transfer is already complete")
+            }
+            DriveError::ShortRead { expected, got } => write!(
+                f,
+                "the box reported sending {expected} bytes and {got} were assembled \
+                 — the file is incomplete, refusing it"
+            ),
+            DriveError::SequenceOutOfOrder { expected, got } => write!(
+                f,
+                "asked for chunk {expected} and got {got} — refusing to assemble out of order"
             ),
         }
     }
@@ -706,5 +739,363 @@ mod list_entry_tests {
             parse_list_entries(&bytes, 1),
             Err(DriveError::UnknownEntryForm { found: 7, .. })
         ));
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Reading a file: 0x54 Open, 0x55 Read, 0x56 Close
+// ---------------------------------------------------------------------------
+//
+// The source document names these three and specifies the argument layout of
+// none of them — only List's body is written down. Everything below was derived
+// by `crates/app/examples/probe_drive_read.rs` against a DT2 (0071/1.15C), a DN2
+// (0050/1.10E) and an A4 (0195/1.55B) on 2026-08-28, and each claim is the same
+// answer from all three boxes unless it says otherwise.
+//
+// # What the probe settled, and what it cost to learn
+//
+// **Read addresses a chunk by sequence number, not by byte offset.** elk-herd's
+// gen-1 `0x32` FileRead takes `(fd, len, start)`; sending that shape here is
+// refused with the box's own words, `Invalid sequence number`. That is the one
+// place the renumbered API genuinely differs from the gen-1 one rather than
+// being it with new opcodes, and the document's wording was right.
+//
+// **`seq = 0` is not the first chunk.** It answers with a zero-length body and a
+// differently-shaped header, so it is metadata. A file starts at `seq = 1`.
+//
+// **The chunk size is negotiable, and the default is 16 bytes.** A path-only
+// Open answers `chunk = 16`; a path followed by a `u32be` answers with the size
+// asked for. Sixteen bytes is 27,000 round trips for one DN2 bank, so
+// [`READ_CHUNK`] is not an optimisation.
+//
+// **A box runs one transfer job at a time.** A second Open voids the first, and
+// the first `fd` then answers `File transfer is not active`. Nothing here may
+// interleave two reads on one device.
+//
+// **The reader is a state machine.** Close refuses with `Reader did not
+// complete` until the read has reached the end of the file — so an abandoned
+// read has to be finished or the job is stuck, and a successful Close is
+// evidence the read was whole.
+
+/// The chunk size to ask Open for. Large enough that every preset seen so far
+/// arrives in one Read, which keeps a bank scan to one round trip per file.
+pub const READ_CHUNK: u32 = 4096;
+
+/// The chunk size a path-only Open selects. Recorded because it is the cost of
+/// forgetting the argument, not because anything should use it.
+pub const DEFAULT_CHUNK: u32 = 16;
+
+/// Where a Read reply's data begins. `ok(1) fd(4) seq(4) …(4) pad(1) …(4) len(4)`.
+const READ_DATA_OFFSET: usize = 22;
+
+/// A file's own header, which every box writes identically ahead of the
+/// container: magic, the OS build that wrote it, and the payload size.
+pub const FILE_MAGIC: u32 = 0xAC11_D303;
+
+/// Where the payload size sits in that header, as a `u16be`. Confirmed on three
+/// boxes against three different sizes — 1114, 364 and 366 — each of which is
+/// also what the directory listing declared for the same file.
+pub const FILE_SIZE_OFFSET: usize = 27;
+
+/// Build the body of a `0x54` Open: a NUL-terminated path, then an optional
+/// `u32be` chunk size.
+///
+/// Pass a chunk. The trailing word is optional to the box and not to anything
+/// that cares how long a bank takes — see [`DEFAULT_CHUNK`].
+pub fn open_request_args(path: &str, chunk: Option<u32>) -> Result<Vec<u8>, DriveError> {
+    if !path.is_ascii() || path.contains('\0') {
+        return Err(DriveError::UnsendablePath(path.to_string()));
+    }
+    let mut args = path.as_bytes().to_vec();
+    args.push(0);
+    if let Some(chunk) = chunk {
+        args.extend_from_slice(&chunk.to_be_bytes());
+    }
+    Ok(args)
+}
+
+/// Build the body of a `0x55` Read: the `fd` Open handed back, then the chunk's
+/// sequence number. **Sequence numbers start at 1** — see the section header.
+pub fn read_request_args(fd: u32, seq: u32) -> Vec<u8> {
+    let mut args = fd.to_be_bytes().to_vec();
+    args.extend_from_slice(&seq.to_be_bytes());
+    args
+}
+
+/// Build the body of a `0x56` Close: the `fd`, alone.
+pub fn close_request_args(fd: u32) -> Vec<u8> {
+    fd.to_be_bytes().to_vec()
+}
+
+/// A decoded `0x54` Open reply.
+#[derive(Debug, Clone, PartialEq)]
+pub struct OpenReply {
+    /// The handle every later Read and the Close must carry.
+    pub fd: u32,
+    /// The chunk size the box actually chose, which is not necessarily the one
+    /// asked for and is the number a reader should page by.
+    pub chunk: u32,
+}
+
+/// A decoded `0x55` Read reply.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ReadReply {
+    pub fd: u32,
+    /// The sequence number echoed back. Checked by the reader: a chunk arriving
+    /// under the wrong number would assemble a plausible, wrong file.
+    pub seq: u32,
+    pub data: Vec<u8>,
+    /// Two `u32be` fields that are in every Read reply and are **not
+    /// identified**, kept rather than skipped so a later session has them.
+    ///
+    /// The document says a read reports one checksum per chunk, `crc32` seeded
+    /// with zero rather than all-ones. Neither field is that: measured against
+    /// the chunk's own bytes, under both seeds, at every offset in the header,
+    /// nothing matched. So the checksum is either over something other than the
+    /// plain chunk bytes or it is not here at all, and calling either field
+    /// `checksum` would be a guess wearing a name.
+    pub unidentified: [u32; 2],
+}
+
+/// A decoded `0x56` Close reply. The total length is the box's own count of
+/// what it sent, and the reader compares it against what it assembled.
+#[derive(Debug, Clone, PartialEq)]
+pub struct CloseReply {
+    pub fd: u32,
+    pub total_len: u32,
+}
+
+/// The leading `ok` byte and, on a refusal, the NUL-terminated message the box
+/// supplies with it — "Invalid sequence number", "Reader did not complete",
+/// "File transfer is not active", all seen.
+///
+/// Every reply in this family starts this way, and the message is worth
+/// surfacing verbatim: it has been more informative than anything this end
+/// could infer.
+/// The box's word for "you have already had the whole file".
+///
+/// **Matching on this string is not a shortcut, it is the only signal there
+/// is.** A read past the end is refused rather than answered with a zero-length
+/// chunk, so there is no length, flag or empty body to terminate on — the first
+/// version of this reader waited for an empty chunk and every read failed on
+/// hardware while its unit tests passed. The string is confined to this one
+/// place and turned into [`DriveError::TransferComplete`] immediately, so no
+/// caller ever compares it.
+pub const END_OF_TRANSFER: &str = "File transfer is complete";
+
+fn check_ok(args: &[u8], what: &'static str) -> Result<(), DriveError> {
+    match args.first() {
+        Some(0x01) => Ok(()),
+        Some(_) => {
+            let text: Vec<u8> = args[1..].iter().copied().take_while(|&b| b != 0).collect();
+            let message = String::from_utf8_lossy(&text).into_owned();
+            if message == END_OF_TRANSFER {
+                return Err(DriveError::TransferComplete);
+            }
+            Err(DriveError::DeviceRefused { what, message })
+        }
+        None => Err(DriveError::TruncatedEntry { at: 0, need: 1, got: 0 }),
+    }
+}
+
+fn need_u32(args: &[u8], at: usize) -> Result<u32, DriveError> {
+    args.get(at..at + 4)
+        .map(|s| u32::from_be_bytes([s[0], s[1], s[2], s[3]]))
+        .ok_or(DriveError::TruncatedEntry { at, need: at + 4, got: args.len() })
+}
+
+/// Parse a `0x54` Open reply.
+pub fn parse_open_reply(args: &[u8]) -> Result<OpenReply, DriveError> {
+    check_ok(args, "Open")?;
+    Ok(OpenReply { fd: need_u32(args, 1)?, chunk: need_u32(args, 5)? })
+}
+
+/// Parse a `0x55` Read reply, data included.
+pub fn parse_read_reply(args: &[u8]) -> Result<ReadReply, DriveError> {
+    check_ok(args, "Read")?;
+    let fd = need_u32(args, 1)?;
+    let seq = need_u32(args, 5)?;
+    let a = need_u32(args, 9)?;
+    let b = need_u32(args, 14)?;
+    let len = need_u32(args, 18)? as usize;
+    let data = args
+        .get(READ_DATA_OFFSET..READ_DATA_OFFSET + len)
+        .ok_or(DriveError::TruncatedEntry {
+            at: READ_DATA_OFFSET,
+            need: READ_DATA_OFFSET + len,
+            got: args.len(),
+        })?
+        .to_vec();
+    Ok(ReadReply { fd, seq, data, unidentified: [a, b] })
+}
+
+/// Parse a `0x56` Close reply.
+pub fn parse_close_reply(args: &[u8]) -> Result<CloseReply, DriveError> {
+    check_ok(args, "Close")?;
+    Ok(CloseReply { fd: need_u32(args, 1)?, total_len: need_u32(args, 5)? })
+}
+
+/// The payload size a file declares in its own header, which should agree with
+/// the size the directory listing gave for it.
+///
+/// Worth checking rather than trusting one of the two: they come from different
+/// places in the box, and a disagreement means this parser is reading a file it
+/// does not understand.
+pub fn file_declared_size(file: &[u8]) -> Option<u16> {
+    if need_u32(file, 0).ok()? != FILE_MAGIC {
+        return None;
+    }
+    file.get(FILE_SIZE_OFFSET..FILE_SIZE_OFFSET + 2).map(|s| u16::from_be_bytes([s[0], s[1]]))
+}
+
+/// Where the sound container starts inside a file, found by its magic rather
+/// than by a fixed header length.
+///
+/// **A constant would be wrong.** The header is 36 bytes on a DT2 and a DN2 and
+/// 31 on an A4, and the A4's container magic is `BEEFBABA` where the digis'
+/// is `BEEFBACE` — so both the offset and the magic vary by box, and the only
+/// thing that does not is that the container announces itself.
+pub fn container_offset(file: &[u8]) -> Option<usize> {
+    file.windows(4).position(|w| {
+        w == [0xbe, 0xef, 0xba, 0xce] || w == [0xbe, 0xef, 0xba, 0xba]
+    })
+}
+
+#[cfg(test)]
+mod file_read_tests {
+    use super::*;
+
+    // Every reply below is a verbatim capture from `probe_drive_read` on
+    // 2026-08-28 — a DT2 (0071/1.15C) and a DN2 (0050/1.10E). None of them
+    // carries a preset name: the Read capture's payload is the file's own
+    // header, which holds the OS build and nothing a user wrote. That is
+    // deliberate, and it is the same care the source document took when it
+    // withheld a populated listing.
+
+    fn hex(s: &str) -> Vec<u8> {
+        s.split_whitespace().map(|b| u8::from_str_radix(b, 16).unwrap()).collect()
+    }
+
+    #[test]
+    fn open_reports_the_chunk_size_it_chose() {
+        // Asked for 4096 and agreed to it.
+        let reply = parse_open_reply(&hex("01 00 00 00 05 00 00 10 00 00")).unwrap();
+        assert_eq!(reply, OpenReply { fd: 5, chunk: 4096 });
+    }
+
+    #[test]
+    fn a_path_only_open_selects_sixteen_bytes() {
+        // The reason `open_request_args` takes a chunk and callers pass one: a
+        // DN2 bank is 1,189 files, and at 16 bytes a file that is 27,000 round
+        // trips rather than 1,189.
+        let reply = parse_open_reply(&hex("01 00 00 00 01 00 00 00 10 00")).unwrap();
+        assert_eq!(reply, OpenReply { fd: 1, chunk: DEFAULT_CHUNK });
+    }
+
+    #[test]
+    fn read_carries_its_sequence_number_and_its_chunk() {
+        let reply = parse_read_reply(&hex(
+            "01 00 00 00 02 00 00 00 01 00 00 00 69 00 6d 94 b9 ac 00 00 00 10 \
+             ac 11 d3 03 02 00 05 00 0f 30 30 35 30 00 00 00",
+        ))
+        .unwrap();
+        assert_eq!(reply.fd, 2);
+        assert_eq!(reply.seq, 1);
+        assert_eq!(reply.data.len(), 16);
+        // The chunk is the front of the file, so it opens with the file magic
+        // and carries the DN2's OS build as ASCII.
+        assert_eq!(u32::from_be_bytes([reply.data[0], reply.data[1], reply.data[2], reply.data[3]]), FILE_MAGIC);
+        assert_eq!(&reply.data[9..13], b"0050");
+        // Kept, not understood — see the field's docs.
+        assert_eq!(reply.unidentified, [0x69, 0x6d94_b9ac]);
+    }
+
+    #[test]
+    fn close_reports_the_length_it_sent() {
+        let reply = parse_close_reply(&hex("01 00 00 00 1a 00 00 04 85")).unwrap();
+        assert_eq!(reply, CloseReply { fd: 26, total_len: 1157 });
+    }
+
+    #[test]
+    fn a_refusal_carries_the_boxs_own_words() {
+        // The two refusals this API answers with, both earned: the first by
+        // sending elk-herd's (fd, len, start) instead of (fd, seq), the second
+        // by closing a reader that had not reached the end of the file.
+        let mut invalid_seq = vec![0x00];
+        invalid_seq.extend_from_slice(b"Invalid sequence number\0");
+        assert!(matches!(
+            parse_read_reply(&invalid_seq),
+            Err(DriveError::DeviceRefused { what: "Read", ref message })
+                if message == "Invalid sequence number"
+        ));
+
+        let mut not_complete = vec![0x00];
+        not_complete.extend_from_slice(b"Reader did not complete\0");
+        assert!(matches!(
+            parse_close_reply(&not_complete),
+            Err(DriveError::DeviceRefused { what: "Close", ref message })
+                if message == "Reader did not complete"
+        ));
+    }
+
+    #[test]
+    fn reading_past_the_end_is_an_end_of_file_and_not_a_fault() {
+        // The bug this test exists for: the reader waited for a zero-length
+        // chunk that a box never sends. Its unit tests passed and every read
+        // failed on hardware — `DEVELOPMENT.md` lesson 1, and the cheapest
+        // possible version of it, since the box says exactly what is wrong.
+        let mut complete = vec![0x00];
+        complete.extend_from_slice(END_OF_TRANSFER.as_bytes());
+        complete.push(0);
+        assert!(matches!(parse_read_reply(&complete), Err(DriveError::TransferComplete)));
+
+        // And it stays distinguishable from the other refusal with "complete"
+        // in it, which is a real failure and must not read as an end of file.
+        let mut not_complete = vec![0x00];
+        not_complete.extend_from_slice(b"Reader did not complete\0");
+        assert!(matches!(
+            parse_close_reply(&not_complete),
+            Err(DriveError::DeviceRefused { .. })
+        ));
+    }
+
+    #[test]
+    fn the_request_bodies_are_what_the_box_accepted() {
+        assert_eq!(open_request_args("/soundbanks/A/1", None).unwrap(), b"/soundbanks/A/1\0");
+        assert_eq!(
+            open_request_args("/kits/A/1", Some(4096)).unwrap(),
+            [b"/kits/A/1\0".as_slice(), &[0, 0, 0x10, 0]].concat()
+        );
+        assert_eq!(read_request_args(2, 1), hex("00 00 00 02 00 00 00 01"));
+        assert_eq!(close_request_args(26), hex("00 00 00 1a"));
+    }
+
+    #[test]
+    fn a_file_declares_its_own_payload_size() {
+        // A real DT2 file header, container magic onwards trimmed off. The
+        // listing said 1114 bytes for the same file, and the two agreeing is
+        // the check — they come from different places in the box.
+        let header = hex(
+            "ac 11 d3 03 02 00 04 00 10 30 30 37 31 00 00 00 03 00 00 00 \
+             00 00 00 00 00 00 00 04 5a 00 0c 00 00 00 00 00",
+        );
+        assert_eq!(file_declared_size(&header), Some(1114));
+        // Not a +Drive file at all: no magic, no answer.
+        assert_eq!(file_declared_size(&[0; 36]), None);
+    }
+
+    #[test]
+    fn the_container_is_found_by_its_magic_and_both_magics_count() {
+        // 36 on the digis, 31 on the A4 — and the A4's magic is BEEFBABA. A
+        // constant header length would be right twice and wrong once.
+        let mut digi = vec![0u8; 36];
+        digi.extend_from_slice(&[0xbe, 0xef, 0xba, 0xce, 0x00]);
+        assert_eq!(container_offset(&digi), Some(36));
+
+        let mut a4 = vec![0u8; 31];
+        a4.extend_from_slice(&[0xbe, 0xef, 0xba, 0xba, 0x00]);
+        assert_eq!(container_offset(&a4), Some(31));
+
+        assert_eq!(container_offset(&[0u8; 64]), None);
     }
 }

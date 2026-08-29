@@ -45,7 +45,9 @@ use digi_protocol::device::{
 };
 use digi_protocol::drive::{
     assert_read_only_file_op, dir_list_args, list_request_args, parse_dir_list,
-    parse_list_reply, DirEntry, ListReply, API_DIR_LIST, API_FILE_LIST,
+    close_request_args, open_request_args, parse_close_reply, parse_list_reply,
+    parse_open_reply, parse_read_reply, read_request_args, DirEntry, DriveError, ListReply,
+    API_DIR_LIST, API_FILE_CLOSE, API_FILE_LIST, API_FILE_OPEN, API_FILE_READ, READ_CHUNK,
 };
 use digi_protocol::query::{parse_query_reply, query_args, QueryValue, API_QUERY};
 use digi_protocol::protocol::{
@@ -64,6 +66,17 @@ const REQUEST_TIMEOUT: Duration = Duration::from_millis(5000);
 const REQUEST_RETRIES: u32 = 2;
 /// Max silence between messages of a dump stream.
 const DUMP_STALL: Duration = Duration::from_millis(5000);
+
+/// A +Drive file read starts at chunk **1**, not 0. `seq = 0` is answered with
+/// a zero-length body and a differently-shaped header — it is metadata, and
+/// treating it as the first chunk ends the read before it starts.
+const FIRST_CHUNK_SEQ: u32 = 1;
+
+/// A backstop on the read loop, which is terminated by the box saying "nothing
+/// more" rather than by a length this end knows. At `READ_CHUNK` this is far
+/// larger than any +Drive file; it exists so a box that never says stop costs a
+/// bounded error instead of an unbounded loop.
+const MAX_CHUNKS: u32 = 4096;
 
 /// **A single `midir` send cannot carry a whole pattern-kit dump, and failing at
 /// it is silent.** Measured on this Mac against a virtual port, 2026-08-18:
@@ -575,6 +588,177 @@ impl ElektronDevice {
             .map_err(|e| MidiError::Send(e.to_string()))?;
         let reply = self.request(API_FILE_LIST, &args)?;
         parse_list_reply(&reply).map_err(|e| MidiError::Send(e.to_string()))
+    }
+
+    /// Send one read-only file-API opcode with caller-supplied argument bytes,
+    /// and hand the reply body back **undecoded**.
+    ///
+    /// This exists because `0x54` Open, `0x55` Read and `0x56` Close are named
+    /// by the source document and their argument layouts are not — only List's
+    /// body is written down. So the layout has to be derived from a real reply
+    /// before a parser can be written, and deriving it needs a way to put bytes
+    /// on the wire and see bytes come back. `browse_drive_dn.rs` did exactly
+    /// this for the entry layout; `probe_drive_read.rs` is its counterpart here.
+    ///
+    /// **Read-only, by the same guard and not by a weaker one.** `api_id` goes
+    /// through [`assert_read_only_file_op`], which admits List/Open/Read/Close
+    /// and nothing else — so this cannot send `0x57`/`0x58`/`0x59` WriteOpen/
+    /// Write/WriteClose, `0x5A` Move, `0x5B` Copy or `0x5C` **Delete**, however
+    /// it is called. The argument bytes are free; the opcode is not, and the
+    /// opcode is what decides whether a +Drive changes.
+    ///
+    /// Prefer a named method once a layout is known. A raw primitive is the
+    /// right tool for one session and the wrong one for a caller in the app.
+    pub fn drive_file_request(&mut self, api_id: u8, args: &[u8]) -> Result<Vec<u8>, MidiError> {
+        assert_read_only_file_op(api_id).map_err(|e| MidiError::Send(e.to_string()))?;
+        self.request(api_id, args)
+    }
+
+    /// Read one whole file off the +Drive: `0x54` Open, `0x55` Read until the
+    /// end, `0x56` Close. Returns the file's bytes, header and all.
+    ///
+    /// Read-only, and by the same guard as [`Self::drive_list`] rather than a
+    /// weaker one — every opcode goes through [`assert_read_only_file_op`], so
+    /// no path through this function can send `0x57`/`0x58`/`0x59`, `0x5A`,
+    /// `0x5B` or `0x5C` **Delete**.
+    ///
+    /// # What this checks, and why each check is here
+    ///
+    /// A read that half-works is the failure this API makes easy: the box
+    /// answers each Read independently, so a dropped chunk yields a shorter
+    /// file rather than an error. Three things guard against believing one.
+    ///
+    /// * **The sequence number is checked on every chunk**, not assumed. A
+    ///   chunk under the wrong number would assemble a plausible, wrong file.
+    /// * **Close is the completion signal.** It refuses with "Reader did not
+    ///   complete" until the read reaches the end, so a Close that succeeds is
+    ///   the box agreeing the file was read whole — which is worth more than
+    ///   this end's own count.
+    /// * **The box's total is compared with what was assembled.** Close reports
+    ///   the length it sent; a disagreement is [`DriveError::ShortRead`] and the
+    ///   bytes are refused rather than returned.
+    ///
+    /// A box runs **one transfer job at a time** — a second Open voids the
+    /// first — so two of these cannot be interleaved on one device. `&mut self`
+    /// is what enforces that, and it is not incidental.
+    pub fn drive_read_file(&mut self, path: &str) -> Result<Vec<u8>, MidiError> {
+        let drive_err = |e: DriveError| MidiError::Send(e.to_string());
+
+        assert_read_only_file_op(API_FILE_OPEN).map_err(drive_err)?;
+        let args = open_request_args(path, Some(READ_CHUNK)).map_err(drive_err)?;
+        let open = parse_open_reply(&self.request(API_FILE_OPEN, &args)?).map_err(drive_err)?;
+
+        // Read to the end. The loop ends on an empty chunk rather than on a
+        // computed count: the file's length is not known here — the listing has
+        // it and this function deliberately does not take it — so the box's own
+        // "nothing more" is the terminator.
+        assert_read_only_file_op(API_FILE_READ).map_err(drive_err)?;
+        let mut file: Vec<u8> = Vec::new();
+        let mut seq: u32 = FIRST_CHUNK_SEQ;
+        loop {
+            let args = read_request_args(open.fd, seq);
+            let reply = match parse_read_reply(&self.request(API_FILE_READ, &args)?) {
+                Ok(reply) => reply,
+                // End of file. The box refuses a read past the last chunk
+                // rather than answering an empty one, so this is the normal
+                // way a read finishes when the file is an exact multiple of
+                // the chunk size.
+                Err(DriveError::TransferComplete) => break,
+                Err(e) => return Err(drive_err(e)),
+            };
+            if reply.seq != seq {
+                return Err(drive_err(DriveError::SequenceOutOfOrder {
+                    expected: seq,
+                    got: reply.seq,
+                }));
+            }
+            let short = reply.data.len() < open.chunk as usize;
+            file.extend_from_slice(&reply.data);
+            // A chunk shorter than the one asked for is the last one. Stopping
+            // here rather than reading on is what keeps the common case to a
+            // single Read: every preset seen fits inside one 4 KB chunk, and
+            // asking for a second is refused, not answered.
+            if short {
+                break;
+            }
+            seq += 1;
+            if seq > MAX_CHUNKS {
+                return Err(MidiError::Send(format!(
+                    "{path}: still reading after {MAX_CHUNKS} chunks — refusing to loop"
+                )));
+            }
+        }
+
+        assert_read_only_file_op(API_FILE_CLOSE).map_err(drive_err)?;
+        let close = parse_close_reply(&self.request(API_FILE_CLOSE, &close_request_args(open.fd))?)
+            .map_err(drive_err)?;
+        if close.total_len as usize != file.len() {
+            return Err(drive_err(DriveError::ShortRead {
+                expected: close.total_len,
+                got: file.len(),
+            }));
+        }
+        Ok(file)
+    }
+
+    /// As [`Self::drive_file_request`], but collect **every** reply the box
+    /// sends rather than the first one.
+    ///
+    /// [`Self::request`] returns on the first message whose `respId` matches and
+    /// then the next call drains the queue, which is correct for every request
+    /// this crate had before now — they all answer in one message. A file read
+    /// is the first candidate for answering in several, and the difference is
+    /// invisible from the caller's side: a header-only reply and the first
+    /// message of a longer answer are the same 22 bytes.
+    ///
+    /// So this returns what arrived, and the *count* is the finding. Same
+    /// allowlist, same guarantee — `api_id` is checked before anything is sent.
+    ///
+    /// `quiet` is how long to wait after the last message before deciding the
+    /// box has finished talking.
+    pub fn drive_file_request_all(
+        &mut self,
+        api_id: u8,
+        args: &[u8],
+        quiet: Duration,
+    ) -> Result<Vec<Vec<u8>>, MidiError> {
+        assert_read_only_file_op(api_id).map_err(|e| MidiError::Send(e.to_string()))?;
+        self.drain();
+        let msg_id = self.take_msg_id();
+        self.send(&build_api_message(msg_id, api_id, args, 0))?;
+
+        let mut replies = Vec::new();
+        let hard_deadline = Instant::now() + REQUEST_TIMEOUT;
+        loop {
+            // Before the first reply, allow the full request timeout; after it,
+            // only the quiet window — otherwise every read pays the timeout.
+            let window = if replies.is_empty() {
+                hard_deadline.saturating_duration_since(Instant::now())
+            } else {
+                quiet
+            };
+            if window.is_zero() {
+                break;
+            }
+            let frame = match self.rx.recv_timeout(window) {
+                Ok(f) => f,
+                Err(RecvTimeoutError::Timeout) => break,
+                Err(RecvTimeoutError::Disconnected) => return Err(MidiError::Disconnected),
+            };
+            let msg = parse_sysex(&frame);
+            if msg.kind != SysExKind::Api {
+                continue;
+            }
+            if let Some(api) = msg.api {
+                if api.resp_id == msg_id && api.api_id == api_id.wrapping_add(API_RESPONSE) {
+                    replies.push(api.args);
+                }
+            }
+        }
+        if replies.is_empty() {
+            return Err(MidiError::Timeout);
+        }
+        Ok(replies)
     }
 
     /// One sound dump (`0x63` request → `0x53` response) from the identified box.
