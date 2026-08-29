@@ -12,7 +12,7 @@
 .claude/
 
 # Kept local, deliberately out of the public repo
-#   local/            full working PLAN + HANDOFF, pre-public commit log
+#   local/            frozen phase log, pre-public commit log, hardware scratch
 #   design_handoff_*  the two UI design-handoff packages some ui:: comments cite
 /local/
 /design_handoff_digi_roll_ui/

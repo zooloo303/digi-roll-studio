@@ -110,8 +110,8 @@
 // `read_line` returns end-of-file immediately and the hold silently does not
 // happen — a pause that skips itself is worse than no pause, because the run
 // still prints as though somebody looked. A clock does the same job and cannot
-// be fooled by the absence of a keyboard. Same lesson as HANDOFF's cliclick
-// note: a wait that nothing drives is not a wait.
+// be fooled by the absence of a keyboard. Same lesson as `DEVELOPMENT.md`
+// lesson 8's cliclick note: a wait that nothing drives is not a wait.
 
 use std::time::Duration;
 

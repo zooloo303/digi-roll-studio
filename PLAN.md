@@ -84,6 +84,19 @@ digi-roll's hardware-verified behaviour rather than the port's own output.
   from nothing, because pasted notes land at the playhead and the playhead cannot
   be moved. The playhead is the prerequisite, and its own open question is what a
   drag means under polymeter.
+- **`generator::default_parts()` ships bass, chords and lead and no drum voice**,
+  so hearing drums at all means adding every voice by hand each time. Raised by
+  Neil on 2026-08-19, the day Phase 7's exit criterion was met, and parked rather
+  than guessed at: **how many voices, which tracks and which box are all open**.
+  Ask before picking it up — the answer decides whether the default set assumes a
+  two-box desk.
+- **"Read the kit the box has loaded *right now*" is a wire question, not a UI
+  one.** The Setup panel's picker asks for a *stored* slot, which is the honest
+  thing this protocol supports. There is no working-buffer dump request anywhere
+  in `digi_protocol`, and nothing listens for the Program Change a box sends when
+  its pattern changes — so "whatever it is on, whatever slot that is" needs
+  protocol work before it needs a control. Worth knowing before anyone promises it
+  in a tooltip.
 
 **Honest summary:** a verified protocol foundation; a sequencer that has driven
 two real boxes in sync; read, write and restore all proven on hardware from the
