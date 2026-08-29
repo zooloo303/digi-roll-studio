@@ -36,8 +36,8 @@
 //     which is when a good deal of arranging actually gets done.
 //
 //  3. **The listing and the tags are two different reads, and the panel never
-//     makes one wait for the other.** REFRESH is one round trip per bank and
-//     gives names and slots; SCAN opens and reads every preset and gives tags.
+//     makes one wait for the other.** LIST is one round trip per bank and gives
+//     names and slots; READ TAGS opens and reads every preset and gives tags.
 //     §10.3's rule is that browsing must never block on tagging, so they are two
 //     buttons and the row list is drawn from whichever of the two the panel has.
 //     Tags are an overlay on rows, not a precondition for them.
@@ -50,9 +50,9 @@
 //     cannot supply the one thing missing, which is a hardware session.
 //
 //     **What the A4 on the desk changed:** the first build expressed all of that
-//     by quietly *removing* the SCAN button, on the reasoning that a refusal
+//     by quietly *removing* the READ TAGS button, on the reasoning that a refusal
 //     belongs in the tag section as an explanation rather than on a red line
-//     under the buttons. Neil pressed SCAN on an A4 and reported that it "flashes
+//     under the buttons. Neil pressed it on an A4 and reported that it "flashes
 //     and then the button disappears" — which is the panel answering a press by
 //     deleting the thing pressed, and reads as a bug rather than as an answer.
 //     So the state is still a state, and a [`Note::Warn`] now says so at the
@@ -102,7 +102,7 @@
 //
 // ## What has been verified, and what has not
 //
-// **On hardware, 2026-08-29:** bank select, REFRESH and SCAN on a DT2 and a DN2
+// **On hardware, 2026-08-29:** bank select, LIST and READ TAGS on a DT2 and a DN2
 // return names and tags, and the tag filter narrows the list. The A4 lists and
 // refuses to be tagged, as designed. **Not yet:** no whole 1,189-preset library
 // has been scanned, so §10.3's timings remain arithmetic — which is why
@@ -546,7 +546,7 @@ pub fn report_line(indexed: u32, skipped: u32, cancelled: bool, elapsed: Duratio
     if cancelled {
         format!(
             "Stopped at {indexed} preset(s){skipped} after {took} — every bank that \
-             finished is saved, and SCAN picks up from here"
+             finished is saved, and READ TAGS picks up from here"
         )
     } else {
         format!("Tagged {indexed} preset(s){skipped} in {took}")
@@ -1105,7 +1105,7 @@ impl PresetsPanel {
             ui.add_enabled_ui(ready, |ui| {
                 if super::colored_button(
                     ui,
-                    "REFRESH",
+                    "LIST",
                     super::CYAN_FILL,
                     super::CYAN_TEXT,
                     super::CYAN,
@@ -1114,7 +1114,8 @@ impl PresetsPanel {
                 )
                 .on_hover_text(
                     "Read-only: asks the box which banks it has and what is in the ones \
-                     in view. Names and slots only — one round trip per bank, not a scan.",
+                     in view. Names and slots only — one round trip per bank. Tags are \
+                     inside the files themselves; READ TAGS is what opens them.",
                 )
                 .clicked()
                 {
@@ -1126,7 +1127,7 @@ impl PresetsPanel {
                 ui.add_enabled_ui(ready, |ui| {
                     if super::colored_button(
                         ui,
-                        "SCAN",
+                        "READ TAGS",
                         super::CYAN_FILL,
                         super::CYAN_TEXT,
                         super::CYAN,
@@ -1198,7 +1199,7 @@ impl PresetsPanel {
                 .small_button("STOP")
                 .on_hover_text(
                     "Stop after the preset in flight. Every bank already finished is \
-                     saved, and SCAN resumes from there.",
+                     saved, and READ TAGS resumes from there.",
                 )
                 .clicked()
             {
@@ -1278,7 +1279,7 @@ impl PresetsPanel {
                 ui,
                 &format!(
                     "{have} of {want} read so far{unread}. This grid is what has been \
-                     found rather than what is there; SCAN picks up where it left off.",
+                     found rather than what is there; READ TAGS picks up where it left off.",
                 ),
             );
         }
@@ -1313,8 +1314,8 @@ impl PresetsPanel {
 
         if filtered.total == 0 {
             ui.weak(match self.view {
-                View::All => "Nothing read yet — REFRESH lists this box's banks.",
-                View::One(_) => "Nothing read yet — REFRESH lists this bank.",
+                View::All => "Nothing read yet — LIST asks this box for its banks.",
+                View::One(_) => "Nothing read yet — LIST asks the box for this bank.",
             });
             return;
         }
@@ -1456,7 +1457,7 @@ impl PresetsPanel {
     /// that is not a nicety. A scan is minutes long and the roll's selection is
     /// one click away, so "the reply lands on whatever box is selected when it
     /// arrives" is a defect with a very ordinary gesture behind it: pick a DN2,
-    /// press SCAN, click a DT2 track while you wait, and 1,189 Digitone presets
+    /// press READ TAGS, click a DT2 track while you wait, and 1,189 Digitone presets
     /// appear under the Digitakt. `ui::transfer` captures its destination at the
     /// press for the same reason; this captures its box.
     ///
@@ -1545,7 +1546,7 @@ impl PresetsPanel {
                     // the session and hides the grid everywhere.
                     //
                     // **And it also answers out loud**, which the first build did
-                    // not do: it expressed this purely by removing the SCAN
+                    // not do: it expressed this purely by removing the READ TAGS
                     // button, and on an A4 that reads as a press deleting its own
                     // control. Decision 4 carries the session that found it.
                     if mine {
@@ -1579,7 +1580,7 @@ fn reference_prose(ui: &mut Ui) {
     );
     super::consequence_line(
         ui,
-        "REFRESH asks the box for names and slots — one round trip per bank. SCAN opens \
+        "LIST asks the box for names and slots — one round trip per bank. READ TAGS opens \
          and reads every preset to find its tags, because tags live inside each file and \
          not in a bank's listing; on a Digitone II that is 1,189 files and it takes \
          minutes. It can be stopped at any point, each bank is saved as it finishes, and \

@@ -286,7 +286,7 @@ fn the_tag_grid_names_bits_through_the_box_that_is_selected() {
 /// **The trap the library view introduces, and the reason `Tagging::Partial`
 /// carries `unread_banks`.** One scanned bank beside seven untouched ones would
 /// otherwise report `Complete` — every preset it knows about is tagged — and
-/// take the SCAN button away with it, which is precisely the state that most
+/// take the READ TAGS button away with it, which is precisely the state that most
 /// needs it.
 #[test]
 fn one_scanned_bank_does_not_make_an_unread_library_complete() {
@@ -608,7 +608,7 @@ fn a_panel_opens_a_previously_scanned_library_with_the_box_switched_off() {
     assert_eq!(pads.rows[0].bank, path("A"));
     assert_eq!(pads.rows[1].bank, path("C"));
 
-    // Six banks were never scanned, so the library is not complete and SCAN
+    // Six banks were never scanned, so the library is not complete and READ TAGS
     // stays on offer.
     let tagging = lib.tagging(&banks);
     assert!(matches!(tagging, Tagging::Partial { unread_banks: 6, .. }), "{tagging:?}");
