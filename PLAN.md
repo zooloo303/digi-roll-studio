@@ -933,6 +933,11 @@ project two bugs.
 
 Neil's session, the first time anything in §10 met hardware from inside the app.
 
+> **The two buttons were renamed on 2026-08-29**, after this session and the one
+> below it: REFRESH is now **LIST** and SCAN is **READ TAGS**. This record and
+> the screenshot notes keep the names of the day rather than being rewritten —
+> see §10.6 step 5 for why they moved.
+
 **Working:** on the DT2 and the DN2, pick a bank, REFRESH, SCAN — names and tags
 come back for that bank's presets, and the tag chips narrow the list. That is
 §10.6 steps 2, 4 and 5 confirmed end to end against two boxes.
@@ -1101,6 +1106,31 @@ six real tag names, the right count, five of them wrong, one right by
 coincidence. There is nothing in that output to notice. It is §9's standing
 lesson in a new place: a wrong answer with the right shape.
 
+### Three libraries indexed, whole — 2026-08-29
+
+The scan run against all three boxes, end to end, after the A4 calibration and
+the `DN1S` container landed:
+
+| box | build | presets indexed | banks |
+|---|---|---|---|
+| Digitone II | 0050 | **1,189** — the whole library, both formats | A–E, H |
+| Analog Four | 0195 | 869 | A–D |
+| Digitakt II | 0071 | 148 | A |
+
+**This is the entry §10.6 step 4 was waiting for.** The index persists, a second
+open is instant, and a second scan resumes to a no-op — which is the property
+that made the `DN1S` fix cost one button press rather than a nine-minute rebuild:
+the 388 had never been recorded as *failures*, only as absent, so they were still
+missing and the resume picked them up.
+
+Worth keeping in mind before "record the failures" gets built, which was the
+obvious next improvement when a run reported `Tagged 0 preset(s), 388 skipped`
+for the third time. Recording them would have made that message honest and would
+have **blocked this fix from reaching an existing index**. A parser gap and a
+genuinely unreadable file look identical at the moment of failure and differ
+entirely afterwards, so anything persisted about a failure has to be keyed to the
+parser that produced it.
+
 ### A DN2's +Drive is two formats — 2026-08-29
 
 **388 of a Digitone II's 1,189 presets are Digitone *mk1* sounds**, and they are
@@ -1159,10 +1189,10 @@ What the two shots could not reach, itemised so it cannot be closed by a sweep:
   taking effect within one round trip, and the note it leaves saying the work was
   kept. Also the panel **closed** mid-scan and reopened, which is the path where
   the worker's own save is the only thing that keeps nine minutes of reading.
-- **A selection change mid-scan.** Press SCAN on a DN2, click a DT2 track, and
+- **A selection change mid-scan.** Press READ TAGS on a DN2, click a DT2 track, and
   the DN2's presets must not appear under the DT2. This is guarded in `poll` and
   the guard has never been exercised by a hand.
-- **The two panels holding each other off**: SCAN greyed with its reason while
+- **The two panels holding each other off**: READ TAGS greyed with its reason while
   Setup is sending, and OUT greyed while a scan runs. Both are one-line
   conditions and neither has been seen refusing anything.
 
@@ -1786,11 +1816,13 @@ Recorded now so v2 starts from evidence:
 4. ~~The tag index: scan, persist, cancel, resume per bank.~~ **Done
    2026-08-29** — `preset_index.rs` persists one file per (device, bank) and
    `preset_scan.rs` fills it, cancellable per slot and resuming from what the
-   index lacks. Fourteen tests, driven through the committed captures. **It has
-   a caller as of step 5** — and still no hardware run: nothing has scanned a
-   whole 1,189-preset bank against a box, so the timing claims here remain
-   arithmetic. The panel is built to *measure* rather than restate them; see
-   below.
+   index lacks. Fourteen tests, driven through the committed captures.
+
+   **Run on hardware 2026-08-29**, which is what this entry was waiting for:
+   all three boxes scanned end to end, the indexes persisted and reopened, and a
+   second scan resuming to a no-op. A DN2's whole library — **1,189 presets** —
+   an A4's 869 across banks A–D, a DT2's 148. The timing claims here are no
+   longer arithmetic.
 5. ~~The panel — sixth rail slot, following `Sidebars`/`Tool`, worker thread and
    `mpsc` like `transfer.rs` and `sync.rs`.~~ **Built 2026-08-29**, `ui/presets.rs`,
    fifth in the rail rather than sixth — above Session, because Session is the
@@ -1803,10 +1835,17 @@ Recorded now so v2 starts from evidence:
      is instant, and the only way that is true is if the first thing the panel
      touches is a JSON file rather than a MIDI port. The consequence is worth
      having on purpose: **the browser works with the box switched off**, which
-     is when a good deal of arranging actually happens. REFRESH and SCAN are the
-     only two things that open a port, and they are two buttons because they are
-     two reads — one round trip against up to 1,189 — which is how "browsing must
-     never block on tagging" stops being a rule somebody has to remember.
+     is when a good deal of arranging actually happens. LIST and READ TAGS are
+     the only two things that open a port, and they are two buttons because they
+     are two reads — one round trip against up to 1,189 — which is how "browsing
+     must never block on tagging" stops being a rule somebody has to remember.
+
+     **They were called REFRESH and SCAN until 2026-08-29**, and neither word
+     said which was which: both are read-only, both hit the box, both act on the
+     banks in view, so the pair read as one action at two intensities. They
+     differ on what they *return* — names and slots, or tags — which is the split
+     the panel is built on and the one thing the labels left out. Renaming only
+     one would have left it defined against a word that was also wrong.
    - **The index is keyed by the box that answered, and the refusal is stricter
      here than in `ui::transfer`.** A mis-cabled fetch imports wrong bytes into
      a session slot; a mis-cabled *scan* writes a DT2's 148 presets into
@@ -1814,7 +1853,7 @@ Recorded now so v2 starts from evidence:
      store outlives the mistake, so the worker identifies before it lists.
    - **A result belongs to the box it was asked for, and that needed enforcing
      rather than intending.** A scan is minutes and the roll's selection is one
-     click away: pick a DN2, press SCAN, click a DT2 track while waiting, and
+     click away: pick a DN2, press READ TAGS, click a DT2 track while waiting, and
      1,189 Digitone presets land under the Digitakt. `poll` compares against the
      box on screen, and the selection is settled *before* the channel is drained
      — on the one frame the selection moves, the other order applies a stale
@@ -1833,13 +1872,13 @@ Recorded now so v2 starts from evidence:
 
      The trap it introduced, and the test that pins it: one scanned bank beside
      seven untouched ones reported *complete* — every preset it knew about was
-     tagged — and took the SCAN button away with it, in exactly the state that
+     tagged — and took the READ TAGS button away with it, in exactly the state that
      most needs it. `Tagging::Partial` therefore counts `unread_banks`
      separately, because a bank nothing has listed or indexed has an **unknown**
      size rather than a zero one.
    - **A control that vanishes is not a reply.** The A4's refusal was expressed
-     purely by removing the SCAN button, on the reasoning that the explanation
-     belongs in the tag section. Neil pressed SCAN on an A4 and reported that it
+     purely by removing the READ TAGS button, on the reasoning that the explanation
+     belongs in the tag section. Neil pressed it on an A4 and reported that it
      "flashes and then the button disappears" — a press answered by deleting the
      thing pressed, which reads as a bug. The state is still a state; a
      `Note::Warn` now says so at the point of action as well.

@@ -531,6 +531,32 @@ Three things this leaves:
 Same shape as lesson 8's "present and usable photograph identically", one layer
 down — here it was *failed* and *failed for this reason*.
 
+**And then the head bytes were the trap a third time.** They were added at
+sixteen, to keep the message on one line, on the reasoning that sixteen show "the
+36-byte head's opening — every good capture begins `ac11d303 02000500 …`". Both
+halves of that are true and together they are the defect: every good file begins
+that way, so every bad one does too. Sixteen bytes was exactly the prefix a DN2
+file cannot vary, so the first run printed a good capture's opening byte for byte
+and proved only that a file had arrived. Widened to 48 — past the header, into
+where the container magic belongs — the next scan named the format outright:
+`DN1S`, Digitone mk1 presets, 388 of them.
+
+So the lesson has a sharper edge than "build the diagnostic first". **A
+diagnostic has to be sized to the thing it distinguishes, not to the thing it
+proves exists.** Ask what two files it must tell apart, then check it covers the
+bytes where they differ — the test that pins this asserts a good capture and an
+odd one produce *different* strings, because asserting "the string is long" would
+pass with the window back inside the shared prefix.
+
+**One more, and it is about the reader rather than the code.** The first attempt
+at reading those 48 bytes took them off a *screenshot of the panel* and found
+`444e3153` — `DN1S`, the right answer, by accident: it sat at a half-byte offset
+in a transcription with an odd number of hex characters. The string was real and
+the reading of where it sat was not. `examples/capture_drive_file.rs` exists so
+that never has to be repeated: it takes exact paths and writes the bytes out. A
+96-character hex string read by eye is not evidence, and reading it more
+carefully is not the fix.
+
 ---
 
 ## Rules that are not up for renegotiation
