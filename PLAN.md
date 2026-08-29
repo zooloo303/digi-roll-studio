@@ -1327,6 +1327,21 @@ up as movement:
   as the obvious wrong guess *for the digis*; the A4 is the exception, and it is
   now the confirmed exception rather than the claimed one.
 
+**Two things the sweeps did not separate, and both are cheap to settle.** Carried
+here from the session's own notes so they outlive them:
+
+- **PAN's scope.** CC 10 is the General MIDI pan controller, so a box may answer
+  it globally rather than per track. It was swept on channel 1 with track 1 on
+  screen, which cannot tell "track 1's pan" from "every track's pan". The test is
+  one sweep: send CC 10 on channel 2 and watch track 1.
+- **CC 7 against CC 95.** Both moved their named bar — AMP VOLUME on the amp page,
+  TRACK LEVEL via the app's VOL field — so they are not the same knob as far as
+  anyone looked. But nobody watched *both* bars during *one* sweep, which is what
+  would prove it.
+
+Neither blocks anything today: both entries are `auditable` and neither is
+p-lockable, so the cost of being wrong is a knob moving that should not have.
+
 **Every entry keeps `plock: None`, and nothing here could have changed that.**
 A paramId comes from locking a knob on hardware and reading the dump back, and
 this box answers no dump request at all. Hearing a parameter and being able to
