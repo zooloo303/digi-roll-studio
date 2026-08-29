@@ -161,6 +161,42 @@ fn an_unknown_container_magic_is_refused_and_names_itself() {
     assert!(matches!(decode_drive_preset(&file), Err(DriveError::NoContainer { .. })));
 }
 
+/// The head bytes must reach past where the container magic belongs, and this
+/// asserts the exact failure that made 48 the width rather than 16.
+///
+/// A DN2 file's first 36 bytes are its header and `BEEFBACE` sits at 36. Every
+/// DN2 file on the box opens `ac11d303 02000500 0f303035 30…`, so a 16-byte
+/// window shows only the part that *cannot* differ: the 388 undecodable presets
+/// printed a head identical to a good capture's and the diagnostic dead-ended
+/// there. The check is therefore not "the string is long" but "the string
+/// distinguishes" — a good capture and a file that diverges only after byte 16
+/// must not produce the same head.
+#[test]
+fn the_head_bytes_reach_past_the_container_magic() {
+    let good = fixture("digitone2-soundbanks-A-1-HIDDEN-TEARS-2026-08-29.bin");
+
+    // Identical to a real DN2 preset up to byte 36, then carrying anything but a
+    // container — which is all that is known about the 388, and enough.
+    let mut odd = good.clone();
+    odd[36..40].copy_from_slice(&0xDEAD_BEEFu32.to_be_bytes());
+    assert_eq!(good[..36], odd[..36], "the two must agree exactly where a 16-byte head looks");
+
+    let Err(DriveError::NoContainer { head, .. }) = decode_drive_preset(&odd) else {
+        panic!("a file with no container magic must be refused as NoContainer");
+    };
+
+    let good_head: String = good.iter().take(48).map(|b| format!("{b:02x}")).collect();
+    assert_ne!(
+        head, good_head,
+        "the head bytes do not distinguish this file from a working one — the window is \
+         back inside the prefix every DN2 file shares, which is what made a 388-preset \
+         scan unactionable"
+    );
+    // Byte 36 lands at hex offset 72, and the window runs past it rather than
+    // stopping there — the whole point of the width.
+    assert_eq!(&head[72..80], "deadbeef", "byte 36 must be in frame, at its own offset: {head}");
+}
+
 /// The A4 really has no foot, which is *why* it is sized from its header rather
 /// than a preference for doing so. Asserted directly, so that if a future OS
 /// starts emitting one this test fails and tells somebody the situation changed

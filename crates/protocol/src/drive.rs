@@ -126,6 +126,12 @@ pub enum DriveError {
     /// Every working capture starts `ac11d303 02000500 …` with the magic at 36;
     /// printing the first bytes is the difference between "a file this parser
     /// does not know" and "not a file at all", and it costs nothing to carry.
+    ///
+    /// **And the first cut printed too few of them to answer the question it was
+    /// added for.** Sixteen bytes came back byte-for-byte identical to a good
+    /// capture's opening, which settles "this is a file" and nothing else,
+    /// because 16 bytes is precisely the part no DN2 file varies. [`head_hex`]
+    /// now takes 48 — past the 36-byte head, into where the magic should be.
     NoContainer { len: usize, head: String },
     /// A container whose head magic is neither a digi's [`SOUND_MAGIC_HEAD`]
     /// nor an A4's [`A4_CONTAINER_MAGIC`] — a fourth box, or a corrupt file.
@@ -1084,14 +1090,30 @@ fn struct_size(body: &[u8]) -> Option<usize> {
 /// The first bytes of a file, as hex, for an error that has to describe
 /// something it could not parse.
 ///
-/// Sixteen bytes: enough to show the 36-byte head's opening — every good capture
-/// begins `ac11d303 02000500 0f303035 30…`, the box's own build string included —
-/// and short enough to sit in a one-line message on a 330px panel.
+/// **Forty-eight bytes, and sixteen was worse than useless.** The first cut took
+/// 16 to keep the message on one line, reasoning that they show "the 36-byte
+/// head's opening — every good capture begins `ac11d303 02000500 0f303035 30…`".
+/// Both halves of that sentence are true and together they are the bug: every
+/// good capture begins that way, so every *bad* one does too, and 16 bytes is
+/// exactly the prefix a DN2 file cannot vary. A scan of 388 undecodable presets
+/// printed `ac11d303020005000f30303530000000` — byte-for-byte a good capture's
+/// opening — which proved the read had worked and then said nothing whatsoever
+/// about what had arrived.
+///
+/// 48 covers the whole 36-byte head *and* the twelve bytes from offset 36, where
+/// [`SOUND_MAGIC_HEAD`] sits in a file that has one. So the divergence is always
+/// in frame: what these files carry instead of a container is now visible in the
+/// error itself rather than needing a capture. Three wrapped lines on a 330px
+/// panel is the price, and a diagnostic nobody can act on is not cheaper for
+/// being short.
+///
+/// `DEVELOPMENT.md` lesson 11 again, one level down: build the diagnostic before
+/// the investigation — and a prefix every file shares is not a diagnostic.
 fn head_hex(file: &[u8]) -> String {
     if file.is_empty() {
         return String::from("nothing");
     }
-    file.iter().take(16).map(|b| format!("{b:02x}")).collect::<Vec<_>>().join("")
+    file.iter().take(48).map(|b| format!("{b:02x}")).collect::<Vec<_>>().join("")
 }
 
 /// Decode a whole +Drive preset file into the [`Sound`] it contains.
