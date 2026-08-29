@@ -915,15 +915,142 @@ DN2's family byte once was.
 **Which also means the A4 is a third box for §10**, since `0x53`–`0x56` and the
 `0x57`–`0x59` write trio are all in that list.
 
-**Not yet verified, and deliberately left for a session with ears on it:**
-clock and transport receive, live notes on channels 1–6, 64-step patterns, and
-the thirteen `A4_PARAMS` CC/NRPN entries — particularly Track Level CC 95 and
-Mute, which came from the Analog Keys OS 1.51C appendix rather than the mk1
-OS 1.0 one. That 1.55B sits in the AK OS line supports the sourcing choice
-without proving it. Until that session, the A4's entry in this register is
-"it identifies", and nothing more: a param table that is *present* and one that
-is *right* photograph identically, which is this section's whole reason to
-exist.
+**Left for a session with ears on it**, and that session is the one below —
+this paragraph is kept because the *shape* of what it owed is still the right
+shape: clock and transport receive, live notes on channels 1–6, 64-step
+patterns, and the `A4_PARAMS` CC/NRPN entries. Until they were played, the A4's
+entry in this register was "it identifies", and nothing more: a param table
+that is *present* and one that is *right* photograph identically, which is this
+section's whole reason to exist.
+
+**One correction to that list before anything was played.** It named "the
+thirteen `A4_PARAMS` CC/NRPN entries — particularly Track Level CC 95 and
+Mute", and it is wrong twice. **Track Level is not one of the thirteen**: it is
+`params::track_level_midi("A4")`, deliberately outside the table because no
+paramId for it has been measured (that function's own doc comment gives the
+reasoning, and it is the file's central rule). And **Mute is not anywhere** —
+grep the workspace and there is no CC or NRPN mapping for it on any box.
+`Track::mute` is local state; `scheduler.rs`'s `audible` check simply declines
+to emit the note, and nothing goes on the wire. So the thing to verify was
+**fourteen claims** — thirteen table entries plus one function — and one
+phantom. A verification list that names a thing which does not exist is its own
+small instance of lesson 3: it sends the next session looking for a feature it
+is not looking at.
+
+### The A4 plays — 2026-08-28, second half of the day
+
+Neil at the box, the app driven from this machine, and **nothing below was
+inferred from a code path** — each line is something he reported hearing or
+seeing. The rule for the session was his: "the app sent it" is not "the box
+played it".
+
+**Clock and transport receive — verified, by ear.** `GLOBAL > MIDI CONFIG >
+MIDI SYNC` with `CLOCK RECEIVE` and `TRANSPORT RECEIVE` on. The app set to 174
+BPM — a tempo no box here idles at, so following it cannot be confused with
+happening to agree — and all three boxes started together, ran at 174, and
+stopped together. The two halves were asked for separately because they fail
+separately: transport is the box's play indicator following PLAY/STOP, clock is
+the box running at *our* number rather than its own.
+
+**Live notes on channels 1–6 — verified.** The factory map holds: rows 1–4
+reach SYNTH 1–4, row 5 the FX track, row 6 the CV track, on MIDI channels 1–6,
+with `Track::new`'s `index % 16` default and nothing configured on the box.
+Driven from an authored project rather than a drawn one
+(`examples/a4_test_sessions.rs`, `a4-channels.json`): six rows, one note each,
+two steps apart, pitches climbing in fourths, so a note landing on the wrong
+track is audible as well as visible. **Rows 5 and 6 were confirmed by sight,
+not by ear** — the FX and CV tracks trig and make no sound of their own, so
+"did you hear it" is the wrong question for them and the right one is whether
+the box's track lights. That is the weaker of the two claims and is recorded as
+the weaker one.
+
+**64-step patterns — verified.** `a4-64-steps.json`: row 1 sixty-four steps
+long with a note on step 1 and step 64, row 2 sixteen steps long with one note
+on its downbeat as a ruler. The test is a **count** — exactly four ruler ticks
+per lap of row 1 — because a lone note at step 63 sounds identical whether the
+lap is 64 steps or the pattern is simply short. Four ticks is what the box did.
+
+**The CC/NRPN table — fourteen claims, fourteen confirmed, nothing changed.**
+Every entry in `A4_PARAMS` and `track_level_midi("A4")` was swept 0–127 on the
+box, **NRPN and CC as separate sweeps**, with Neil watching the named parameter
+on the A4's own screen. All fourteen moved the parameter the table names. The
+two manuals were right, *including* the entries sourced from the Analog Keys
+OS 1.51C appendix rather than the mk1 OS 1.0 one — CC 95 and NRPN 1/100 for
+track level, the two flagged going in as likeliest wrong.
+
+| | NRPN | CC |
+|---|---|---|
+| TRACK LEVEL | 1/100 | 95 |
+| FLTR1 FREQ | 1/40 | 18 (+LSB 50) |
+| FLTR1 RESO | 1/41 | 89 |
+| FLTR1 ENV DEPTH | 1/44 | 102 |
+| FLTR OVERDRIVE | 1/42 | *none, and none needed* |
+| CHORUS / DELAY / REVERB SEND | 1/55, 1/56, 1/57 | 91, 92, 93 |
+| PAN | 1/58 | 10 |
+| AMP VOLUME | 1/59 | 7 |
+| LFO1 / LFO2 DEPTH A | 1/87, 1/97 | 24 (+56), 26 (+58) |
+| OSC1 / OSC2 LEVEL | 1/4, 1/24 | 69, 78 |
+
+Three details worth more than "it moved", because none of them would have shown
+up as movement:
+
+- **The two 14-bit pairs cross the full range on the MSB alone.** `lfo1.depth`
+  and `lfo2.depth` were swept with their LSB held at 0 and travelled the whole
+  span, so the box reads the pair the way the table assumes.
+- **Both are bipolar in the direction the table claims** — negative through
+  centre to positive, so `bipolar: true` and the box's zero point agree.
+- **CC 7 is a real parameter on this box.** It is AMP VOLUME here and it is
+  absent from both digis' appendices, which is the one place the three boxes
+  are asserted to genuinely differ. `track_level_midi`'s doc comment names CC 7
+  as the obvious wrong guess *for the digis*; the A4 is the exception, and it is
+  now the confirmed exception rather than the claimed one.
+
+**Every entry keeps `plock: None`, and nothing here could have changed that.**
+A paramId comes from locking a knob on hardware and reading the dump back, and
+this box answers no dump request at all. Hearing a parameter and being able to
+store it stay different capabilities — the same distinction the bug below turned
+on, arriving twice in one day from opposite directions.
+
+**The boring result is the point.** The table was *present* before today and is
+*right* now, and this section exists because those two photograph identically.
+
+### The bug this session found, and no test could have
+
+**The A4's VOL fader was dead, and the field was drawn and draggable anyway.**
+`EngineLink::send_track_level` resolved the box's parameter chart through
+`device.model.spec()?.device` — the *SysEx* spec. The A4's `sysex` is `None`,
+so the chart lookup returned `None` before it ever reached
+`track_level_midi("A4")`, which has had CC 95 / NRPN 1/100 in it since
+2026-08-24. Every ingredient was present and the gate asked the wrong question.
+
+**`plocks::CuratedPLocks` had taken exactly this correction on 2026-08-24** —
+its doc comment spells out the reasoning, "hearing a lane and parsing a dump
+are different capabilities", and keys off `params::device_kind_key(model.key)`
+instead. The same rule lived in a second place and the fix did not travel:
+**lesson 5, four days apart, in two files a hundred lines from each other.**
+
+**Why 1,507 green tests said nothing.** Every level test in
+`app/tests/engine_link.rs` runs on `two_box_session()`, and a DT2 and a DN2
+each have a spec *and* a chart — so "has a spec" and "has a chart" return the
+same answer on both, and the wrong one is indistinguishable from the right one.
+That is lesson 4's shape precisely: **a fixture that makes two different rules
+agree.** It needed the third box to tell them apart, and the third box is the
+first this project has ever had where the two come apart at all.
+
+The regression test is `a_live_only_box_still_gets_its_level_fader`, and it is
+the first test in the file to build a session by hand rather than take
+`two_box_session()`, which is the actual lesson for the next live-only box.
+
+**The trap that cost the first hour, and it is not the A4's.** With the **DT2
+in clock-send mode, no box receives anything at all** — not the DN2, not the
+A4, and not the DT2 itself. Make the DT2 a slave and all three follow the app
+immediately. Worth writing down because of how it presents: it looks exactly
+like the app failing to send, it is not specific to the box you just plugged
+in, and the natural response is to start debugging the newest thing on the desk
+rather than the oldest. The app is not involved in the mechanism — it never
+listens to incoming clock (`EngineLink::send_clock` is the only clock decision
+it makes, and it is a send) — so a second master on the desk is a desk problem
+that this register should name rather than a defect to chase in code.
 
 ## 10. The kit builder — scope, 2026-08-26
 
@@ -940,6 +1067,19 @@ a kit on the device.
 that is what "saves to the device" means to someone who has used Transfer. §10.4
 records what that will cost, so the deferral is a schedule decision rather than an
 open question.
+
+**There are three boxes for this now, not two.** This section was scoped on
+2026-08-26 against a DT2 and a DN2. The A4's supported-opcode reply lists
+`0x53`–`0x56` and the `0x57`–`0x59` write trio, so it publishes the same
+`0x53` file API — which is a separate question from its having no `0x6x` dump
+request at all, and the whole reason `Product.family` became an `Option<u8>`.
+**Nothing on the A4's +Drive has been listed yet**: everything below is still
+DT2/DN2 evidence, and "the A4 advertises the opcodes" is a reason to point a
+probe at it, not a third column in the table. Note also that the A4 is
+`sysex: None`, so it has no `KitSpec` and no `Spec::device` — §10's code must
+key parameter and preset lookups off the **model key**, the way
+`plocks::CuratedPLocks` and (since 2026-08-28) `EngineLink::send_track_level`
+both do. That is the trap §9's level bug already sprang once.
 
 ### 10.1 The three steps are not equally built
 

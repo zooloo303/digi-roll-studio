@@ -1,13 +1,21 @@
 # digi-roll-studio
 
-Native Rust desktop sequencer for Elektron Digitakt II / Digitone II, built from
-[digi-roll](https://github.com/zooloo303/digi-roll) — a browser piano roll for the
-same boxes.
+Native Rust desktop sequencer for Elektron **Digitakt II**, **Digitone II** and
+**Analog Four**, built from
+[digi-roll](https://github.com/zooloo303/digi-roll) — a browser piano roll for
+the two digis.
 
 Where digi-roll edits one track at a time in a browser, this sequences a whole
-studio: several boxes in one session, each with its own pattern of up to 16
-tracks, all playing to a shared clock. A DT2 and a DN2 together is the target
-case — 32 tracks.
+studio: several boxes in one session, each with its own pattern, all playing to
+a shared clock. A DT2 and a DN2 together is the target case — 32 tracks — and an
+A4 adds six more.
+
+**The three boxes are not supported to the same depth, on purpose.** The two
+digis get everything: fetch a pattern off the box, edit it, write it back. The
+Analog Four is **sequence-live-only** — it plays notes, takes the clock, and
+answers its published CC and NRPN, but it is never read from or written to,
+because the box itself reports that it supports no dump request at all. The app
+says so in place rather than failing at write time.
 
 The protocol work this stands on is ported from
 **[elk-herd](https://github.com/mzero/elk-herd) by mzero** (BSD-2-Clause), which
@@ -49,11 +57,12 @@ socket. The checkbox is at the bottom of BOXES.
 |---|---|
 | SysEx seven-bit, framing, pattern decode/encode | ported and **verified** against real DT2/DN2 captures |
 | Trig conditions, p-lock lanes, pattern settings | ported both directions, against the committed captures |
-| Core model | several boxes, 16 tracks each, scenes, and a song of scenes — `PLAN.md` §2 |
+| Core model | several boxes, track count and pattern length per model (16/128 on the digis, 6/64 on the A4), scenes, and a song of scenes — `PLAN.md` §2 |
 | Safe write | all five rules as one function, and **run on hardware** — one track of one slot, from the app's own button, verified byte-identical on a DT2 and a DN2 |
 | Backups and restore | a local store of the last 50 patterns overwritten, plus 10 pre-restore snapshots; a store failure aborts the write. **A restore has been run on both boxes**, byte-identical |
 | MIDI I/O | on `midir`; enumeration, identity handshake, dump reads and writes, all **run against both boxes** |
-| Engine, transport, clock | **verified on hardware** — a DT2 and a DN2 playing one clock in sync |
+| Engine, transport, clock | **verified on hardware** — a DT2, a DN2 and an A4 playing one clock in sync |
+| Analog Four | live-only, and **played on hardware** — clock and transport receive, notes on channels 1-6 (four synth voices, FX, CV), 64-step patterns, and all fourteen published CC/NRPN parameters swept against the box. No fetch and no write: the A4 answers no dump request, so `sysex: None` is its own testimony rather than a gap |
 | Session file | a whole session round-trips through JSON, wired to Save/Open with a close guard, **hardware-confirmed through a save/quit/reopen cycle**. Saving is manual — there is no autosave |
 | Velocity, micro-timing | in the model, written to hardware, settable in the Edit panel and the roll |
 | Harmony | key, scales, chord draw with a ghost, harmonise. A four-note chord written to a box and fetched back intact |
