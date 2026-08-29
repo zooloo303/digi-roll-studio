@@ -590,6 +590,32 @@ for.
   "Working on this" has the policy; the root `Cargo.toml` has the three
   workspace-wide exceptions and their reasons.
 
+**v0.2.0 (2026-08-28) is the release that put a third box on the desk**, and
+the minor bump rather than another patch is the point: every release before it
+was DT2-and-DN2 software gaining features. This one is the first to support a
+box the two digis' assumptions did not fit, and it found out what those
+assumptions were by being wrong about them twice in one day.
+
+- **The Analog Four, live-only and played.** Clock and transport receive, notes
+  on channels 1–6, 64-step patterns, and all fourteen published CC/NRPN
+  parameters swept against the box. §9's "The A4 plays" is the register entry.
+  Nothing is fetched from it or written to it, and that is the box's own
+  testimony rather than a gap: it advertises no `0x6x` dump request at all.
+- **Two assumptions the box refuted.** That a 2013 box could not answer the
+  identity API — it answers on the first try — and that a box able to name
+  itself could name its dump family, which made `Product.family` an
+  `Option<u8>`. The machinery built on the first guess is deleted.
+- **A dead control, found by reading and confirmed by dragging it.** The A4's
+  VOL fader resolved its chart through the *SysEx* spec, so it was drawn,
+  draggable and silent. `DEVELOPMENT.md` lessons 4 and 5 in one defect, and the
+  first time this project has had a box where "has a spec" and "has a chart"
+  give different answers.
+- **The kit builder gained a third box** and a caveat with it (§10): the A4
+  advertises `0x53`–`0x56`, and nothing on its +Drive has been listed yet.
+
+It is also the second release written down before it was tagged, which v0.1.2
+asked for and v0.1.3 started.
+
 **The decisions worth carrying forward**, each of which changed the shape of the
 thing rather than a line of it:
 
