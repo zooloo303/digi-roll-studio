@@ -777,7 +777,11 @@ things out and the negatives are what stop them being re-tried.
   TRACK PRESETS pane, all sixteen in order.
 - **The sound struct's `tagMask` at +8**, `u32be`. Calibrated exactly: DN2 pool
   slot 1 `BD BRASSY KICK` = `0x04100021` → Kick, Percussion, Noisy, Vintage,
-  matching the device's own display bit for bit. `sound::TAG_NAMES` is correct.
+  matching the device's own display bit for bit.
+
+  **Extended to all three boxes on 2026-08-29, and the table split in two.** See
+  "The tag tables are calibrated on three boxes" below: one global `TAG_NAMES`
+  was right for the digis and wrong for most of an A4.
 - **The `0x53` +Drive file API, on both boxes.** `/projects` (128),
   `/soundbanks` (8 × 256), `/kits` (8 × 128). 1,189 occupied presets on the DN2,
   148 on the DT2. Every preset entry's size equals the `0x6b` payload size.
@@ -795,6 +799,14 @@ things out and the negatives are what stop them being re-tried.
 
 - The project sound pool is **not** a browsable library — 0/128 named on the DT2,
   1/128 on the DN2. Presets in use live in the kit.
+
+  **True of the two digis, and generalised to "boxes" too quickly.** The A4's
+  project sound pool *is* populated: its Overbridge Sound Browser shows at least
+  25 named, tagged sounds in it — `KICK L`, `SNARE ARM`, `303CLONE`, `GOOMY
+  BASS` — carrying the same tag vocabulary as the +Drive library. Not
+  investigated, and flagged rather than acted on: it may be a second browsable
+  source on that box. Noted 2026-08-29. This is the fourth time the third box
+  has split a rule that read as one.
 - A whole-project dump carries **no** sounds: 128 × `0x50` + 1 × `0x54`, zero
   `0x53`. The comment in `midi/src/device.rs` claiming otherwise is wrong.
 - Dump requests `0x67`, `0x6c`, `0x6d`, `0x6e`: silent at eleven index values.
@@ -929,6 +941,11 @@ come back for that bank's presets, and the tag chips narrow the list. That is
 its patch names, SCAN stops at the first preset. Its tag calibration is the next
 session's work.
 
+> **Closed the same day.** The calibration landed on 2026-08-29 and the A4 now
+> scans and tags like a digi; see "The tag tables are calibrated on three boxes"
+> above and §10.2. The refusal *state* is still the design and still reachable —
+> for the next box with an unmapped container, not for this one.
+
 **Two things the session changed, and neither was a bug in the protocol layer:**
 
 1. **The browser was scoped to one bank and it should never have been.** See
@@ -1023,6 +1040,60 @@ VIND` → Texture, Noisy, Soft. Eight for eight semantically, on a second box, f
 files nobody chose for this purpose. Not a calibration against a display and so
 not a replacement for one — but it is exactly the check a wrong bit order would
 have failed, and it did not.
+
+### The tag tables are calibrated on three boxes — 2026-08-29
+
+**24 of 24, exact, and the source was a screenshot rather than hardware.** Neil
+captured Overbridge 2.26.9's Sound Browser for an A4, a DT2 and a DN2. Each shows
+the whole 32-cell filter grid *and* a tag column for the presets beside it — and
+the presets on screen are `/soundbanks/A/1..8`, which are exactly the 24 files
+already committed under `tests/fixtures/drive/`. So both sides of the check were
+produced by different software reading different copies of the same data, which
+is the only reason it is worth asserting. Pinned by
+`every_capture_decodes_the_tags_its_box_displays`.
+
+**The grid *is* the bit order.** Read left-to-right, top-to-bottom, its 4×8 block
+is bit 0 through bit 31, on all three boxes.
+
+**The two digis share one table exactly; the A4 has its own.** That is measured,
+not assumed — the DT2's and DN2's grids are the same 32 names in the same 32
+positions, so `TAG_NAMES_DIGI` serves both. The A4 barely overlaps:
+
+| bit | digis | A4 |
+|---|---|---|
+| 0 | Kick | **Bass** |
+| 1 | Snare | **Lead** |
+| 10 | Bass | Kick |
+| 11 | Lead | Snare |
+| 18 | Acoustic | **Hard** |
+| 22 | Hard | **Dark** |
+| 25 | Bright | **Acid** |
+| 29 | Loop | **Input** |
+
+**Exactly two of the thirty-two positions agree** — Mine at 30 and Favourite at
+31. Every other bit means something else. Names do recur across the two
+vocabularies (Noisy, Glitch, Bass, Kick) but never in the same place, and that is
+worse than no overlap at all: it is what lets a mis-decoded mask read as an
+ordinary list of tags. So `tag_names_for` keys on the identity slug and there is
+**no default table** — a box whose grid nobody has read (the mk1 `digitakt`)
+names nothing at all, which renders as a mask with no labels rather than as a
+confident lie.
+
+**What made this exact rather than exact-looking, and it is a method worth
+keeping.** Three photographs of the A4's own screen got *three* positions wrong —
+bit 7 read as "STAB" (Strings), bit 14 as "AMB" (Atmosphere), bit 25 as "ARP"
+(Acid) — because the A4 truncates its tag row at four entries, so `THE SAW` shows
+four tags and carries six. §9's standard is the device's own display and here it
+was **not sufficient**. A desktop editor rendering the same data settled it in one
+screenshot, because it lays all 32 cells out at once and truncates nothing. The
+photographs were enough to be confident and not enough to be right; using both is
+what closed it.
+
+**The failure this guards against does not look like a failure.** `THE SAW`'s
+mask through a digi's table reads Kick, Snare, Acoustic, Soft, Dark, Vintage —
+six real tag names, the right count, five of them wrong, one right by
+coincidence. There is nothing in that output to notice. It is §9's standing
+lesson in a new place: a wrong answer with the right shape.
 
 ### Still not verified on a screen — the Presets panel, 2026-08-29
 
@@ -1330,6 +1401,12 @@ relaxing the head magic, which was the obvious fix and is the wrong one. The
 third box again separates two rules that looked like one, for the third time in
 four days.
 
+> **The observation held; "and that is the blocker" did not.** Corrected
+> 2026-08-29. The foot makes *guessing* a size safe, and the A4 never needed to
+> guess — its file header declares the payload length. Relaxing the head magic
+> was indeed the wrong fix; the right one was to take the size from the better
+> witness and keep every check that still applies. §10.2 has the full account.
+
 **Struct size is not a per-box constant, so `KNOWN_SOUND_SIZES` is the wrong
 shape.** One DN2 bank holds both 319 and 359, and the size tracks the u32 at +4:
 `0` → 319, `1` → 359. The DT2 is 299 at `0`, so that word is scoped per box and
@@ -1454,36 +1531,57 @@ the fourth thing is the one that stayed open:
   it was ported — elk-herd's `argString0win1252` — so **the two halves of this
   crate disagreed about the box's encoding for three days** and only a file with
   an `Å` in its name could show it. `chars16` now shares the one decoder.
-- **The A4 is refused by name**, `DriveError::UndecodableContainer`, rather than
-  falling out as a `BadHead` that reads like corruption.
+- **The A4 routes on its own container magic**, `BEEFBABA`, rather than falling
+  out as a `BadHead` that reads like corruption. It was refused by name for
+  three days; since 2026-08-29 the same distinction selects its sizing rule.
+
+### The A4 browses and tags — closed 2026-08-29, and both stated blockers were wrong
 
 **The A4 has no foot magic at all** — not once in any of eight files, which
 `no_a4_capture_contains_a_foot_magic_anywhere` asserts directly so that a
 firmware which starts emitting one is a failing test rather than a discovery
-nobody makes. The foot is what lets `decode_sound` trust a size.
+nobody makes. The foot is what lets `decode_sound` trust a size. That much was
+true and is still true; everything this section used to conclude from it was not.
 
-**This was filed as an open reverse-engineering problem and it is not one.**
-Measuring the layout (§9, same date) gives the A4's extent for free: its payload
-is 366 bytes and its container starts at byte zero of it. And nothing consumes
-an extent anyway — the A4 has no `0x6b`, so no `0x5b`, so no load-onto-track
-path at all.
+**Blocker one, the extent, was never a blocker.** Measuring the layout (§9, same
+date) gives the A4's extent for free: its payload is 366 bytes and its container
+starts at byte zero of it. The correction that mattered came a step later —
+**the foot's job is to validate a *guessed* size.** `struct_size` finds the end
+of a digi's struct by searching for it, and the magic landing is what proves the
+search was right. The A4 needs no search: the file header *declares* the payload
+length. A declared length is a **better** witness than a found one, so skipping
+the foot check there gives up nothing at all. `decode_a4_sound` checks the head,
+takes the length from the header, and refuses with `UnsizedContainer` when the
+layout that declaration rests on does not hold.
 
-**The real blocker is one afternoon of calibration.** `sound::TAG_NAMES` was
+**Blocker two, the calibration, was real and is done.** `sound::TAG_NAMES` was
 calibrated on a DN2, and the A4's masks differ in character from every digi
-capture — low bits set, which no digi file shows. Indexing them would publish a
-guess about a field, which is exactly what §9's standard exists to stop. The
-recipe is `digitone2-tagged-sounds-2026-08-01.syx`'s, pointed at an A4: tag
-known sounds from the box's own display in a known pattern, capture, compare.
-`ScanError::BoxNotIndexable` should stop being returned when that happens and
-not before.
+capture — low bits set, which no digi file shows. Indexing them through a digi's
+table would have published a guess about a field, which is exactly what §9's
+standard exists to stop. It is now `TAG_NAMES_A4`, calibrated against
+Overbridge 2.26.9's filter grid and checked on all eight A4 captures. See §9.
 
-**The trap that shaped the API, and it is worth naming.** The obvious fix was to
-let the head magic vary, since `container_offset` already accepts both. That
-would have "worked": an A4 preset would decode to a plausible name, a plausible
-tag mask and a **wrong length** — silently, and exactly what the foot check
-exists to prevent. It is the `0x5b` echo hazard's shape in a parser: the failure
-manufactures a positive. `an_a4_preset_is_refused_as_the_a4_rather_than_as_corruption`
-is the guard, and it asserts the specific error for that reason.
+So `ScanError::BoxNotIndexable` is no longer returned for any box on this desk.
+The variant stays for the next box with an unmapped container, and the panel
+state it drives stays with it: a box that cannot be tagged still browses, still
+answers the button that was pressed, and is never offered a retry it cannot use.
+
+**The trap that shaped the API, and it is worth naming even now that it is
+past.** The obvious fix was to let the head magic vary, since `container_offset`
+already accepts both. That would have "worked": an A4 preset would decode to a
+plausible name, a plausible tag mask and a **wrong length** — silently, and
+exactly what the foot check exists to prevent. It is the `0x5b` echo hazard's
+shape in a parser: the failure manufactures a positive. The resolution was not
+to relax the check but to **replace the witness**, and the guard is now
+`an_a4_preset_decodes_at_the_length_its_header_declares`, which asserts the
+number 366 rather than merely that something came back.
+
+**The same trap, one level up, is the live one.** A tag mask read through the
+wrong box's table does not fail either — `THE SAW`'s mask decodes under a digi's
+names to Kick, Snare, Acoustic, Soft, Dark, Vintage: the right *count* of real
+tag names, five of six wrong, and nothing about the output that looks like a
+bug. That is why `tag_names_for` takes a slug and has **no default table**, and
+why `ui::presets::Library` carries the slug it was loaded for.
 
 A DT2 file also carries a **second `BEEFBACE` at 1060**, so finding the magic is
 not the same as finding the sound — `container_offset` takes the first, and a
@@ -1512,8 +1610,9 @@ That is a scan, not a browse. So:
   read this app has ever done and it is the first thing a user meets.
 - A bank with no index yet still lists — names and slots work immediately, tags
   fill in behind. Browsing must never block on tagging.
-- `Sound::tags()` and the calibrated `TAG_NAMES` are already right, so the filter
-  UI is a bit-mask test and nothing more.
+- `Sound::tags()` and the calibrated tag tables are already right, so the filter
+  UI is a bit-mask test and nothing more. (`Sound::tags` takes a slug as of
+  2026-08-29 — the *table* is what varies per box, not the bit-mask test.)
 
 **Built 2026-08-29**, and the bullets above are now properties something holds
 rather than decisions to remember. `preset_index::PresetIndex` is the store —
@@ -1522,8 +1621,9 @@ and `preset_scan::scan_bank` is the reader. Three things the code settled that
 this section had left open:
 
 - **The mask is stored raw and named at display time.** A stored *label* rots
-  the moment `TAG_NAMES` is recalibrated, and that calibration has already
-  changed once.
+  the moment a tag table is recalibrated, and the tables have since moved twice
+  — once corrected, once split per box. Every index written before either change
+  still reads correctly, which is the whole return on that decision.
 - **`occupied` is stored, so a bank that grew reads as incomplete** rather than
   as done. Comparing against the declared count instead of `entries.len()` is
   what makes "a box that gains presets rebuilds one bank" true rather than
@@ -1717,6 +1817,13 @@ Recorded now so v2 starts from evidence:
      front of a user as fact, so the doc was corrected — and with the distinction
      the A4 makes necessary: calibrated on the digis, a guess on anything else,
      which is what `BoxNotIndexable` actually rests on.
+
+     **The distinction was right and the remedy was too weak.** A doc comment
+     saying "a guess on anything else" does not stop the guess reaching a user;
+     the array was still global, so an A4's bits were still named. Fixed
+     2026-08-29 by splitting the table per box and removing the default, which
+     makes the distinction structural rather than advisory. A comment is not a
+     constraint.
 6. Load-to-track on the path step 3 chose, with audition mode and its backup.
 7. Exercise paging on a 256-entry bank.
 

@@ -103,7 +103,7 @@ fn main() {
                                 wrap.iter().map(|b| format!("{b:02x}")).collect::<Vec<_>>().join(" "),
                                 if s.name.is_empty() { "(empty)" } else { &s.name },
                                 s.tag_mask,
-                                s.tags().join(", ")
+                                s.tags(&identity.slug).join(", ")
                             );
                             if !s.name.is_empty() {
                                 names.push(s.name.clone());

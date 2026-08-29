@@ -50,9 +50,17 @@ fn path(bank: &str) -> String {
     format!("{SOUNDBANKS}/{bank}")
 }
 
-/// A library over the named banks, each starting empty.
+/// A library over the named banks, each starting empty — a DN2's.
+///
+/// The slug is not decoration: `tag_cells` names bits through
+/// the table that box uses, and an empty slug names nothing at all — see
+/// `Library::slug`.
 fn library(banks: &[&str]) -> Library {
-    Library { banks: banks.iter().map(|b| path(b)).collect(), ..Library::default() }
+    Library {
+        banks: banks.iter().map(|b| path(b)).collect(),
+        slug: "digitone2".into(),
+        ..Library::default()
+    }
 }
 
 /// Put a bank's listing and/or index into a library.
@@ -242,7 +250,37 @@ fn the_tag_grid_counts_across_every_bank_in_view() {
     assert_eq!(lib.tag_cells(&all(&lib)), vec![(10, "Bass", 2), (12, "Pad", 1)]);
     assert_eq!(lib.filtered(&all(&lib), 1 << 10, "").rows.len(), 2);
     // The same bits, named for a row's tooltip and for the filter caption.
-    assert_eq!(tag_names((1 << 10) | (1 << 12)), vec!["Bass", "Pad"]);
+    assert_eq!(tag_names((1 << 10) | (1 << 12), "digitone2"), vec!["Bass", "Pad"]);
+}
+
+/// The grid names bits through **the selected box's** table, and the same mask
+/// on an A4 is a different set of tags.
+///
+/// This is the panel-level guard on the correction of 2026-08-29. Before it,
+/// one global table named every box's bits, so an A4 library rendered a grid
+/// that was complete, well-formed and mostly wrong. The assertion to keep is the
+/// pair: the same two bits, two boxes, two answers, neither of them empty.
+#[test]
+fn the_tag_grid_names_bits_through_the_box_that_is_selected() {
+    let mut idx = BankIndex::new("analogfour", &path("A"), "0195", 1);
+    idx.insert(1, entry("101 BASS", 1 << 10, 366));
+    idx.insert(2, entry("SINGLE CHORD", 1 << 12, 366));
+
+    let mut a4 = Library { slug: "analogfour".into(), ..library(&["A"]) };
+    put(&mut a4, "A", None, Some(idx.clone()));
+
+    // Bits 10 and 12 are Kick and Pad on a digi; on an A4 they are Kick and
+    // Hi-Hat — one coincidence and one difference, from one pair of bits.
+    assert_eq!(a4.tag_cells(&all(&a4)), vec![(10, "Kick", 1), (12, "Hi-Hat", 1)]);
+    assert_eq!(tag_names(1 << 12, "analogfour"), vec!["Hi-Hat"]);
+    assert_eq!(tag_names(1 << 12, "digitone2"), vec!["Pad"]);
+
+    // And a box with no calibrated grid names nothing rather than borrowing a
+    // digi's names — an empty grid, not a confident one.
+    let mut unknown = Library { slug: "digitakt".into(), ..library(&["A"]) };
+    put(&mut unknown, "A", None, Some(idx));
+    assert!(unknown.tag_cells(&all(&unknown)).is_empty());
+    assert!(tag_names(1 << 12, "digitakt").is_empty());
 }
 
 /// **The trap the library view introduces, and the reason `Tagging::Partial`

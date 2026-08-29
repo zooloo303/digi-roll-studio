@@ -105,7 +105,7 @@ fn factory_presets_carry_no_tags() {
     ] {
         for (t, s) in kit_sounds(name, &spec).iter().enumerate() {
             assert_eq!(s.tag_mask, 0, "{name} track {} ({:?}) should be untagged", t + 1, s.name);
-            assert!(s.tags().is_empty());
+            assert!(s.tags("digitone2").is_empty());
         }
     }
 }
@@ -115,9 +115,11 @@ fn factory_presets_carry_no_tags() {
 /// property: if a future decode change shifts the field by even one byte, every
 /// line of this table moves at once.
 ///
-/// The mask **values** are ground truth. The tag *names* they map to are not
-/// fully calibrated — see `TAG_NAMES` — so this test asserts on `tag_mask`
-/// only, and never on a name.
+/// The mask **values** are ground truth, and this test asserts on `tag_mask`
+/// only, never on a name — which outlives the calibration that has since
+/// happened (`TAG_NAMES_DIGI`, and `tests/drive_preset.rs` for the check). A
+/// name assertion here would fail for two different reasons, a shifted field
+/// and a corrected table, and this test is meant to detect only the first.
 #[test]
 fn tagged_dn2_sounds_have_the_masks_the_box_wrote() {
     let sounds = kit_sounds(TAGGED, &dn2_spec());
@@ -160,14 +162,18 @@ fn tagged_dn2_sounds_have_the_masks_the_box_wrote() {
 /// where the sound's own name makes the tag near-certain, and says nothing about
 /// the other 23. `A_303_INNIT` — a 303 acid line — carries bits 10, 26, 30 and
 /// 31, which `TAG_NAMES` reads as Bass, Vintage, Mine and Favourite; `WAH FUNK`
-/// carries 11 and 25, read as Lead and Bright. If a future calibration against
-/// the device's own display disagrees with any of these, `TAG_NAMES` is wrong
-/// and this test is the thing that should fail.
+/// carries 11 and 25, read as Lead and Bright.
+///
+/// **The calibration it was waiting for has since landed and agreed with it** —
+/// see `tests/drive_preset.rs`, which holds 24 captures against all three boxes'
+/// Overbridge filter grids. This stays because it is evidence of a different
+/// kind: those tests check bytes against a screenshot, and this checks the
+/// decoded meaning against what the patch is plainly called.
 #[test]
 fn the_calibrated_tag_bits_match_the_patch_names() {
     let sounds = kit_sounds(TAGGED, &dn2_spec());
     let by_name = |n: &str| -> Vec<&'static str> {
-        sounds.iter().find(|s| s.name == n).unwrap_or_else(|| panic!("{n} in {TAGGED}")).tags()
+        sounds.iter().find(|s| s.name == n).unwrap_or_else(|| panic!("{n} in {TAGGED}")).tags("digitone2")
     };
     for tag in ["Bass", "Vintage", "Mine", "Favourite"] {
         assert!(by_name("A_303_INNIT").contains(&tag), "a 303 bass should be {tag}");

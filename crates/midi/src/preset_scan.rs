@@ -22,28 +22,27 @@
 //! the scan carries on. This is `decode_kit_sounds`' rule — one unreadable sound
 //! should not cost the browser the other fifteen — applied to a bank.
 //!
-//! # The A4 stops the scan immediately, and that is not the same thing
+//! # A box that cannot be decoded stops the scan immediately
 //!
-//! An A4's presets do not decode (see `drive::decode_drive_preset`), so **none**
-//! of them can be indexed. Grinding through 128 slots to skip all 128 is not
-//! resilience, it is a hang with a progress bar. So the first
-//! [`DriveError::UndecodableContainer`] ends the scan with
-//! [`ScanError::BoxNotIndexable`], which is a distinct answer meaning *this box
-//! cannot be tagged at all* — the browser should list it and hide the tag grid,
-//! per §10.2. Distinguishing "this preset is odd" from "this box is not
-//! supported" is the whole reason these are two variants and not one.
+//! When **none** of a box's presets can be indexed, grinding through 128 slots
+//! to skip all 128 is not resilience, it is a hang with a progress bar. So the
+//! first box-level parse failure ends the scan with
+//! [`ScanError::BoxNotIndexable`], a distinct answer meaning *this box cannot be
+//! tagged at all* — the browser should list it and hide the tag grid, per §10.2.
+//! Distinguishing "this preset is odd" from "this box is not supported" is the
+//! whole reason these are two variants and not one.
 //!
-//! **What the refusal actually rests on**, corrected 2026-08-29 after the file
-//! layout was measured properly: not the missing foot magic. The A4's extent is
-//! knowable without one — its payload is 366 bytes and its container starts at
-//! byte zero of it — and in any case nothing consumes an extent, since the A4
-//! answers no `0x6x` dump request and so has no load-onto-track path at all.
-//! The real blocker is that **the tag mask at `+8` has never been calibrated
-//! against the A4's own display.** `sound::TAG_NAMES` was calibrated on a DN2,
-//! and the A4's masks differ in character from every digi capture. Indexing
-//! them would be publishing a guess about a field, which is what §9's standard
-//! exists to prevent. This variant should stop being returned when that
-//! calibration happens, and not before.
+//! **This used to be the A4, and as of 2026-08-29 it is no longer any box we
+//! own.** The A4 indexes. Two separate mis-framings had it refused, and both are
+//! written up on `drive::decode_drive_preset`: the missing foot magic, which
+//! turned out not to matter because the file header declares the extent; and the
+//! uncalibrated tag mask at `+8`, which was the real blocker and is now
+//! calibrated against the A4's own filter grid — `sound::TAG_NAMES_A4`, checked
+//! by `protocol/tests/drive_preset.rs` on eight captures.
+//!
+//! The variant stays, because the *situation* is real and will recur: the next
+//! box to land will announce a container magic nobody has mapped, and it should
+//! say so on the first slot rather than the hundred-and-twenty-eighth.
 
 use std::sync::atomic::{AtomicBool, Ordering};
 
@@ -56,7 +55,7 @@ use crate::{ElektronDevice, MidiError};
 /// bytes of one preset.
 ///
 /// **This trait exists so the scan's decisions can be tested without a box.**
-/// Resume, cancel, skip-and-continue and the A4 stop are all branches that only
+/// Resume, cancel, skip-and-continue and the box-level stop are branches that only
 /// run on hardware otherwise, and `DEVELOPMENT.md` lesson 4 is what happens when
 /// the only fixture available makes two different rules agree. A scan is minutes
 /// long and is the first thing a user meets; its branches are worth pinning.
@@ -133,10 +132,13 @@ pub enum ScanError {
     Listing(MidiError),
     /// The listing came back in a shape the parser does not recognise.
     Layout(DriveError),
-    /// **This box's presets cannot be decoded at all** — in practice the A4,
-    /// whose containers carry no foot magic. Not a fault in the bank or the
-    /// cable: a statement about the box, and the browser should list it without
-    /// a tag grid rather than retry.
+    /// **This box's presets cannot be decoded at all.** Not a fault in the bank
+    /// or the cable: a statement about the box, and the browser should list it
+    /// without a tag grid rather than retry.
+    ///
+    /// No box on this desk reaches this any more — the A4, which used to, has
+    /// been decoding since 2026-08-29. It is reachable by a box whose container
+    /// magic is neither a digi's nor an A4's, which is the next unknown box.
     BoxNotIndexable { why: DriveError },
 }
 
@@ -210,9 +212,14 @@ pub fn scan_bank(
                     report.indexed += 1;
                     Some(name)
                 }
-                // The A4, and the one failure that is about the box rather than
-                // the slot. Stopping here rather than skipping 128 times.
-                Err(why @ DriveError::UndecodableContainer { .. }) => {
+                // The failures that are about the box rather than the slot:
+                // a container magic nobody has mapped, or an A4-shaped file
+                // whose layout does not hold. Both are systematic, so this
+                // stops here rather than skipping 128 times.
+                Err(
+                    why @ (DriveError::UndecodableContainer { .. }
+                    | DriveError::UnsizedContainer { .. }),
+                ) => {
                     return Err(ScanError::BoxNotIndexable { why });
                 }
                 Err(why) => {
@@ -407,15 +414,51 @@ mod tests {
         assert!(why.contains("/soundbanks/A/2"), "{why}");
     }
 
-    /// The A4 stops at the first preset rather than skipping all of them. A
-    /// scan that reads 128 slots to skip 128 is a hang with a progress bar, and
-    /// "this box cannot be tagged" is a different answer from "this preset is
-    /// odd" — which is why it is a distinct error and asserted as one.
+    /// The A4 indexes like a digi, with the tags its own filter grid shows.
+    ///
+    /// **This test asserted the exact opposite until 2026-08-29**, and the
+    /// reasons it gave for doing so were both wrong — see this module's header
+    /// and `drive::decode_drive_preset`. It is kept pointing the other way
+    /// rather than deleted, because "the A4 cannot be tagged" was believed
+    /// firmly enough to be written into four files, and the cheapest guard
+    /// against believing it again is a test that fails if it comes back.
     #[test]
-    fn an_a4_stops_the_scan_at_the_first_preset() {
+    fn an_a4_indexes_like_a_digi() {
         let mut boxx = FakeBox::a4();
-        let err = scan_bank(&mut boxx, "analogfour", "0195", "/soundbanks/A", None, &never(), |_| {})
-            .expect_err("an A4 cannot be indexed");
+        let (index, report) =
+            scan_bank(&mut boxx, "analogfour", "0195", "/soundbanks/A", None, &never(), |_| {})
+                .expect("an A4 indexes");
+
+        assert_eq!(report.indexed, 2);
+        assert_eq!(report.skipped, 0);
+        assert_eq!(boxx.reads.len(), 2, "both slots read, neither refused");
+
+        let saw = index.entries.get(&1).expect("slot 1");
+        assert_eq!(saw.name, "THE SAW");
+        assert_eq!(saw.tag_mask, 0x0584_0003);
+        assert_eq!(saw.size, 366, "sized by the header, since the A4 has no foot");
+    }
+
+    /// A box whose files cannot be sized stops at the **first** preset rather
+    /// than skipping all of them. A scan that reads 128 slots to skip 128 is a
+    /// hang with a progress bar, and "this box cannot be tagged" is a different
+    /// answer from "this preset is odd" — which is why it is a distinct error
+    /// and asserted as one.
+    ///
+    /// The A4 used to be this case and no longer is, so the box here is a made
+    /// one: A4 files with their container shifted off the payload boundary, so
+    /// the declared length no longer describes the struct. That is the shape of
+    /// the failure a genuinely unknown box would produce, and the mechanism
+    /// under test is the stop, not the box.
+    #[test]
+    fn a_box_whose_files_cannot_be_sized_stops_at_the_first_preset() {
+        let mut boxx = FakeBox::a4();
+        for (_, file) in boxx.files.iter_mut() {
+            file.insert(31, 0x00);
+        }
+        let err =
+            scan_bank(&mut boxx, "analogfour", "0195", "/soundbanks/A", None, &never(), |_| {})
+                .expect_err("a box that cannot be sized cannot be indexed");
 
         assert!(matches!(err, ScanError::BoxNotIndexable { .. }), "got {err:?}");
         assert_eq!(boxx.reads.len(), 1, "it must not grind through the whole bank");

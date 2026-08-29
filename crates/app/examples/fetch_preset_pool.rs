@@ -16,19 +16,25 @@
 // before anything tries to decode it. If the box wraps the struct in a header we
 // do not expect, that print is where it shows up.
 //
-// **Two: the tag mask needs calibrating.** `sound::TAG_NAMES` maps the 32 bits
-// of the mask to the 32 cells of the +Drive browser's filter grid, read
-// left-to-right and top-to-bottom. Seven of those bits are corroborated by patch
-// names in the committed fixture; the rest are a guess, and bit 8 is actively
-// suspect. The calibration table at the end prints each tagged sound's mask
-// alongside what `TAG_NAMES` claims it says, so it can be read against the
-// device's own display — either the box's PRESET browser or the same project in
-// Overbridge. A row that disagrees is `TAG_NAMES` being wrong, and the fixture
-// test `the_calibrated_tag_bits_match_the_patch_names` is where the fix belongs.
+// **Two: this is the recipe for calibrating a tag mask, and it has now been
+// run.** `sound::tag_names_for` maps the 32 bits of the mask to the 32 cells of
+// that box's +Drive browser filter grid, read left-to-right and top-to-bottom.
+// As of 2026-08-29 the digis and the A4 are both calibrated and checked against
+// 24 captures in `protocol/tests/drive_preset.rs`; what is left here is the
+// procedure, for the next box.
+//
+// The table at the end prints each tagged sound's mask alongside what the box's
+// table claims it says, to be read against an independent display of the same
+// data. **Use Overbridge's Sound Browser rather than the box's own screen if
+// you have it** — that is what made the A4 exact. The A4 truncates its tag row
+// at four entries, so three positions were read wrong off photographs of the
+// hardware and only the desktop grid, which lays all 32 cells out at once,
+// settled them.
 //
 // The bit histogram is the cheaper signal: across a whole pool, a grid cell like
 // "Kick" that is common in reality but never set here means the mapping is
-// shifted, without needing any single preset's tags to be known.
+// shifted, without needing any single preset's tags to be known. For a box with
+// no table at all it prints bit numbers, which is still enough to spot that.
 //
 // Note what this cannot reach. `index` is one byte, so it addresses the
 // project's 128-slot sound pool — Overbridge's "PROJECT PRESET POOL" — and not
@@ -40,7 +46,7 @@
 //   cargo run -p digi_roll_studio --example fetch_preset_pool -- --slots 16
 
 use digi_midi::{list_inputs, list_outputs, ElektronDevice, PortBinding};
-use digi_protocol::sound::{decode_sound_dump, Sound, TAG_NAMES};
+use digi_protocol::sound::{decode_sound_dump, tag_names_for, Sound};
 
 /// The project sound pool is 128 slots on both boxes (elk-herd's
 /// `soundPool = Bank.initializeEmpty 128`).
@@ -150,7 +156,7 @@ fn main() {
             }
         }
 
-        report(&pool, timeouts, undecodable);
+        report(&pool, &identity.slug, timeouts, undecodable);
     }
 
     if boxes == 0 {
@@ -158,7 +164,7 @@ fn main() {
     }
 }
 
-fn report(pool: &[(u8, Sound)], timeouts: usize, undecodable: usize) {
+fn report(pool: &[(u8, Sound)], slug: &str, timeouts: usize, undecodable: usize) {
     let filled: Vec<&(u8, Sound)> = pool.iter().filter(|(_, s)| !s.is_empty()).collect();
     println!(
         "\n  {} slot(s) answered, {} named, {} empty, {timeouts} timed out, {undecodable} undecodable",
@@ -172,20 +178,20 @@ fn report(pool: &[(u8, Sound)], timeouts: usize, undecodable: usize) {
         return;
     }
 
-    println!("\n  SLOT  NAME               TAG MASK    TAGS (per TAG_NAMES — unverified)");
+    println!("\n  SLOT  NAME               TAG MASK    TAGS (per this box's table)");
     for (index, s) in &filled {
         println!(
             "  {:>4}  {:<18} {:#010x}  {}",
             index + 1,
             s.name,
             s.tag_mask,
-            s.tags().join(", ")
+            s.tags(slug).join(", ")
         );
     }
 
     // Which bits the whole pool ever uses. A grid cell that is common in real
     // libraries but never set across a whole pool is the cheapest evidence that
-    // TAG_NAMES is shifted — it needs no preset's true tags to be known.
+    // this box's table is shifted — it needs no preset's true tags to be known.
     let mut used = [0usize; 32];
     for (_, s) in &filled {
         for (bit, count) in used.iter_mut().enumerate() {
@@ -194,22 +200,27 @@ fn report(pool: &[(u8, Sound)], timeouts: usize, undecodable: usize) {
             }
         }
     }
+    // An uncalibrated box has no names to print, and printing a digi's would be
+    // the whole mistake this tool exists to catch. Bit numbers still carry the
+    // histogram, which is the part that works without a table.
+    let name = |bit: usize| -> String {
+        tag_names_for(slug).map(|t| t[bit].to_string()).unwrap_or_else(|| "?".into())
+    };
     println!("\n  tag bits used across the pool:");
     for (bit, count) in used.iter().enumerate().filter(|(_, &c)| c > 0) {
-        println!("    bit {bit:>2} ({:<11}) set on {count} preset(s)", TAG_NAMES[bit]);
+        println!("    bit {bit:>2} ({:<11}) set on {count} preset(s)", name(bit));
     }
-    let never: Vec<String> = (0..32)
-        .filter(|&b| used[b] == 0)
-        .map(|b| format!("{b} {}", TAG_NAMES[b]))
-        .collect();
+    let never: Vec<String> =
+        (0..32).filter(|&b| used[b] == 0).map(|b| format!("{b} {}", name(b))).collect();
     if !never.is_empty() {
         println!("    never set: {}", never.join(", "));
     }
 
     println!(
-        "\n  To calibrate: compare the TAGS column against the same presets in the\n  \
-         box's own browser (or Overbridge). Any row that disagrees means TAG_NAMES\n  \
-         is wrong — fix it there, then update the assertions in\n  \
-         crates/protocol/tests/sound.rs::the_calibrated_tag_bits_match_the_patch_names."
+        "\n  To calibrate a new box: compare the TAGS column against the same presets\n  \
+         in Overbridge's Sound Browser, whose filter grid shows all 32 cells at once.\n  \
+         A row that disagrees means that box's table in protocol::sound is wrong —\n  \
+         fix it there, add a table to tag_names_for, and pin captures in\n  \
+         crates/protocol/tests/drive_preset.rs::every_capture_decodes_the_tags_its_box_displays."
     );
 }

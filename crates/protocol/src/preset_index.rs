@@ -75,8 +75,13 @@ pub struct IndexEntry {
     /// different reads could disagree and nothing would say so.
     pub name: String,
     /// The raw tag bitmask from sound-struct `+8`. Stored raw, and named by
-    /// `sound::TAG_NAMES` at the point of display: a stored *label* would rot
+    /// `sound::tag_names` at the point of display: a stored *label* would rot
     /// the moment the calibration changed, and a mask cannot.
+    ///
+    /// **That has now paid for itself twice.** The tables were corrected once
+    /// and then split per box on 2026-08-29 — the same bit means Kick on a digi
+    /// and Bass on an A4 — and every index written before either change still
+    /// reads correctly, because none of them stored a word.
     pub tag_mask: u32,
     /// The struct's measured length. Kept because it varies **within** a bank —
     /// one DN2 bank holds both 319 and 359 — so it is per-preset data rather

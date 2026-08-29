@@ -244,7 +244,7 @@ fn main() {
                         t + 1,
                         payload.len(),
                         match &decoded {
-                            Ok(s) => format!("{:<18} {:?}", s.name, s.tags()),
+                            Ok(s) => format!("{:<18} {:?}", s.name, s.tags(&identity.slug)),
                             Err(e) => format!("undecodable: {e}"),
                         }
                     );

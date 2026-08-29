@@ -43,15 +43,11 @@
 //     Tags are an overlay on rows, not a precondition for them.
 //
 //  4. **A box that cannot be tagged is a state — but the button that was
-//     pressed still has to answer.** `scan_bank` stops at the first A4 preset
-//     with `ScanError::BoxNotIndexable` rather than skipping 128 slots to find
-//     that out. Read that module's header for what the refusal actually rests
-//     on, because it is easy to get wrong and was wrong here first: **not** the
-//     missing foot magic, but the fact that the tag mask at `+8` has never been
-//     calibrated against the A4's own display — `TAG_NAMES` was calibrated on a
-//     DN2. This renders as [`Tagging::Unavailable`]: the bank still lists, the
-//     grid is gone, and there is **no retry**, because a retry cannot supply the
-//     one thing missing, which is a hardware session.
+//     pressed still has to answer.** `scan_bank` stops at the first preset it
+//     cannot decode with `ScanError::BoxNotIndexable`, rather than skipping 128
+//     slots to find that out. This renders as [`Tagging::Unavailable`]: the bank
+//     still lists, the grid is gone, and there is **no retry**, because a retry
+//     cannot supply the one thing missing, which is a hardware session.
 //
 //     **What the A4 on the desk changed:** the first build expressed all of that
 //     by quietly *removing* the SCAN button, on the reasoning that a refusal
@@ -61,6 +57,21 @@
 //     deleting the thing pressed, and reads as a bug rather than as an answer.
 //     So the state is still a state, and a [`Note::Warn`] now says so at the
 //     point of action as well. A control that vanishes is not a reply.
+//
+//     **The A4 is no longer the box this describes.** Since 2026-08-29 it lists,
+//     scans and tags like a digi; see `midi::preset_scan` and
+//     `protocol::drive::decode_drive_preset` for the two mis-framings that had
+//     it refused, neither of which was the one first recorded here. The state
+//     stays for the next unknown box, and it was worth building for its own
+//     sake: it is the difference between a panel that says *this box cannot do
+//     that* and one that appears broken.
+//
+//     What replaced it as the live concern is quieter and is [`Library::slug`]:
+//     the tag *names* now follow the box, and a library with no slug names no
+//     tags. Reading an A4's mask through a digi's table produces a full,
+//     plausible, wholly wrong list rather than an empty one — five of six wrong
+//     on `THE SAW` — so the failure this panel now has to avoid is not a missing
+//     grid but a confident one.
 //
 //  5. **The index is keyed by the box that answered, never by the row.** The
 //     store is one file per (model key, bank) and it outlives the session, so a
@@ -111,7 +122,8 @@ use digi_midi::ElektronDevice;
 use digi_protocol::device::DeviceIdentity;
 use digi_protocol::drive::{parse_list_entries, ListEntry};
 use digi_protocol::preset_index::{BankIndex, PresetIndex};
-use digi_protocol::sound::TAG_NAMES;
+use digi_protocol::sound::tag_names_for;
+pub use digi_protocol::sound::tag_names;
 use eframe::egui::{self, Ui};
 
 use crate::ui::transfer::binding;
@@ -255,9 +267,19 @@ pub struct Library {
     pub banks: Vec<String>,
     pub data: BTreeMap<String, BankData>,
     /// Set when this box answered `BoxNotIndexable`. **A property of the box,
-    /// not of a bank**, which is why it lives here and not in [`BankData`]: the
-    /// A4 does not become indexable because a different bank was picked.
+    /// not of a bank**, which is why it lives here and not in [`BankData`]: a
+    /// box does not become indexable because a different bank was picked.
     pub refused: Option<String>,
+    /// Which box's library this is, as an identity slug — and therefore which
+    /// tag table names its bits.
+    ///
+    /// **Empty until a box is selected, and empty means no tag is named at
+    /// all.** That is the safe default rather than an oversight: a mask read
+    /// through the wrong box's table produces a full, plausible, wrong list —
+    /// see `sound::TAG_NAMES_A4`, where five of `THE SAW`'s six tags come out
+    /// wrong under a digi's names. Empty renders as a mask with no labels,
+    /// which is visibly incomplete instead of quietly false.
+    pub slug: String,
 }
 
 impl Library {
@@ -361,6 +383,9 @@ impl Library {
     /// counts come from the index, so a library half-scanned shows the tags
     /// found so far and grows as the scan lands.
     pub fn tag_cells(&self, banks: &[String]) -> Vec<(usize, &'static str, usize)> {
+        let Some(table) = tag_names_for(&self.slug) else {
+            return Vec::new();
+        };
         (0..32)
             .filter_map(|bit| {
                 let count: usize = banks
@@ -369,21 +394,19 @@ impl Library {
                     .filter_map(|d| d.index.as_ref())
                     .map(|i| i.entries.values().filter(|e| e.tag_mask & (1u32 << bit) != 0).count())
                     .sum();
-                (count > 0).then_some((bit, TAG_NAMES[bit], count))
+                (count > 0).then_some((bit, table[bit], count))
             })
             .collect()
     }
 }
 
-/// The names of the tags in `mask`, for a row's tooltip.
-///
-/// Reads `TAG_NAMES` directly rather than through `Sound::tags`, because the
-/// index stores a mask and never keeps a `Sound` — which is §10.3's decision:
-/// a stored *label* rots the moment the calibration changes, and the mask
-/// cannot.
-pub fn tag_names(mask: u32) -> Vec<&'static str> {
-    (0..32).filter(|bit| mask & (1u32 << bit) != 0).map(|bit| TAG_NAMES[bit]).collect()
-}
+// The names of the tags in a mask are `sound::tag_names`, re-exported above.
+//
+// This panel used to carry its own copy, reading a global `TAG_NAMES` directly
+// rather than through `Sound::tags`, because the index stores a mask and never
+// keeps a `Sound`. That reason still holds and is now served by the free
+// function in `protocol::sound` — which takes a slug, so the copy here would
+// have had to grow one too and there is no case for two of them.
 
 /// Why this box's +Drive cannot be read, or `None` if it can.
 ///
@@ -955,6 +978,7 @@ impl PresetsPanel {
     /// off — reachable in one call, and the alternative is a claim in a header
     /// comment that nothing checks.
     pub fn load_library(&mut self, model_key: &str) -> &Library {
+        self.library.slug = model_key.to_string();
         let store = self.store();
         for bank in self.library.banks.clone() {
             let index = store.as_ref().and_then(|s| s.load(model_key, &bank));
@@ -1213,7 +1237,7 @@ impl PresetsPanel {
         let cells = self.library.tag_cells(&banks);
         let caption = match self.mask {
             0 => String::from("no filter"),
-            mask => tag_names(mask).join(" · "),
+            mask => tag_names(mask, &self.library.slug).join(" · "),
         };
         super::section_header(ui, "TAGS", Some(&caption));
 
@@ -1329,7 +1353,7 @@ impl PresetsPanel {
                             label.on_hover_text(format!(
                                 "{where_it_is} · {} bytes · {}",
                                 row.size,
-                                tag_names(mask).join(", ")
+                                tag_names(mask, &self.library.slug).join(", ")
                             ));
                         }
                         None => {

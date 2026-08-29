@@ -111,7 +111,7 @@ fn main() {
                                     s.version,
                                     s.bytes.len(),
                                     s.tag_mask,
-                                    s.tags(),
+                                    s.tags(&identity.slug),
                                     s.name
                                 ),
                                 Err(e) => println!(

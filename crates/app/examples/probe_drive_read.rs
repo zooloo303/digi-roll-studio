@@ -175,7 +175,7 @@ fn main() {
                         "  {path:<18} {:>4}b  struct {size:>4}  {:<18} {:?}",
                         assembled.len(),
                         sound.name,
-                        sound.tags()
+                        sound.tags(&identity.slug)
                     ),
                     Err(e) => println!("  {path:<18} decode refused at {size}: {e}"),
                 },

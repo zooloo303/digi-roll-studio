@@ -24,11 +24,12 @@
 //!   * **Names are Windows-1252.** `BLÅ VIND` and `SYNTHVÅG` are the cases that
 //!     fail under `from_utf8_lossy`, and they are here as literals so a
 //!     regression reads as a mangled name rather than as a byte count.
-//!   * **The A4 is refused as the A4.** It has no foot magic anywhere, so it
-//!     cannot be decoded honestly, and the test asserts the *specific* error —
-//!     because the failure mode worth guarding is a future change that "fixes"
-//!     the A4 by relaxing the head magic and silently returns a sound of the
-//!     wrong length.
+//!   * **The A4 is sized by its header, not by a foot.** It has no foot magic
+//!     anywhere, and until 2026-08-29 that had it refused outright. Its extent
+//!     is nonetheless stated — by the file header's declared payload length,
+//!     with the container flush against it — so it decodes, and the tests pin
+//!     both halves: that it comes out with the right length and name, and that
+//!     the layout the length rests on is the layout every capture has.
 //!
 //! A fourth was added once the layout was measured rather than assumed: every
 //! file is a **31-byte header, a payload, and a 12-byte trailer**, on all three
@@ -40,8 +41,9 @@
 use std::path::PathBuf;
 
 use digi_protocol::drive::{
-    container_offset, decode_drive_preset, DriveError, A4_CONTAINER_MAGIC,
+    container_offset, decode_drive_preset, file_declared_size, DriveError,
 };
+use digi_protocol::sound::tag_names_for;
 
 fn fixture(name: &str) -> Vec<u8> {
     let path =
@@ -107,27 +109,62 @@ fn names_are_windows_1252_not_utf8() {
     assert!(!dn2.name.contains('\u{FFFD}'));
 }
 
-/// The A4 is refused **by name**, and this is the guard against a future
-/// "fix" that relaxes the head magic. Such a change would decode an A4 preset
-/// to a plausible name, a plausible tag mask and a wrong length — which is
-/// precisely what `decode_sound`'s foot check exists to prevent, and it would
-/// pass any test that only asserted "does not panic".
+/// The A4 decodes, and is sized by the one witness it has.
+///
+/// This test replaced one that asserted the opposite. The old one guarded
+/// against a "fix" that relaxed the head magic and returned a sound of the
+/// wrong length — a real hazard, and the answer to it turned out not to be
+/// refusal but *sizing from the header* rather than from a relaxed search. So
+/// the length is asserted here explicitly: 366 bytes, the payload size the file
+/// itself declares. A change that starts guessing again fails on the number.
 #[test]
-fn an_a4_preset_is_refused_as_the_a4_rather_than_as_corruption() {
+fn an_a4_preset_decodes_at_the_length_its_header_declares() {
     let file = fixture("analogfour-soundbanks-A-1-THE-SAW-2026-08-29.bin");
 
+    assert_eq!(container_offset(&file), Some(31), "flush: the A4 has no five-byte wrapper");
+    assert_eq!(file_declared_size(&file), Some(366));
+
+    let sound = decode_drive_preset(&file).expect("THE SAW should decode");
+    assert_eq!(sound.name, "THE SAW");
+    assert_eq!(sound.bytes.len(), 366, "the declared payload length, not a searched-for one");
+    assert_eq!(sound.tag_mask, 0x0584_0003);
+}
+
+/// A file whose A4 container is *not* flush with a header refuses rather than
+/// falling back, because the declared length is the only witness to the extent
+/// and it does not apply once the layout moves.
+#[test]
+fn an_a4_container_that_is_not_flush_is_refused_rather_than_guessed_at() {
+    let mut file = fixture("analogfour-soundbanks-A-1-THE-SAW-2026-08-29.bin");
+    // Shift the container one byte later, leaving the header's declaration
+    // describing a payload that no longer starts where it says.
+    file.insert(31, 0x00);
+
     match decode_drive_preset(&file) {
-        Err(DriveError::UndecodableContainer { magic, at }) => {
-            assert_eq!(magic, A4_CONTAINER_MAGIC);
-            assert_eq!(at, 31, "flush with the payload: the A4 has no five-byte wrapper");
+        Err(DriveError::UnsizedContainer { at, declared }) => {
+            assert_eq!(at, 32);
+            assert_eq!(declared, Some(366));
         }
-        other => panic!("expected UndecodableContainer, got {other:?}"),
+        other => panic!("expected UnsizedContainer, got {other:?}"),
     }
 }
 
-/// Why the A4 cannot simply be let through: the thing that would size it is
-/// not in the file. Asserted directly, so that if a future OS starts emitting
-/// a foot this test fails and tells somebody the situation changed.
+/// A container magic that is neither box's is still refused, and still carries
+/// the magic it found — that is the diagnosis for the fourth box, whenever one
+/// lands.
+#[test]
+fn an_unknown_container_magic_is_refused_and_names_itself() {
+    let mut file = fixture("analogfour-soundbanks-A-1-THE-SAW-2026-08-29.bin");
+    file[31..35].copy_from_slice(&0xBEEF_BADEu32.to_be_bytes());
+    // `container_offset` searches for the magic, so with the A4's overwritten
+    // there is no container at all — which is itself the honest answer.
+    assert!(matches!(decode_drive_preset(&file), Err(DriveError::NoContainer { .. })));
+}
+
+/// The A4 really has no foot, which is *why* it is sized from its header rather
+/// than a preference for doing so. Asserted directly, so that if a future OS
+/// starts emitting one this test fails and tells somebody the situation changed
+/// — at which point the cheaper `decode_sound` path becomes available to it.
 #[test]
 fn no_a4_capture_contains_a_foot_magic_anywhere() {
     let foot = 0xBACE_F00Cu32.to_be_bytes();
@@ -239,4 +276,146 @@ fn a_file_with_no_container_says_what_it_found_instead() {
     // An empty read is its own answer rather than an empty pair of brackets.
     let err = decode_drive_preset(&[]).expect_err("nothing at all");
     assert!(err.to_string().contains("nothing"), "{err}");
+}
+
+// --- The tag calibration -------------------------------------------------------
+//
+// Every one of the 24 captures, decoded through `sound::tag_names_for` and held
+// against the tag column of that box's Sound Browser in Overbridge 2.26.9,
+// screenshotted 2026-08-29. The eight files per box are `/soundbanks/A/1..8`,
+// which are exactly the first eight rows each screenshot shows — so the two
+// sides of this table were produced by different software reading different
+// copies of the same data, which is the only reason it is worth asserting.
+//
+// **This is the check `TAG_NAMES` went three days without.** That array was
+// calibrated on one DN2 preset and described in its own doc as ground truth for
+// two boxes; the DT2 had never been held against anything, and the A4 was being
+// decoded through a table where bit 0 means Kick and on that box means Bass. A
+// single preset cannot catch a table that is right about the bits it happens to
+// set, so the guard has to be a set of presets wide enough to light up most of
+// the vocabulary. These 24 set 27 of the 32 digi bits and 17 of the 32 A4 ones.
+//
+// Ordering is asserted too, not just membership: `tag_names` walks bit 0 upward,
+// so a table shifted by one produces the right *count* and the wrong names, and
+// a list comparison catches that where a set comparison would not.
+
+/// `(file, slug, name, tags as Overbridge prints them)`.
+fn tagged_captures() -> Vec<(&'static str, &'static str, &'static str, &'static [&'static str])> {
+    vec![
+        // --- Analog Four, OS build 0195 ---
+        ("analogfour-soundbanks-A-1-THE-SAW-2026-08-29.bin", "analogfour", "THE SAW",
+         &["Bass", "Lead", "Hard", "Bright", "Vintage", "Epic"]),
+        ("analogfour-soundbanks-A-2-SQUARE-WAVE-2026-08-29.bin", "analogfour", "SQUARE WAVE",
+         &["Bass", "Lead", "Hard", "Bright"]),
+        ("analogfour-soundbanks-A-3-GOOM-SSAB-2026-08-29.bin", "analogfour", "GOOM SSAB",
+         &["Bass", "Lead", "Soft", "Vintage", "Acid"]),
+        ("analogfour-soundbanks-A-4-SNAKECHARMER-2026-08-29.bin", "analogfour", "SNAKECHARMER",
+         &["Lead", "Pad", "Brass", "Soft"]),
+        ("analogfour-soundbanks-A-5-SINGLE-CHORD-2026-08-29.bin", "analogfour", "SINGLE CHORD",
+         &["Lead", "Pad", "Texture", "Chord", "Soft", "Bright"]),
+        ("analogfour-soundbanks-A-6-101-BASS-2026-08-29.bin", "analogfour", "101 BASS",
+         &["Bass", "Soft", "Vintage", "Acid"]),
+        ("analogfour-soundbanks-A-7-EDGAR-2026-08-29.bin", "analogfour", "EDGAR",
+         &["Texture", "Strings", "Atmosphere", "Evolving", "Epic"]),
+        ("analogfour-soundbanks-A-8-JUST-BASS-2026-08-29.bin", "analogfour", "JUST BASS",
+         &["Bass", "Hard", "Vintage", "Epic"]),
+        // --- Digitakt II, OS build 0071 ---
+        ("digitakt2-soundbanks-A-1-ACIDD-2026-08-29.bin", "digitakt2", "ACIDD", &["Synth"]),
+        ("digitakt2-soundbanks-A-2-BAM-BASS-2026-08-29.bin", "digitakt2", "BAM BASS", &["Bass"]),
+        ("digitakt2-soundbanks-A-3-BAM-TICK-2026-08-29.bin", "digitakt2", "BAM TICK",
+         &["Percussion"]),
+        ("digitakt2-soundbanks-A-4-BL--LOFI-BASS-2026-08-29.bin", "digitakt2", "BLÅ LOFI BASS",
+         &["Bass"]),
+        ("digitakt2-soundbanks-A-5-BL--MEOW-2026-08-29.bin", "digitakt2", "BLÅ MEOW",
+         &["Sound Fx"]),
+        ("digitakt2-soundbanks-A-6-BL--SQ-CHIP-2026-08-29.bin", "digitakt2", "BLÅ SQ CHIP",
+         &["Synth"]),
+        ("digitakt2-soundbanks-A-7-BL--VIND-2026-08-29.bin", "digitakt2", "BLÅ VIND",
+         &["Texture", "Noisy", "Soft"]),
+        ("digitakt2-soundbanks-A-8-BLUE-HH-2026-08-29.bin", "digitakt2", "BLUE HH", &["Hi-Hat"]),
+        // --- Digitone II, OS build 0050 ---
+        ("digitone2-soundbanks-A-1-HIDDEN-TEARS-2026-08-29.bin", "digitone2", "HIDDEN TEARS",
+         &["Rimshot", "Lead", "Atmosphere", "Soft", "Vintage"]),
+        ("digitone2-soundbanks-A-2-MONOLOW-2026-08-29.bin", "digitone2", "MONOLOW",
+         &["Bass", "Glitch", "Soft", "Dark", "Vintage"]),
+        ("digitone2-soundbanks-A-3-SYNTHV-G-2026-08-29.bin", "digitone2", "SYNTHVÅG",
+         &["Lead", "Chord", "Bright", "Vintage"]),
+        ("digitone2-soundbanks-A-4-WET-SAND-2026-08-29.bin", "digitone2", "WET SAND",
+         &["Lead", "Atmosphere", "Soft", "Vintage"]),
+        ("digitone2-soundbanks-A-5-FAMILY-CREST-2026-08-29.bin", "digitone2", "FAMILY CREST",
+         &["Lead", "Soft", "Vintage"]),
+        ("digitone2-soundbanks-A-6-7THPAD-2026-08-29.bin", "digitone2", "7THPAD",
+         &["Tom", "Pad", "Chord", "Atmosphere", "Soft", "Dark"]),
+        ("digitone2-soundbanks-A-7-BASS-SPACE-2026-08-29.bin", "digitone2", "BASS SPACE",
+         &["Rimshot", "Cowbell", "Bass"]),
+        ("digitone2-soundbanks-A-8-LONELY-NIGHTS-2026-08-29.bin", "digitone2", "LONELY NIGHTS",
+         &["Cowbell", "Lead", "Soft", "Vintage"]),
+    ]
+}
+
+#[test]
+fn every_capture_decodes_the_tags_its_box_displays() {
+    for (file, slug, name, expected) in tagged_captures() {
+        let sound = decode_drive_preset(&fixture(file)).unwrap_or_else(|e| panic!("{name}: {e}"));
+        assert_eq!(sound.name, name, "{file}");
+        assert_eq!(
+            sound.tags(slug),
+            expected,
+            "{name} on {slug}: mask {:#010x} decodes to the wrong tags — see sound::TAG_NAMES_A4 \
+             and TAG_NAMES_DIGI, both calibrated against Overbridge 2.26.9 on 2026-08-29",
+            sound.tag_mask,
+        );
+    }
+}
+
+/// The A4's table is a different table, not a relabelled one — asserted on the
+/// bits that actually differ, because a caller reading an A4 through the digi
+/// array gets a full, plausible, wrong answer rather than an empty one.
+///
+/// `THE SAW` is the case to keep in mind: through the digi table its mask reads
+/// Kick, Snare, Acoustic, Soft, Dark, Vintage — six tags, every one a real name,
+/// the right *number* of them, and five of the six wrong. Only Vintage survives,
+/// and it survives by coincidence. Nothing about that output looks like a bug.
+#[test]
+fn the_a4_table_is_not_the_digi_table() {
+    let saw = decode_drive_preset(&fixture("analogfour-soundbanks-A-1-THE-SAW-2026-08-29.bin"))
+        .expect("THE SAW should decode");
+
+    assert_eq!(saw.tags("analogfour"), ["Bass", "Lead", "Hard", "Bright", "Vintage", "Epic"]);
+    assert_eq!(saw.tags("digitone2"), ["Kick", "Snare", "Acoustic", "Soft", "Dark", "Vintage"]);
+}
+
+/// Exactly two of the thirty-two positions agree between the two tables.
+///
+/// Pinned because the prose around these tables has already been wrong about it
+/// twice — both the parked note and PLAN.md's first draft claimed "Mine and
+/// Favourite and a scattering in the middle", and there is no scattering. Names
+/// recur across the vocabularies without ever landing on the same bit, which is
+/// exactly what makes a mis-decoded mask look ordinary.
+#[test]
+fn the_two_tables_agree_on_exactly_two_positions() {
+    let digi = tag_names_for("digitone2").expect("a digi table");
+    let a4 = tag_names_for("analogfour").expect("an A4 table");
+
+    let agree: Vec<&str> =
+        (0..32).filter(|&b| digi[b] == a4[b]).map(|b| digi[b]).collect();
+    assert_eq!(agree, ["Mine", "Favourite"]);
+
+    // And the recurrence that makes the rest dangerous: shared names, moved.
+    assert_eq!((digi[0], a4[0]), ("Kick", "Bass"));
+    assert_eq!((digi[10], a4[10]), ("Bass", "Kick"));
+    assert_eq!((digi[29], a4[29]), ("Loop", "Input"));
+}
+
+/// A box with no calibrated grid names nothing. Not a digi's names as a
+/// fallback, and not a panic: the mask is still there to display.
+#[test]
+fn an_uncalibrated_box_names_no_tags_at_all() {
+    let saw = decode_drive_preset(&fixture("analogfour-soundbanks-A-1-THE-SAW-2026-08-29.bin"))
+        .expect("THE SAW should decode");
+
+    assert!(tag_names_for("digitakt").is_none(), "the mk1's grid has never been read");
+    assert!(saw.tags("digitakt").is_empty());
+    assert!(saw.tags("").is_empty());
+    assert_ne!(saw.tag_mask, 0, "the mask survives even when nothing can name it");
 }

@@ -31,38 +31,119 @@ use crate::pattern::{chars16, u32_be, KitSpec};
 pub const SOUND_MAGIC_HEAD: u32 = 0xBEEF_BACE;
 pub const SOUND_MAGIC_FOOT: u32 = 0xBACE_F00C;
 
+/// The A4's head magic, one nibble off the digis' and followed by **no foot at
+/// all**. The first three fields still sit where the diagram above puts them —
+/// that is what all eight A4 captures decode to. See [`decode_a4_sound`].
+pub const A4_SOUND_MAGIC_HEAD: u32 = 0xBEEF_BABA;
+
 /// Offsets within one sound struct. Fixed across every version seen so far —
 /// the struct grows at the tail (DT2 kit v3 341 bytes → v4 1109), not the head.
 pub const SOUND_VERSION_OFFSET: usize = 4;
 pub const SOUND_TAG_MASK_OFFSET: usize = 8;
 pub const SOUND_NAME_OFFSET: usize = 12;
 
-/// The 32 tags in the +Drive browser's filter grid, in bit order.
+/// The 32 tags in the +Drive browser's filter grid, in bit order, on the two
+/// digis.
 ///
-/// **Calibrated on 2026-08-26, on a DN2** — this doc said "unverified ordering"
-/// until 2026-08-29 and by then it had been wrong for three days. The check was
-/// the one this comment used to ask for: DN2 pool slot 1 `BD BRASSY KICK` reads
-/// `0x04100021`, which these names decode to Kick, Percussion, Noisy, Vintage,
-/// matching the box's own display bit for bit. See PLAN.md §9.
+/// **Calibrated on a DN2 on 2026-08-26 and on both digis on 2026-08-29.** The
+/// first pass rested on one preset — DN2 pool slot 1 `BD BRASSY KICK`, mask
+/// `0x04100021`, read against the box's own screen. The second held all eight
+/// committed DT2 captures and all eight DN2 ones against Overbridge 2.26.9's
+/// filter grid and tag column: sixteen presets, every bit accounted for, no tag
+/// shown that the mask does not carry and none carried that is not shown. The
+/// DT2 had never actually been checked before that — this array claimed to be
+/// "ground truth for a DT2 and a DN2" on the strength of a DN2 alone, which is
+/// the same over-generalisation [`TAG_NAMES_A4`] exists to undo.
 ///
-/// **Calibrated on the digis, and on nothing else.** The A4's masks differ in
-/// character from every digi capture and have never been held against that
-/// box's display, which is what `preset_scan::ScanError::BoxNotIndexable`
-/// actually rests on — see that module. So these names are ground truth for a
-/// DT2 and a DN2 and a guess for anything else, and a caller naming bits for a
-/// third box is publishing that guess.
+/// **The two digis share this table exactly.** That is measured, not assumed:
+/// the DT2's and DN2's filter grids are the same 32 names in the same 32
+/// positions. [`tag_names_for`] still routes them separately so a firmware that
+/// splits them can be handled there rather than here.
 ///
 /// [`Sound::tag_mask`] remains the value to **store and compare on**, for a
 /// reason calibration does not retire: PLAN.md §10.3's index keeps the raw mask
-/// because a stored *label* would rot the next time this array moves, and this
-/// array has moved once already.
-pub const TAG_NAMES: [&str; 32] = [
+/// because a stored *label* would rot the next time one of these arrays moves,
+/// and one has moved once already.
+pub const TAG_NAMES_DIGI: [&str; 32] = [
     "Kick", "Snare", "Rimshot", "Clap", "Tom", "Percussion", "Hi-Hat", "Cymbal",
     "Cowbell", "Synth", "Bass", "Lead", "Pad", "Texture", "Chord", "Sound Fx",
     "Electronic", "Metallic", "Acoustic", "Atmosphere", "Noisy", "Glitch", "Hard", "Soft",
     "Dark", "Bright", "Vintage", "Epic", "Fail", "Loop", "Mine", "Favourite",
 ];
 
+/// The A4's tag vocabulary — the same *names*, in almost none of the same
+/// *places*.
+///
+/// **Calibrated on 2026-08-29 against Overbridge 2.26.9's filter grid**, which
+/// lays all 32 tags out in a 4×8 block that reads left-to-right, top-to-bottom
+/// as bit 0 through bit 31. All eight committed A4 captures decode through this
+/// array to exactly the tag list Overbridge prints beside them.
+///
+/// The overlap with [`TAG_NAMES_DIGI`] is small enough to be a trap rather than
+/// a convenience: bit 0 is Kick on a digi and **Bass** on an A4, bit 22 is Hard
+/// against **Dark**, bit 25 Bright against **Acid**. **Exactly two of the
+/// thirty-two positions agree** — Mine at 30 and Favourite at 31 — and every
+/// other bit means something else. Names recur across the two vocabularies
+/// (Noisy, Glitch, Bass, Kick) but never in the same place, which is worse than
+/// no overlap: it is what makes a mis-decoded mask read as an ordinary list of
+/// tags. So a single global table was not merely imprecise, it named nearly
+/// every A4 tag wrongly, and that is why [`tag_names_for`] takes a slug and
+/// there is no table-less default.
+///
+/// **A note on how this was read, worth keeping.** Three photographs of the A4's
+/// own screen got three positions wrong — bit 7 read as "STAB" (it is Strings),
+/// bit 14 as "AMB" (Atmosphere), bit 25 as "ARP" (Acid) — because the A4
+/// truncates its tag row at four entries, so `THE SAW` shows four tags and
+/// carries six. The device's own display is the standard PLAN.md §9 sets and it
+/// was not sufficient here; a desktop editor rendering the same data settled it
+/// in one screenshot. Using both is what made this exact rather than
+/// exact-looking.
+pub const TAG_NAMES_A4: [&str; 32] = [
+    "Bass", "Lead", "Pad", "Texture", "Chord", "Keys", "Brass", "Strings",
+    "Transient", "Sound Fx", "Kick", "Snare", "Hi-Hat", "Percussion", "Atmosphere", "Evolving",
+    "Noisy", "Glitch", "Hard", "Soft", "Expressive", "Deep", "Dark", "Bright",
+    "Vintage", "Acid", "Epic", "Fail", "Tempo Sync", "Input", "Mine", "Favourite",
+];
+
+/// The tag table for a box, keyed by its identity slug, or `None` for a box
+/// whose grid nobody has read.
+///
+/// **`None` is the whole point of this function.** Naming bit 3 "Clap" on a box
+/// we have never seen a filter grid for is a guess wearing a label, and the A4
+/// is the proof: it spent three days being told its low bits meant Kick and
+/// Snare when they mean Bass and Lead. A caller that gets `None` should show the
+/// mask, or show nothing, and must not fall back to a digi's names.
+///
+/// Keyed on the **identity slug** rather than on `DeviceModel::key`, because
+/// every other thing in the +Drive path already is: the index files are named
+/// by slug, `ui::presets` carries a slug, and `decode_drive_preset` is reached
+/// from a device that has just identified itself. `params::device_kind_key` is
+/// the same idea in the *audition* path and keys on `key` for the same reason —
+/// that is what a p-lock lane carries. Two domains, two spellings, and this is
+/// the one place the +Drive's crossing happens.
+///
+/// `digitakt` (the mk1) is deliberately absent: it is a known box, but its grid
+/// has not been photographed, and a known box is not a calibrated one.
+pub fn tag_names_for(slug: &str) -> Option<&'static [&'static str; 32]> {
+    match slug {
+        "digitakt2" | "digitone2" => Some(&TAG_NAMES_DIGI),
+        "analogfour" => Some(&TAG_NAMES_A4),
+        _ => None,
+    }
+}
+
+/// The names of the set bits of `mask` on the box `slug` names, or an empty
+/// list for a box with no calibrated table.
+///
+/// Free-standing rather than a [`Sound`] method because the caller that needs it
+/// most — PLAN.md §10.3's preset index — stores a `u32` and never keeps a
+/// `Sound` at all.
+pub fn tag_names(mask: u32, slug: &str) -> Vec<&'static str> {
+    let Some(table) = tag_names_for(slug) else {
+        return Vec::new();
+    };
+    (0..32).filter(|bit| mask & (1u32 << bit) != 0).map(|bit| table[bit]).collect()
+}
 /// One decoded sound, plus the bytes it came from.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Sound {
@@ -83,13 +164,16 @@ impl Sound {
         self.name.is_empty() && self.tag_mask == 0
     }
 
-    /// The set bits of [`Sound::tag_mask`], named by [`TAG_NAMES`]. See that
-    /// constant: the bit→name mapping is not yet verified against hardware.
-    pub fn tags(&self) -> Vec<&'static str> {
-        (0..32)
-            .filter(|bit| self.tag_mask & (1 << bit) != 0)
-            .map(|bit| TAG_NAMES[bit])
-            .collect()
+    /// The set bits of [`Sound::tag_mask`], named by the table `slug`'s box
+    /// uses, or empty for a box with no calibrated table.
+    ///
+    /// **The slug is not optional and cannot be defaulted**, which is the
+    /// correction of 2026-08-29: this used to read one global array, and that
+    /// array was a digi's. An A4 sound decoded through it came back naming
+    /// mostly the wrong tags — confidently, and in the right shape. See
+    /// [`tag_names_for`].
+    pub fn tags(&self, slug: &str) -> Vec<&'static str> {
+        tag_names(self.tag_mask, slug)
     }
 }
 
@@ -148,6 +232,39 @@ pub fn decode_sound(bytes: &[u8], size: usize) -> Result<Sound, SoundError> {
     let foot = u32_be(bytes, size - 4);
     if foot != SOUND_MAGIC_FOOT {
         return Err(SoundError::BadFoot { found: foot, size });
+    }
+    Ok(Sound {
+        version: u32_be(bytes, SOUND_VERSION_OFFSET),
+        tag_mask: u32_be(bytes, SOUND_TAG_MASK_OFFSET),
+        name: chars16(bytes, SOUND_NAME_OFFSET),
+        bytes: bytes[..size].to_vec(),
+    })
+}
+
+/// Decode an A4 container of exactly `size` bytes, whose extent the caller
+/// already knows from the file header.
+///
+/// **The foot is not checked, because there is not one** — no A4 capture
+/// carries [`SOUND_MAGIC_FOOT`] anywhere. That is a weaker check than
+/// [`decode_sound`] performs only if you read the foot as validating the
+/// *bytes*; what it actually validates is the *size*, which [`decode_sound`]
+/// has to search for and this does not. `drive::decode_drive_preset` takes the
+/// size from the file's own declared payload length, so it is stated rather
+/// than guessed, and there is no wrong guess here for a foot to catch.
+///
+/// The head is still checked. It is the one thing that says the offset
+/// arithmetic which produced this slice was right, and that failure mode is
+/// unchanged.
+pub fn decode_a4_sound(bytes: &[u8], size: usize) -> Result<Sound, SoundError> {
+    if size < SOUND_NAME_OFFSET + 16 {
+        return Err(SoundError::Truncated { need: SOUND_NAME_OFFSET + 16, got: size });
+    }
+    if bytes.len() < size {
+        return Err(SoundError::Truncated { need: size, got: bytes.len() });
+    }
+    let head = u32_be(bytes, 0);
+    if head != A4_SOUND_MAGIC_HEAD {
+        return Err(SoundError::BadHead { found: head });
     }
     Ok(Sound {
         version: u32_be(bytes, SOUND_VERSION_OFFSET),
@@ -252,14 +369,14 @@ mod tests {
     #[test]
     fn tags_name_the_set_bits() {
         let s = decode_sound(&built(3, 0b1 | 0b100000, "K", 341), 341).expect("decode");
-        assert_eq!(s.tags(), vec!["Kick", "Percussion"]);
+        assert_eq!(s.tags("digitone2"), vec!["Kick", "Percussion"]);
     }
 
     #[test]
     fn an_untagged_unnamed_slot_is_empty_not_an_error() {
         let s = decode_sound(&built(3, 0, "", 341), 341).expect("decode");
         assert!(s.is_empty());
-        assert_eq!(s.tags(), Vec::<&str>::new());
+        assert_eq!(s.tags("digitone2"), Vec::<&str>::new());
     }
 
     #[test]

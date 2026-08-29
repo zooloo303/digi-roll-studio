@@ -46,7 +46,7 @@
 
 use crate::device::cstring;
 use crate::pattern::{u16_be, u32_be};
-use crate::sound::{decode_sound, Sound, SoundError, SOUND_MAGIC_FOOT, SOUND_MAGIC_HEAD, SOUND_NAME_OFFSET};
+use crate::sound::{decode_a4_sound, decode_sound, Sound, SoundError, SOUND_MAGIC_FOOT, SOUND_MAGIC_HEAD, SOUND_NAME_OFFSET};
 
 /// DirList request. Response comes back as `0x90`, per the API's
 /// request-plus-0x80 convention.
@@ -127,12 +127,24 @@ pub enum DriveError {
     /// printing the first bytes is the difference between "a file this parser
     /// does not know" and "not a file at all", and it costs nothing to carry.
     NoContainer { len: usize, head: String },
-    /// A container this crate can find but cannot decode. In practice this is
-    /// the **A4**, whose [`A4_CONTAINER_MAGIC`] container carries no foot magic
-    /// and therefore no discoverable length. Named rather than folded into a
-    /// generic parse failure, because "the A4 is not supported yet" and "this
-    /// file is corrupt" want very different responses.
+    /// A container whose head magic is neither a digi's [`SOUND_MAGIC_HEAD`]
+    /// nor an A4's [`A4_CONTAINER_MAGIC`] — a fourth box, or a corrupt file.
+    ///
+    /// **This used to mean "the A4", and stopped meaning that on 2026-08-29.**
+    /// The A4 now decodes; see [`decode_drive_preset`]. Anything reached here is
+    /// genuinely unrecognised, which is why it carries the magic it found: the
+    /// next box to land will be diagnosed from this number.
     UndecodableContainer { magic: u32, at: usize },
+    /// An A4 container that could not be sized, because the file around it is
+    /// not the shape every A4 capture has: a [`FILE_HEADER_LEN`]-byte header
+    /// declaring a payload size, with the container flush against it.
+    ///
+    /// The A4 has no foot magic, so the declared payload size is the *only*
+    /// witness to the struct's extent. When the layout does not hold, that
+    /// witness is gone and there is nothing left to fall back on — so this
+    /// refuses rather than computing an offset from one box's worth of
+    /// evidence.
+    UnsizedContainer { at: usize, declared: Option<u16> },
     /// A digi container with no foot magic after its head. The struct's length
     /// is measured by finding the foot, so without one there is no size to
     /// decode at — and guessing is what the foot check exists to prevent.
@@ -147,6 +159,14 @@ impl std::fmt::Display for DriveError {
             DriveError::UnsendablePath(p) => {
                 write!(f, "path {p:?} has bytes the API cannot carry")
             }
+            DriveError::UnsizedContainer { at, declared } => match declared {
+                Some(n) => write!(
+                    f,
+                    "A4 container at {at} is not flush with a {FILE_HEADER_LEN}-byte header \
+                     declaring {n} bytes — cannot size it"
+                ),
+                None => write!(f, "A4 container at {at} has no file header to size it by"),
+            },
             DriveError::TruncatedEntry { at, need, got } => write!(
                 f,
                 "dir entry at byte {at} needs {need} bytes, {got} left — truncated listing"
@@ -837,6 +857,21 @@ pub const FILE_MAGIC: u32 = 0xAC11_D303;
 /// also what the directory listing declared for the same file.
 pub const FILE_SIZE_OFFSET: usize = 27;
 
+/// How long that header is, before the payload starts. Measured across all 24
+/// committed captures on 2026-08-29 and identical on all three boxes — see
+/// [`container_offset`] for the whole layout and for why the digis' container
+/// still lands five bytes later than the A4's.
+pub const FILE_HEADER_LEN: usize = 31;
+
+/// The trailer after the payload: four checksum-shaped bytes, the payload
+/// length again, then magic `AAA1DAAA`. The header declares this length too, as
+/// a `u16be` at [`FILE_SIZE_OFFSET`]` + 2`, and it reads 12 on every capture.
+///
+/// The four leading bytes are **not** a zlib crc32 of the payload under a zero
+/// seed, which was the obvious guess given the read path's crc32 is
+/// zero-seeded. Unidentified, and nothing consumes it.
+pub const FILE_TRAILER_LEN: usize = 12;
+
 /// Build the body of a `0x54` Open: a NUL-terminated path, then an optional
 /// `u32be` chunk size.
 ///
@@ -1019,8 +1054,10 @@ pub fn container_offset(file: &[u8]) -> Option<usize> {
 
 /// The A4's container magic, where the digis use [`SOUND_MAGIC_HEAD`].
 ///
-/// Named so that [`decode_drive_preset`] can refuse it *as itself* rather than
-/// as a corrupt digi file. The difference matters to whoever reads the error.
+/// Named so that [`decode_drive_preset`] can *route* on it. It was introduced
+/// so the A4 could be refused as itself rather than as a corrupt digi file;
+/// since 2026-08-29 it selects the sizing rule instead, which is the same
+/// distinction put to better use.
 pub const A4_CONTAINER_MAGIC: u32 = 0xBEEF_BABA;
 
 /// How long the sound struct at `body`'s front is, found by locating its foot
@@ -1068,43 +1105,68 @@ fn head_hex(file: &[u8]) -> String {
 /// 36 bytes of header on the digis and 31 on an A4, 299/319/359 of struct — so
 /// both are *found*: the container by its magic, the struct by its foot.
 ///
-/// # The A4 is refused, deliberately and by name
+/// # The A4 takes the other branch, and is sized by its header
 ///
 /// Its container announces itself with [`A4_CONTAINER_MAGIC`] and **carries no
 /// foot magic at all** — not once in any of the eight files captured on
-/// 2026-08-29. [`decode_sound`] leans on the foot to make a size safe, so this
-/// returns [`DriveError::UndecodableContainer`] rather than guessing an extent.
+/// 2026-08-29. [`decode_sound`] leans on the foot, so for three days this
+/// returned [`DriveError::UndecodableContainer`] rather than guess an extent.
 ///
-/// The tempting fix was to let the head magic vary, since [`container_offset`]
-/// already accepts both. That would have produced a `Sound` with a plausible
-/// name, a plausible tag mask and a wrong length — the exact failure the foot
-/// check exists to prevent.
+/// **That refusal is retired, and the reasoning behind it was wrong twice over.**
 ///
-/// **The extent is not actually the blocker, though, and saying so was a
-/// mis-framing worth correcting.** Once the file layout was measured properly
-/// (see [`container_offset`]) the A4's extent became obvious: its payload is
-/// 366 bytes and its container starts at byte zero of that payload, so the
-/// struct is the declared length and needs no foot to find. What makes that
-/// uninteresting is that **nothing consumes it** — the A4 answers no `0x6x`
-/// dump request, so it has no `0x6b`, no `0x5b`, and no load-onto-track path in
-/// this codebase at all. Knowing how long its sound struct is buys nothing.
+/// The first mis-framing was the extent. The foot's actual job is to validate a
+/// *guessed* size: [`struct_size`] finds the end of the struct by searching for
+/// it, and the magic landing is what proves the search was right. The A4 needs
+/// no search. Its file header declares the payload length, its container is
+/// flush with the start of that payload, and so the struct's extent is stated
+/// rather than inferred. A declared length is a **better** witness than a
+/// found one, not a weaker substitute for it — so skipping the foot check here
+/// gives up nothing. What this branch checks instead is that the layout the
+/// declaration depends on actually holds; when it does not, it refuses with
+/// [`DriveError::UnsizedContainer`] rather than reaching for a fallback.
 ///
-/// What genuinely blocks an A4 here is narrower and fixable: **the tag mask at
-/// `+8` has never been calibrated against the A4's own display.** `TAG_NAMES`
-/// was calibrated on a DN2, and the A4's masks differ in character from every
-/// digi capture — low bits set, which no digi file shows. Reading them would be
-/// guessing at a field, which is the one thing §9 exists to stop. Calibrating
-/// it is the `digitone2-tagged-sounds-2026-08-01.syx` recipe pointed at an A4.
+/// The second, and the one that actually blocked it, was the tag mask.
+/// `sound::TAG_NAMES` had only ever been calibrated on a DN2, and an A4's masks
+/// differ in character from every digi capture — low bits set, which no digi
+/// file shows. Reading them through a digi's table would have been guessing at
+/// a field, which is what PLAN.md §9 exists to stop. It is no longer a guess:
+/// [`crate::sound::TAG_NAMES_A4`] is calibrated, and
+/// [`crate::sound::tag_names_for`] makes the table follow the box.
+///
+/// So an A4 preset now **browses and tags** like a digi's. It still never
+/// **loads onto a track**, because the A4 answers no `0x6x` dump request and so
+/// has no `0x6b`, no `0x5b`, and no load path in this codebase — a complete and
+/// honest v1 for that box rather than a gap.
 pub fn decode_drive_preset(file: &[u8]) -> Result<Sound, DriveError> {
     let at = container_offset(file)
         .ok_or_else(|| DriveError::NoContainer { len: file.len(), head: head_hex(file) })?;
     let body = &file[at..];
     let magic = u32::from_be_bytes([body[0], body[1], body[2], body[3]]);
-    if magic != SOUND_MAGIC_HEAD {
-        return Err(DriveError::UndecodableContainer { magic, at });
+    match magic {
+        SOUND_MAGIC_HEAD => {
+            let size = struct_size(body).ok_or(DriveError::NoFootMagic { at })?;
+            decode_sound(body, size).map_err(DriveError::NotASound)
+        }
+        A4_CONTAINER_MAGIC => {
+            // The declared payload length is the struct length only while the
+            // container is flush with the payload — so both are checked, and
+            // neither is worked around.
+            let declared = file_declared_size(file);
+            match declared {
+                Some(size) if at == FILE_HEADER_LEN => {
+                    decode_a4_sound(body, size as usize).map_err(DriveError::NotASound)
+                }
+                _ => Err(DriveError::UnsizedContainer { at, declared }),
+            }
+        }
+        // **Unreachable today, and deliberately kept.** `container_offset`
+        // searches for exactly these two magics, so the magic at `at` is
+        // always one of them. This arm is the guard on the *next* box: adding
+        // a third pattern to that search without adding a branch here lands
+        // an honest error instead of a silent misparse, and the error carries
+        // the magic so whoever hits it knows what to write.
+        _ => Err(DriveError::UndecodableContainer { magic, at }),
     }
-    let size = struct_size(body).ok_or(DriveError::NoFootMagic { at })?;
-    decode_sound(body, size).map_err(DriveError::NotASound)
 }
 
 #[cfg(test)]
