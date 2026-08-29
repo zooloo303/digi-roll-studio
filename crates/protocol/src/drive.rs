@@ -46,7 +46,7 @@
 
 use crate::device::cstring;
 use crate::pattern::{u16_be, u32_be};
-use crate::sound::{decode_a4_sound, decode_sound, Sound, SoundError, SOUND_MAGIC_FOOT, SOUND_MAGIC_HEAD, SOUND_NAME_OFFSET};
+use crate::sound::{decode_a4_sound, decode_dn1_sound, decode_sound, Sound, SoundError, DN1_SOUND_MAGIC_HEAD, SOUND_MAGIC_FOOT, SOUND_MAGIC_HEAD, SOUND_NAME_OFFSET};
 
 /// DirList request. Response comes back as `0x90`, per the API's
 /// request-plus-0x80 convention.
@@ -1049,12 +1049,18 @@ pub fn file_declared_size(file: &[u8]) -> Option<u16> {
 /// flush with the start of its payload.
 ///
 /// So the offset still must not be a constant, but what varies is the presence
-/// of a wrapper rather than the size of a header — and the magic still varies
-/// too, `BEEFBACE` against `BEEFBABA`. Searching for the magic covers both
-/// without needing to know which box answered.
+/// of a wrapper rather than the size of a header — and the magic varies too.
+/// Searching for the magic covers every case without needing to know which box
+/// answered, which is what let the third format land as a two-line change.
+///
+/// **Three magics, not two, since 2026-08-29.** A DN2's +Drive holds Digitone
+/// mk1 presets alongside its own — 388 of 1,189 — and they announce themselves
+/// with [`crate::sound::DN1_SOUND_MAGIC_HEAD`], ASCII `DN1S`. They sit at 31
+/// like an A4's, so "wrapper or no wrapper" is a property of the *file* and not
+/// of the box that answered: one DN2 library contains both.
 pub fn container_offset(file: &[u8]) -> Option<usize> {
     file.windows(4).position(|w| {
-        w == [0xbe, 0xef, 0xba, 0xce] || w == [0xbe, 0xef, 0xba, 0xba]
+        w == [0xbe, 0xef, 0xba, 0xce] || w == [0xbe, 0xef, 0xba, 0xba] || w == *b"DN1S"
     })
 }
 
@@ -1181,12 +1187,19 @@ pub fn decode_drive_preset(file: &[u8]) -> Result<Sound, DriveError> {
                 _ => Err(DriveError::UnsizedContainer { at, declared }),
             }
         }
+        DN1_SOUND_MAGIC_HEAD => {
+            // A digi's rule, not the A4's, even though the offset matches the
+            // A4's: these files carry a foot, so the size is *measured* rather
+            // than taken from the file header. Routing on the magic rather than
+            // on the offset is what makes that distinction available at all.
+            let size = struct_size(body).ok_or(DriveError::NoFootMagic { at })?;
+            decode_dn1_sound(body, size).map_err(DriveError::NotASound)
+        }
         // **Unreachable today, and deliberately kept.** `container_offset`
-        // searches for exactly these two magics, so the magic at `at` is
-        // always one of them. This arm is the guard on the *next* box: adding
-        // a third pattern to that search without adding a branch here lands
-        // an honest error instead of a silent misparse, and the error carries
-        // the magic so whoever hits it knows what to write.
+        // searches for exactly these three magics, so the magic at `at` is
+        // always one of them. This arm is the guard on the *next* box, and it
+        // has already earned its keep once: `DN1S` arrived on 2026-08-29 and
+        // this arm is where it was diagnosed, carrying the magic that named it.
         _ => Err(DriveError::UndecodableContainer { magic, at }),
     }
 }

@@ -984,12 +984,18 @@ box whose transfer session had died does not come back for the last 28.
 
 **Two things this leaves, and one of them is the real defect:**
 
-- **Open: what is in those 388 files.** They are the right size and carry no
-  container magic. A contiguous run of them, in three banks, on a box whose other
-  801 presets decode cleanly. `DriveError::NoContainer` now carries the head
-  bytes, so the next run says what it found instead of only how much of it there
-  was — every good file opens `ac11d303 02000500 …`, and whether these do is the
-  whole question.
+- **Closed the same day: those 388 files are Digitone mk1 presets.** Their
+  container magic is ASCII `DN1S` at byte 31 — flush with the payload like an
+  A4's, not five bytes in behind a `SOUND_WRAPPER` like the DN2's own — with a
+  foot at 329 and so a 302-byte struct against the native 319. **One box's
+  library holds two container formats**, 388 of 1,189, which is the common case
+  rather than a curiosity. See "A DN2's +Drive is two formats" below.
+
+  Two corrections fell out of it. The wrapper is a property of the **file**, not
+  of the box that answered — a DN2 serves both kinds from one +Drive — and the
+  head-bytes diagnostic that was supposed to settle this **printed 16 bytes,
+  which is exactly the prefix every DN2 file shares**, so its first run proved
+  only that a file had arrived. At 48 it named the format immediately.
 - **Closed: a skip that could not be read.** `ScanReport` counted skips and
   discarded every reason, so 388 of them said nothing, and the first diagnosis
   had to be reconstructed by parsing index files with Python — which produced a
@@ -1094,6 +1100,38 @@ mask through a digi's table reads Kick, Snare, Acoustic, Soft, Dark, Vintage —
 six real tag names, the right count, five of them wrong, one right by
 coincidence. There is nothing in that output to notice. It is §9's standing
 lesson in a new place: a wrong answer with the right shape.
+
+### A DN2's +Drive is two formats — 2026-08-29
+
+**388 of a Digitone II's 1,189 presets are Digitone *mk1* sounds**, and they are
+a different container, not a corrupt one:
+
+```text
+              magic       at   ver  foot   struct
+  DN2 native  BEEFBACE    36   0    351    319     wrapper, then the container
+  DN2 mk1     DN1S        31   4    329    302     flush with the payload
+  A4          BEEFBABA    31   5    none   366     flush, sized by the header
+```
+
+`DN1S` is ASCII — the only container magic on any box legible in a hexdump, and
+the thing that named the format the moment enough bytes were printed to see it.
+The fields sit where every other container puts them: version at `+4`, tag mask
+at `+8`, name at `+12`.
+
+**The tag vocabulary is the DN2's own, and that had to be checked rather than
+assumed.** The expected answer was a third table — the A4 had just cost a day by
+being one — and the masks read through `TAG_NAMES_DIGI` looked *suspicious* in
+the way a wrong table looks: `Cowbell` set on four of the first five files. It
+was not a mis-decode. Overbridge lists these presets in the DN2's own browser
+under the DN2's own 32-cell grid, and `/soundbanks/C/1..8` decode to exactly the
+tags it shows, 8/8 exact and in order. The box re-maps mk1 tags into its own
+vocabulary. That library really is tagged Cowbell a lot.
+
+**So the rule that generalises is about routing, not about boxes.**
+`container_offset` searching for the magic — rather than trusting a per-box
+constant — is what made a third format a two-line change. And
+`decode_drive_preset`'s `_ =>` arm, written as "unreachable today, deliberately
+kept", is where `DN1S` was diagnosed: it carried the magic that named it.
 
 ### Still not verified on a screen — the Presets panel, 2026-08-29
 

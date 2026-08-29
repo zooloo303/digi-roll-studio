@@ -279,7 +279,13 @@ fn every_capture_has_a_31_byte_header_and_a_12_byte_trailer() {
         assert_eq!(file.len() - 12 - declared, 31, "{name}: header is 31 bytes on every box");
 
         // And the container lands where the wrapper says it should: flush with
-        // the payload on an A4, five bytes in on a digi.
+        // the payload, or five bytes in behind a `SOUND_WRAPPER`.
+        //
+        // **Not "A4 versus digi", which is what this said until the mk1 files
+        // landed.** Eight of these captures are Digitone mk1 presets off a DN2's
+        // +Drive and they are flush, sitting beside that same box's own presets
+        // which are not. The wrapper is a property of the file, not of the box
+        // that answered.
         let at = container_offset(&file).unwrap_or_else(|| panic!("{name} has no container"));
         let wrapper = at - 31;
         assert!(
@@ -288,7 +294,7 @@ fn every_capture_has_a_31_byte_header_and_a_12_byte_trailer() {
         );
         checked += 1;
     }
-    assert_eq!(checked, 24, "all 24 captures should be covered");
+    assert_eq!(checked, 32, "all 32 captures should be covered");
 }
 
 /// **The error a 2026-08-29 DN2 scan could not be read from.** 388 presets came
@@ -386,7 +392,60 @@ fn tagged_captures() -> Vec<(&'static str, &'static str, &'static str, &'static 
          &["Rimshot", "Cowbell", "Bass"]),
         ("digitone2-soundbanks-A-8-LONELY-NIGHTS-2026-08-29.bin", "digitone2", "LONELY NIGHTS",
          &["Cowbell", "Lead", "Soft", "Vintage"]),
+        // --- Digitone **mk1** presets, on that same DN2's +Drive, `DN1S` ---
+        //
+        // The second format in one library, and the reason they are here is the
+        // tag column rather than the container: Overbridge lists them in the
+        // DN2's browser under the DN2's own 32-cell grid, and they decode
+        // through `TAG_NAMES_DIGI` to exactly what it shows. That is what says
+        // the box re-maps mk1 tags into its own vocabulary and no third table is
+        // needed — a claim worth pinning, because a third table was the expected
+        // answer right up to the screenshot that disproved it.
+        ("digitone2-soundbanks-C-1-ORGANIC-2026-08-29.bin", "digitone2", "ORGANIC",
+         &["Chord", "Electronic", "Soft", "Vintage"]),
+        ("digitone2-soundbanks-C-2-PHASEY-DUB-2026-08-29.bin", "digitone2", "PHASEY DUB",
+         &["Clap", "Chord", "Vintage"]),
+        ("digitone2-soundbanks-C-3-PLOINKEYS-2026-08-29.bin", "digitone2", "PLOINKEYS",
+         &["Lead", "Chord", "Metallic", "Soft", "Bright"]),
+        ("digitone2-soundbanks-C-4-RESO-DUB-2026-08-29.bin", "digitone2", "RESO DUB",
+         &["Cowbell", "Chord", "Soft", "Bright"]),
+        ("digitone2-soundbanks-C-5-RUBBER-BAND-2026-08-29.bin", "digitone2", "RUBBER BAND",
+         &["Tom", "Chord", "Acoustic", "Dark"]),
+        ("digitone2-soundbanks-C-6-SIMPL-BRSS-2026-08-29.bin", "digitone2", "SIMPL BRSS",
+         &["Clap", "Chord", "Bright", "Vintage"]),
+        ("digitone2-soundbanks-C-7-SPRINKLE-STAR-2026-08-29.bin", "digitone2", "SPRINKLE STAR",
+         &["Chord", "Electronic", "Soft", "Vintage"]),
+        ("digitone2-soundbanks-C-8-SWEET-and-SOUND-2026-08-29.bin", "digitone2", "SWEET & SOUND",
+         &["Chord", "Soft", "Vintage"]),
     ]
+}
+
+/// One box's library holds two container formats, and the DN2 is the box.
+///
+/// Pinned separately from the tag table because it is the structural claim: a
+/// `BEEFBACE` preset and a `DN1S` preset, both off the same +Drive, sized by
+/// different rules — a foot search on both, but reached from offsets 36 and 31 —
+/// and decoding to the same `Sound` shape. 388 of that box's 1,189 presets are
+/// the second kind, so this is the common case rather than a curiosity.
+#[test]
+fn one_dn2_library_holds_two_container_formats() {
+    let native = decode_drive_preset(&fixture("digitone2-soundbanks-A-1-HIDDEN-TEARS-2026-08-29.bin"))
+        .expect("a native DN2 preset should decode");
+    let mk1 = decode_drive_preset(&fixture("digitone2-soundbanks-C-1-ORGANIC-2026-08-29.bin"))
+        .expect("an mk1 preset on a DN2 should decode");
+
+    assert_eq!(native.name, "HIDDEN TEARS");
+    assert_eq!(mk1.name, "ORGANIC");
+
+    let native_file = fixture("digitone2-soundbanks-A-1-HIDDEN-TEARS-2026-08-29.bin");
+    let mk1_file = fixture("digitone2-soundbanks-C-1-ORGANIC-2026-08-29.bin");
+    assert_eq!(container_offset(&native_file), Some(36), "a wrapper sits in front of the native one");
+    assert_eq!(container_offset(&mk1_file), Some(31), "the mk1 container is flush with the payload");
+
+    // Same file length, different struct length — so the file size says nothing
+    // about which format it is, which is why 407 was such a poor clue.
+    assert_eq!(native_file.len(), mk1_file.len(), "both are 407-byte files");
+    assert_ne!(native.bytes.len(), mk1.bytes.len(), "and different struct sizes: 319 against 302");
 }
 
 #[test]

@@ -36,6 +36,26 @@ pub const SOUND_MAGIC_FOOT: u32 = 0xBACE_F00C;
 /// that is what all eight A4 captures decode to. See [`decode_a4_sound`].
 pub const A4_SOUND_MAGIC_HEAD: u32 = 0xBEEF_BABA;
 
+/// A Digitone **mk1** sound, as stored on a DN2's +Drive. ASCII `DN1S`, not a
+/// `0xBEEF…` value at all — the only container magic on any box that is legible
+/// in a hexdump.
+///
+/// **A DN2's library is two formats, and 388 of 1,189 presets are this one.**
+/// They sit flush with the payload at byte 31 like an A4's, having no
+/// [`SOUND_WRAPPER`], and they carry a foot like a digi's — so they are neither
+/// existing case exactly, and [`decode_dn1_sound`] is `decode_sound` with this
+/// head magic rather than a third set of rules.
+///
+/// **The tag vocabulary is the DN2's own**, which is the part that had to be
+/// checked rather than assumed. Overbridge lists these presets in the DN2's
+/// browser under the DN2's own 32-cell grid, and all eight of
+/// `/soundbanks/C/1..8` decode through [`TAG_NAMES_DIGI`] to exactly the tags it
+/// shows. So the box re-maps mk1 tags into its own vocabulary and no third table
+/// exists. Suspecting one was reasonable and wrong: `Cowbell` set on four of the
+/// first five files looked like a mis-decode and is simply what that library is
+/// tagged like.
+pub const DN1_SOUND_MAGIC_HEAD: u32 = 0x444E_3153;
+
 /// Offsets within one sound struct. Fixed across every version seen so far —
 /// the struct grows at the tail (DT2 kit v3 341 bytes → v4 1109), not the head.
 pub const SOUND_VERSION_OFFSET: usize = 4;
@@ -265,6 +285,37 @@ pub fn decode_a4_sound(bytes: &[u8], size: usize) -> Result<Sound, SoundError> {
     let head = u32_be(bytes, 0);
     if head != A4_SOUND_MAGIC_HEAD {
         return Err(SoundError::BadHead { found: head });
+    }
+    Ok(Sound {
+        version: u32_be(bytes, SOUND_VERSION_OFFSET),
+        tag_mask: u32_be(bytes, SOUND_TAG_MASK_OFFSET),
+        name: chars16(bytes, SOUND_NAME_OFFSET),
+        bytes: bytes[..size].to_vec(),
+    })
+}
+
+/// Decode a Digitone mk1 container of exactly `size` bytes.
+///
+/// [`decode_sound`] with a different head magic, and deliberately not a
+/// generalisation of it: the head magic is what says which *box's* rules apply,
+/// so a decoder that took it as an argument would let a caller decode a digi
+/// file as an mk1 one by passing the wrong constant. The foot is still checked
+/// — these files have one, at 329 in every capture — so this gives up none of
+/// the size validation [`decode_a4_sound`] has to.
+pub fn decode_dn1_sound(bytes: &[u8], size: usize) -> Result<Sound, SoundError> {
+    if bytes.len() < size {
+        return Err(SoundError::Truncated { need: size, got: bytes.len() });
+    }
+    if size < SOUND_NAME_OFFSET + 16 + 4 {
+        return Err(SoundError::Truncated { need: SOUND_NAME_OFFSET + 20, got: size });
+    }
+    let head = u32_be(bytes, 0);
+    if head != DN1_SOUND_MAGIC_HEAD {
+        return Err(SoundError::BadHead { found: head });
+    }
+    let foot = u32_be(bytes, size - 4);
+    if foot != SOUND_MAGIC_FOOT {
+        return Err(SoundError::BadFoot { found: foot, size });
     }
     Ok(Sound {
         version: u32_be(bytes, SOUND_VERSION_OFFSET),
