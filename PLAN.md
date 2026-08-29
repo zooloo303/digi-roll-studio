@@ -1316,6 +1316,30 @@ That is a scan, not a browse. So:
 - `Sound::tags()` and the calibrated `TAG_NAMES` are already right, so the filter
   UI is a bit-mask test and nothing more.
 
+**Built 2026-08-29**, and the bullets above are now properties something holds
+rather than decisions to remember. `preset_index::PresetIndex` is the store —
+one JSON file per (device, bank), directory injectable the way `Stash`'s is —
+and `preset_scan::scan_bank` is the reader. Three things the code settled that
+this section had left open:
+
+- **The mask is stored raw and named at display time.** A stored *label* rots
+  the moment `TAG_NAMES` is recalibrated, and that calibration has already
+  changed once.
+- **`occupied` is stored, so a bank that grew reads as incomplete** rather than
+  as done. Comparing against the declared count instead of `entries.len()` is
+  what makes "a box that gains presets rebuilds one bank" true rather than
+  aspirational.
+- **A bank path is filtered before it becomes a filename.** A +Drive path is
+  data from a box, and a box that answered with a `..` in a directory name must
+  not get to choose where this crate writes.
+
+`scan_bank` takes a `PresetSource` trait rather than an `ElektronDevice`, so
+cancel, resume, skip-and-continue and the A4 stop are *tested* rather than
+merely written — they are otherwise branches that only run with a box attached,
+which is lesson 4's shape waiting to happen. The fake box returns the **real
+committed captures**, so what those tests decode is what three boxes actually
+sent.
+
 **Paging is untested.** Every call in §9 used `start = 0, count = 0` and every
 collection fitted one reply, so `next_cursor` has never run. A 256-entry bank is
 the case that will find it.
@@ -1412,9 +1436,13 @@ Recorded now so v2 starts from evidence:
    the result.~~ **Done — positive on a DT2 2026-08-28 and on a DN2 2026-08-29**,
    see §9 and §10.4. The load path is `0x5b` on both digis, wrapped payload,
    and the A4 has no `0x6b` to mirror so it has no load path at all.
-4. The tag index: scan, persist, cancel, resume per bank. **Unblocked
-   2026-08-29** — `decode_drive_preset` gives a tag mask per file, so the scan
-   has something to scan. Digis only: the A4 lists and does not decode.
+4. ~~The tag index: scan, persist, cancel, resume per bank.~~ **Done
+   2026-08-29** — `preset_index.rs` persists one file per (device, bank) and
+   `preset_scan.rs` fills it, cancellable per slot and resuming from what the
+   index lacks. Fourteen tests, driven through the committed captures. **No
+   caller yet**: wiring it to a panel is step 5, so nothing has scanned a whole
+   1,189-preset bank against hardware and the timing claims here are still
+   arithmetic rather than measurement.
 5. The panel — sixth rail slot, following `Sidebars`/`Tool`, worker thread and
    `mpsc` like `transfer.rs` and `sync.rs`.
 6. Load-to-track on the path step 3 chose, with audition mode and its backup.

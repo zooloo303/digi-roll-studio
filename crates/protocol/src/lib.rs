@@ -10,6 +10,7 @@ pub mod params;
 pub mod plocks;
 pub mod pattern;
 pub mod pattern_settings;
+pub mod preset_index;
 pub mod query;
 pub mod safe_write;
 pub mod sound;
