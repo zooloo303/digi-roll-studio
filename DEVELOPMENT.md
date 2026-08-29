@@ -490,6 +490,32 @@ the SCALE change inside `commit_scene`. What it actually needed was a second fie
 step* — because the counter was only ever half a position. A bug that wants a
 special case usually wants a missing field.
 
+**A second instance, 2026-08-29, and this one had been shipped for three days.**
+Load-to-track (PLAN.md §10.6 step 6) needed a fake box whose tracks hold real
+`0x6b` payloads, so the first test built one out of the committed captures — a
+DN2 track holding `MONOLOW`. Every test in the new suite failed at once, and not
+on the new code: `decode_sound_dump` could not decode a real DN2 sound. It
+recovered a struct's size from `KNOWN_SOUND_SIZES`, which has never held 319 (a
+DN2 v0 sound) or 299 (a DT2's), and a `0x6b` reply's length is the *region*
+rather than the struct.
+
+Nothing existing could have caught it. The `0x53` sound-dump tests all build a
+struct that fills its payload exactly — which is what a good fixture does, and
+exactly why the gap survived — and the +Drive work had already learned the same
+lesson from the other direction three days earlier and fixed it *there*:
+§10.2's "the struct is measured, not looked up" was applied to preset files and
+never carried back to dumps. Two copies of one rule, one of them corrected. That
+is lesson 5 as well, and the two lessons meeting is what made this cheap to find
+and embarrassing to have.
+
+**The corollary is about what it was breaking.** `decode_sound_dump` is not only
+a reader — it is the guard inside `plan_track_sound_store`, the check that
+refuses to send bytes it cannot prove are a sound. So a DN2 v0 preset would have
+been refused at the port *with a message saying it was not a sound struct*, and
+the message would have looked like the guard working. **A guard is only as
+honest as its parser**, and a refusal is a claim that deserves the same
+suspicion as an acceptance.
+
 ---
 
 ### 11. A count of failures is not a diagnosis, and one will be guessed at

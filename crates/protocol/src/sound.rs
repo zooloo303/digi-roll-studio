@@ -328,7 +328,45 @@ pub fn decode_dn1_sound(bytes: &[u8], size: usize) -> Result<Sound, SoundError> 
 /// Every sound-struct size we have mapped, for the cases where the size is not
 /// known in advance. A standalone `0x53` sound dump carries one struct and no
 /// `KitSpec` to size it by, so the size has to be recovered from the bytes.
+///
+/// **A last resort rather than the method**, since 2026-08-29:
+/// [`measure_struct_size`] finds the end of a struct by looking for it, which
+/// needs no table and cannot be short a size. This list is what remains for a
+/// struct whose foot cannot be found at all, and it is demonstrably incomplete
+/// — a DN2's own +Drive holds 319-byte sounds and a DT2's holds 299-byte ones,
+/// and neither number is here. PLAN.md §10.2 has the finding.
 pub const KNOWN_SOUND_SIZES: [usize; 3] = [341, 359, 1109];
+
+/// How long the sound struct at the front of `bytes` is, found by locating its
+/// foot magic.
+///
+/// **The size is measured, not looked up**, and that distinction has now been
+/// learned twice from two directions. `drive::decode_drive_preset` learned it
+/// on 2026-08-29 from a DN2 bank holding structs of 319 *and* 359 bytes: no
+/// table keyed by box can be right about both. [`decode_sound_dump`] learned it
+/// the same day from the other end — a `0x6b` reply carrying one of those
+/// 319-byte sounds could not be decoded at all, because
+/// [`KNOWN_SOUND_SIZES`] never had 319 in it and the payload's own length is
+/// the *region*, not the struct.
+///
+/// Finding the foot **is** measuring the struct, so this needs no per-box
+/// knowledge and gains a size the moment a box shows it one.
+///
+/// The search starts past the name field, so a foot cannot be "found" inside
+/// the header it would have to follow. It searches for the first foot rather
+/// than the last: a region longer than its struct is padded with whatever the
+/// box left there, and the first `BACEF00C` after a head is the end of that
+/// head's struct.
+pub fn measure_struct_size(bytes: &[u8]) -> Option<usize> {
+    let smallest = SOUND_NAME_OFFSET + 16 + 4;
+    let foot = SOUND_MAGIC_FOOT.to_be_bytes();
+    bytes
+        .windows(4)
+        .enumerate()
+        .skip(smallest.saturating_sub(4))
+        .find(|(_, w)| *w == foot)
+        .map(|(at, _)| at + 4)
+}
 
 /// The bytes a `0x6b` kit-track-sound payload carries *before* the struct.
 ///
@@ -338,13 +376,21 @@ pub const KNOWN_SOUND_SIZES: [usize; 3] = [341, 359, 1109];
 /// that the offset appears once rather than as a `5` in every caller.
 pub const SOUND_WRAPPER: usize = 5;
 
-/// Decode a standalone sound dump (`0x53`) payload, whose struct size is not
-/// known up front.
+/// Decode a standalone sound dump (`0x53`) payload, or the struct half of a
+/// `0x6b` kit-track-sound reply, whose struct size is not known up front.
 ///
-/// Tries the payload's own length first — the box is expected to send exactly
-/// one struct — and then each of [`KNOWN_SOUND_SIZES`], in case the dump is
-/// padded or carries a trailer. The foot magic is what makes this safe to guess
-/// at: a wrong size does not validate, so a size that lands is the size.
+/// **[`measure_struct_size`] first, and that is not an optimisation.** Guessing
+/// from the payload's own length assumes the payload is exactly one struct, and
+/// a `0x6b` reply is not: a DN2 answers with a fixed 359-byte region that may
+/// hold a 319-byte sound, and neither 319 nor the DT2's 299 was ever in
+/// [`KNOWN_SOUND_SIZES`]. Every such track came back undecodable — including,
+/// silently, to `midi::plan_track_sound_store`'s guard, which would have
+/// refused half a DN2's own presets as "not a sound struct". Found on
+/// 2026-08-29 by the first test that put a real v0 sound on a fake box's track.
+///
+/// The length and the table are kept behind it as fallbacks for a struct with
+/// no foot at all. The foot check is what makes any of this safe to guess at: a
+/// wrong size does not validate, so a size that lands is the size.
 ///
 /// Returns the [`SoundError::BadFoot`] for the payload's own length when no
 /// candidate validates, since that is the size the box implied.
@@ -356,7 +402,9 @@ pub fn decode_sound_dump(payload: &[u8]) -> Result<Sound, SoundError> {
     if head != SOUND_MAGIC_HEAD {
         return Err(SoundError::BadHead { found: head });
     }
-    std::iter::once(payload.len())
+    measure_struct_size(payload)
+        .into_iter()
+        .chain(std::iter::once(payload.len()))
         .chain(KNOWN_SOUND_SIZES)
         .filter(|&size| size >= SOUND_NAME_OFFSET + 20 && size <= payload.len())
         .find_map(|size| decode_sound(payload, size).ok())
@@ -468,6 +516,34 @@ mod tests {
         let s = decode_sound_dump(&b).expect("a known size should validate");
         assert_eq!(s.bytes.len(), 341);
         assert_eq!(s.name, "PADDED");
+    }
+
+    /// **The 2026-08-29 regression, and it was live.** A DN2 answers `0x6b`
+    /// with a fixed 359-byte struct region, and roughly half its own presets
+    /// are 319-byte v0 sounds sitting inside one. Neither the region's length
+    /// nor any entry in `KNOWN_SOUND_SIZES` is 319, so every such track came
+    /// back `BadFoot` — including to `midi::plan_track_sound_store`'s guard,
+    /// which would have refused to load half a DN2's library on the grounds
+    /// that it was "not a sound struct". Measuring the foot finds it.
+    #[test]
+    fn a_struct_shorter_than_its_region_is_measured_rather_than_guessed() {
+        let mut region = built(0, 0b10, "MONOLOW", 319);
+        region.resize(359, 0);
+
+        let s = decode_sound_dump(&region).expect("the foot is there to be found");
+        assert_eq!(s.name, "MONOLOW");
+        assert_eq!(s.bytes.len(), 319, "the struct, not the region");
+        assert!(!KNOWN_SOUND_SIZES.contains(&319), "and 319 is in no table");
+    }
+
+    /// Measuring finds the *first* foot after the head, which is what makes a
+    /// padded region unambiguous: whatever the box left in the tail cannot
+    /// extend the struct.
+    #[test]
+    fn measuring_takes_the_first_foot_after_the_head() {
+        let mut region = built(0, 0, "FIRST", 319);
+        region.extend_from_slice(&SOUND_MAGIC_FOOT.to_be_bytes());
+        assert_eq!(measure_struct_size(&region), Some(319));
     }
 
     #[test]

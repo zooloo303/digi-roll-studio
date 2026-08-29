@@ -82,11 +82,19 @@
 // | `▲` U+25B2 | the conflict marker on a PARTS card |
 // | `“ ”` U+201C/D | the kit name in the write confirm dialog, a backup's filename in the send group's log line, and every row of the Backups list (`StashEntry::summary`, which the restore dialog quotes too) |
 //
-// **Known missing, all five found by drawing them**: `●` U+25CF, `▸` U+25B8 (the
+// **Known missing, all six found by drawing them**: `●` U+25CF, `▸` U+25B8 (the
 // scene bar's original pair), `▾` U+25BE and `▼` U+25BC — tried in that order
-// for the patterns pane's fold arrows on 2026-08-18 — and `✓` U+2713, which shipped
+// for the patterns pane's fold arrows on 2026-08-18 — `✓` U+2713, which shipped
 // in the write result line and was read off Neil's screenshot of the first
-// hardware write. `▶` renders and its own mirror `▼` does not, which is the whole
+// hardware write, and `→` U+2192, drawn at last on 2026-08-29 in the Presets
+// panel's load line and read back as `ACIDD □ T1`.
+//
+// **`→` was on this page as a suspicion for eleven days before anything drew
+// it**, which is the interesting part: the paragraph below already said it "sits
+// near the known-missing marks" and that a button had been reworded to avoid it.
+// A new line in a new panel used it anyway, and no test noticed, and the screen
+// did — the same way every other row here was settled. A table of characters to
+// avoid is only as good as the habit of drawing the thing and looking at it. `▶` renders and its own mirror `▼` does not, which is the whole
 // argument against reasoning about this: the pair that looks like a pair is not
 // one. `⚠` U+26A0 is not on this list because it was never drawn — it was
 // withdrawn on suspicion, which is the cheaper move once a neighbour has failed.

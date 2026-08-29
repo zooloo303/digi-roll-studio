@@ -873,6 +873,13 @@ the failing variable regardless of size, and the checksum is crc32 seeded with
 - **Paging a listing.** Every call used `start = 0, count = 0` (list everything)
   and every collection fitted one reply, so the `next_cursor` path is untested.
   Per the source document a made-up `start` returns zero entries.
+- **REVERT, and the load's four refusals.** The load itself is done — a
+  double-click put a preset on a track of a DT2 and of a DN2 on 2026-08-29, see
+  below — and what that run did not touch is everything that is *not* the happy
+  path: putting a track back, an mk1 preset being refused by name, the A4's
+  refusal being legible, and the OS-build gate speaking through this path. **The
+  distinction is the whole point of this register**: "it loads" and "it refuses
+  properly" are different claims, and only the first has been made by a box.
 
 ### Not verified on a screen
 
@@ -1175,6 +1182,55 @@ vocabulary. That library really is tagged Cowbell a lot.
 constant — is what made a third format a two-line change. And
 `decode_drive_preset`'s `_ =>` arm, written as "unreachable today, deliberately
 kept", is where `DN1S` was diagnosed: it carried the magic that named it.
+
+### The load runs on both digis — 2026-08-29, DT2 0071 / DN2 0050
+
+**Neil's words: "dbl-click loads the selected patch to DT2 and DN2."** So the
+whole path is proven end to end on the two boxes that have one — the gesture,
+the track the roll's selection resolves to, the payload cut out of the +Drive
+file, the length check against the box's own `0x6b` reply, the store, and the
+read-back. This is what §10.6 step 6 was waiting for and it landed the same day
+it was built.
+
+**The A4 does not load, which is the designed answer and not a result.** It
+answers no `0x6x` request, so there is no `0x5b` to send. What is *not* confirmed
+is whether its refusal is **legible** — whether a person double-clicking an A4
+preset sees the LOAD section saying the box has no such message, or sees nothing
+happen. That distinction is decision 4's whole lesson, got wrong once already on
+this exact box, and it is one screen away from being settled.
+
+What one more session should close, in the order that a wrong answer would
+matter — **none of it touched by the run above**, which exercised the happy path
+on two boxes and nothing else:
+
+- **The A4's refusal reads as a fact rather than a fault**, per the paragraph
+  above. The first item on the list, because it is the one with a precedent.
+- **A `DN1S` preset is refused by name.** A DN2's bank C is full of them, so this
+  is one double-click away and is the most likely thing a user meets first.
+  It must say *Digitone mk1*, not "unsupported".
+- **REVERT after several auditions.** Load three different presets onto one
+  track, press REVERT, and the track holds what it did before the first one —
+  not the second-to-last. The backup is real bytes off the box, so this is the
+  half of audition mode that the happy path never exercises.
+- **The length check on a good preset.** It did not fire on either box, which is
+  the right outcome and is only the absence of an error. A refusal here would be
+  a finding, not a bug — a payload length nobody has mapped.
+- **The OS-build gate refuses in words.** `write_gate` is checked inside the
+  store, so a box on an unlisted build refuses at the port and the panel shows
+  its wording. Nothing has ever seen that message come out of *this* path.
+- **Two panels holding each other off, in the write direction.** A load must be
+  refused while Setup is sending, and Setup must be refused while a load is out.
+  The scan half of this rule has never been exercised by hand either.
+- **The verify's two reads, against a box with MIDI thru on.** The echo refusal
+  is ported straight from the probe's own finding and has never been triggered
+  deliberately. Turning thru on for one load is the cheapest way to see it.
+
+**And the thing no list could specify, now answered by use rather than by
+arithmetic:** how long a load takes. Five round trips and a 400ms settle is
+roughly a second on paper; it was not reported as sluggish, which is the only
+verdict that matters and is worth more than the paper figure. If it ever is, the
+settle and the second verify read are the two knobs, and both were chosen to be
+wrong in the safe direction.
 
 ### Still not verified on a screen — the Presets panel, 2026-08-29
 
@@ -1599,8 +1655,8 @@ both do. That is the trap §9's level bug already sprang once.
 
 | step | protocol | what is missing |
 |---|---|---|
-| browse | List, read, the container layer, the tag index and the panel all ship | nothing on a screen, and no bank scanned against a box |
-| load | `0x5b` per-track sound store, hardware-verified on both digis | the panel and audition mode; the A4 has no path at all |
+| browse | List, read, the container layer, the tag index and the panel all ship | nothing — done, and on three boxes |
+| load | ships and is hardware-verified end to end on both digis — double-click, payload, length check, store, read-back | REVERT and the four refusals are untested on a box; mk1 presets browse and do not load; the A4 has no path at all |
 | save | nothing | everything, plus a widened write guard |
 
 ### 10.2 Reading a preset — the real v1 work
@@ -1750,6 +1806,13 @@ collection fitted one reply, so `next_cursor` has never run. A 256-entry bank is
 the case that will find it.
 
 ### 10.4 Loading onto a track — where "instantly" goes wrong
+
+> **Read §10.6 step 6 beside this.** Two things below were settled differently
+> by the work that shipped on 2026-08-29 and are corrected there rather than
+> rewritten here: the splice is a **slice** of the preset file rather than an
+> assembly, and audition mode's backup is the load's own pre-read rather than a
+> sixteen-track sweep when the panel opens. The reasoning below is what earned
+> both, and it reads as a record.
 
 The splice itself is trivial and already proven by the sizes: a preset file is
 `5 + sound_size`, a kit slot is `sound_size` at `kit_base + 60 + track*sound_size`,
@@ -1929,10 +1992,81 @@ Recorded now so v2 starts from evidence:
      2026-08-29 by splitting the table per box and removing the default, which
      makes the distinction structural rather than advisory. A comment is not a
      constraint.
-6. Load-to-track on the path step 3 chose, with audition mode and its backup.
+6. ~~Load-to-track on the path step 3 chose, with audition mode and its
+   backup.~~ **Built 2026-08-29** — `drive::preset_load_payload` decides the
+   bytes, `midi::preset_load` runs the five round trips, and `ui::presets`
+   carries the gesture: a **double-click loads onto the selected track**, with a
+   LOAD button as the same thing spelled out. Twenty-four tests, none of which
+   needs a box.
+
+   **Run on hardware the same day** — a double-click loaded the selected preset
+   onto a track of a DT2 (0071) and a DN2 (0050), which is the whole path and not
+   just the `0x5b` under it. The A4 does not load, as designed. §9 has what that
+   run covered and the four refusals it did not.
+
+   Five things the work settled that this section had wrong or open:
+
+   - **The splice is a slice, and §10.4's description of it was more work than
+     the format needs.** It planned to lift the struct out of a preset file and
+     put it behind the five-byte wrapper a `0x6b` returns. The 24-capture
+     measurement makes that unnecessary and slightly dangerous: a digi preset
+     file's *payload* already **is** a `0x6b` payload — a wrapper then a struct,
+     to the byte — so a load sends `file[31 .. 31 + declared]` and assembles
+     nothing. The lengths were measured from both ends independently and agree:
+     DT2 1,114 and 1,114, DN2 364 and 364.
+
+     The danger in the assembly version is the wrapper's fourth byte. It carries
+     the word that selects the struct version — `00` on a 319-byte DN2 sound,
+     `01` on a 359-byte one — so a splice that kept the *track's* wrapper and
+     swapped in the *file's* struct would describe the sound that used to be
+     there. Copying the payload whole cannot make that mistake, and there is no
+     version of the assembly that is safer than not doing it.
+
+   - **A DN2's mk1 presets browse and do not load, and that is a third state
+     the panel had no name for.** 388 of 1,189 are `DN1S` files. They read, they
+     tag, the box lists them in its own browser — and handing an mk1 struct to a
+     DN2 under a store opcode is something nobody has ever done. `0x5b` is
+     refused for them by container magic, not by bank or by guess.
+
+   - **The load path's own witness is the box, and it is free.** No function
+     over a file can say whether *this box* wants a payload of that length.
+     Reading the target track first answers it, and that read was needed anyway
+     — its bytes are the backup. So the length check costs nothing and is the
+     one place the box gets a say.
+
+   - **Audition mode's backup is that read, and §10.4's "one backup when the kit
+     builder opens" could not be built as written.** The panel opens without
+     touching a port at all — that is what makes browsing work with the box off
+     — so a sixteen-track pre-read on open would spend nine round trips
+     protecting an audition nobody has asked for. Keeping the **first** pre-read
+     per track instead gives the same guarantee for nothing: REVERT goes back to
+     what a track held before the auditioning started, which is §10.4's own
+     definition of the honest unit. Backups survive a change of selected box,
+     alone among the panel's state, and do not survive quitting; the panel says
+     both.
+
+   - **`decode_sound_dump` was refusing half a DN2's library, silently, and it
+     is the guard inside the store.** It recovered a struct's size from
+     `KNOWN_SOUND_SIZES`, which has never contained 319 (a DN2 v0 sound) or 299
+     (a DT2's). A `0x6b` reply carrying one came back "not a sound struct" — so
+     `plan_track_sound_store` would have refused to load it, on the grounds that
+     it could not parse it. §10.2's finding, *measure the struct rather than
+     look it up*, had been applied to +Drive files and not to dumps. It measures
+     the foot now, and `sound::measure_struct_size` is the one copy of the rule.
+     **A guard is only as honest as its parser**, and this one was found by the
+     first test that put a real v0 sound on a fake box's track rather than by
+     anything on a desk.
 7. Exercise paging on a 256-entry bank.
 
 Steps 1–3 are hardware work and cannot be done from a desk without a box, and
-all three are now done. Steps 4–7 can be built
-against fixtures and only need a box to be believed — which is
-§9's standard, and the one this project keeps.
+all three are now done. Steps 4–6 are built; step 7 is not. All four can be
+built against fixtures and only need a box to be believed — which is §9's
+standard, and the one this project keeps.
+
+**What v1 does not do, recorded so it is a decision rather than an oversight:**
+a load changes the box and leaves no mark in the session. `Track::patch` is the
+nearest field and its own doc rules it out — it records the last *fetch* from a
+stored slot, not what the box is playing — so writing a +Drive preset into it
+would make a saved session assert a fetch that never happened. A track that
+knows what was auditioned onto it wants a field of its own, and that is a
+session-format change with nothing yet riding on it.

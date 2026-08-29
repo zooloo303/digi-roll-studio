@@ -15,9 +15,11 @@ use digi_protocol::device::DeviceIdentity;
 use digi_protocol::drive::ListEntry;
 use digi_protocol::preset_index::{BankIndex, IndexEntry};
 use digi_roll_studio::ui::presets::{
-    bank_label, bank_paths, blocker, listing_rows, mismatched_box, rate_line, report_line,
-    tag_names, BankData, Library, Row, Tagging, View, DEFAULT_BANKS, SOUNDBANKS,
+    bank_label, bank_paths, blocker, listing_rows, load_blocker, load_target, mismatched_box,
+    rate_line, report_line, tag_names, BankData, Library, Row, Tagging, View, DEFAULT_BANKS,
+    SOUNDBANKS,
 };
+use digi_roll_studio::ui::tracks::Selection;
 
 fn port(name: &str) -> PortRef {
     PortRef { id: name.into(), name: name.into() }
@@ -615,4 +617,78 @@ fn a_panel_opens_a_previously_scanned_library_with_the_box_switched_off() {
     assert!(tagging.offers_scan());
 
     let _ = std::fs::remove_dir_all(&dir);
+}
+
+// --- loading onto a track, PLAN.md §10.6 step 6 -----------------------------
+//
+// The two decisions a load makes before it opens a port: whether this box has a
+// load path at all, and which track the gesture means. Both are refusals a
+// person meets by clicking, so both are tested where clicking is not needed.
+
+/// The A4 browses and does not load, and the two facts are independent.
+///
+/// This is the distinction the panel exists to state clearly: `blocker` is
+/// about *ports* and is a setup step; `load_blocker` is about the box and is
+/// permanent. An A4 with both ports set passes the first and fails the second.
+#[test]
+fn an_a4_browses_and_has_no_load_path() {
+    let a4 = wired(&A4, "A4");
+
+    assert_eq!(blocker(&a4), None, "browsing needs ports and it has them");
+
+    let why = load_blocker(&a4).expect("an A4 cannot be loaded onto");
+    assert!(why.contains("no dump request"), "it must say which half is missing: {why}");
+    assert!(
+        why.contains("browse") || why.contains("browses"),
+        "and that the rest of the panel still works: {why}"
+    );
+}
+
+/// The digis have one. Checked so this cannot become a blanket refusal by
+/// accident — a `load_blocker` that returned `Some` for everything would make
+/// every test above still pass.
+#[test]
+fn both_digis_have_a_load_path() {
+    assert_eq!(load_blocker(&wired(&DT2, "DT2")), None);
+    assert_eq!(load_blocker(&wired(&DN2, "DN2")), None);
+}
+
+/// A box with no ports still has a load path — it has no *connection*. Two
+/// different refusals, and rolling them together would tell somebody their DN2
+/// cannot load presets because they had not picked a MIDI port yet.
+#[test]
+fn a_load_path_is_a_property_of_the_box_not_of_the_cable() {
+    let unwired = Device::new("DN2", &DN2, 16);
+
+    assert!(blocker(&unwired).is_some(), "no ports");
+    assert_eq!(load_blocker(&unwired), None, "and a load path all the same");
+}
+
+#[test]
+fn the_selected_track_is_the_one_a_load_lands_on() {
+    assert_eq!(load_target(Selection { device: 0, track: 0 }, 0), Ok(0));
+    assert_eq!(load_target(Selection { device: 1, track: 11 }, 1), Ok(11));
+    assert_eq!(load_target(Selection { device: 0, track: 15 }, 0), Ok(15));
+}
+
+/// A kit holds sixteen tracks whatever the roll is showing, and the refusal
+/// names the track a person can see rather than the index.
+///
+/// The failure this prevents is not hypothetical arithmetic: `store_kit_track_sound`
+/// takes a `u8`, and a selection of track 16 truncating or wrapping to 0 would
+/// store onto the first track of somebody's kit without a word.
+#[test]
+fn a_track_outside_a_kit_is_refused_by_the_number_on_screen() {
+    let err = load_target(Selection { device: 0, track: 16 }, 0).unwrap_err();
+    assert!(err.contains("track 17"), "the human number, not the index: {err}");
+
+    assert!(load_target(Selection { device: 0, track: 300 }, 0).is_err());
+}
+
+/// The panel follows the roll's selected box and has no picker of its own
+/// (decision 6), so this should be unreachable — and it decides where a *write*
+/// goes, which is why it is checked rather than assumed.
+#[test]
+fn a_selection_pointing_at_another_box_is_not_a_load_target() {
+    assert!(load_target(Selection { device: 1, track: 3 }, 0).is_err());
 }

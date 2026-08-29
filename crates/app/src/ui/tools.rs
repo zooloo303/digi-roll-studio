@@ -8,7 +8,10 @@
 // Presets took a sixth on 2026-08-29 with PLAN.md §10.6 step 5 and is drawn by
 // `ui::presets` — the selected box's +Drive soundbanks, and the first caller
 // `preset_scan::scan_bank` has ever had. It sits *above* Session in the rail
-// rather than below it; `ui::rail::Tool::ALL` carries why.
+// rather than below it; `ui::rail::Tool::ALL` carries why. Step 6 landed in it
+// the same day: it is now the only panel in this rail that writes to a box
+// without going through `safe_write_tracks`, and the arm below says why that is
+// not a gap in the ceremony.
 //
 // The four before those: Session took the rail's fourth position when
 // banks were cut on 2026-08-18 and is drawn by `ui::session`; Edit stopped being a
@@ -131,13 +134,23 @@ pub fn ui(
                 stepped: false,
             }
         }
-        // The one panel here that reports nothing but its own `×`. Browsing a
-        // box's +Drive is read-only in both directions: it does not change the
-        // session, and it does not write to the box. That stops being true at
-        // §10.6 step 6, when loading a preset onto a track lands — and the
-        // `edited` this arm passes up will be the sign it has.
+        // The one panel here that reports nothing but its own `×`, and since
+        // §10.6 step 6 that is true for a more interesting reason than it was.
+        //
+        // This panel now *writes* — a load puts a sound on a track of the kit
+        // the box is playing. It still reports `edited: false`, because the
+        // thing it changed is the box's working buffer and **the session has no
+        // field that honestly records one.** `Track::patch` is the nearest
+        // candidate and its own doc rules it out: it is a record of the last
+        // *fetch* from a stored slot, not a claim about what the box is playing
+        // now, and writing a +Drive preset into it would make a saved session
+        // assert a fetch that never happened.
+        //
+        // This comment used to predict the opposite — that the `edited` flag
+        // would be the sign step 6 had landed. It was written before the
+        // distinction between the two was worth this much.
         Tool::Presets => {
-            let out = presets_panel.ui(ui, session, selection.device, transfers_busy);
+            let out = presets_panel.ui(ui, session, selection, transfers_busy);
             Outcome { close: out.close, reloaded: false, edited: false, stepped: false }
         }
     }

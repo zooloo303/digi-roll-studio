@@ -256,12 +256,18 @@ pub const KIT_TRACKS: u8 = 16;
 /// choose which `0x5n` goes out. Same reasoning as `plan_store`'s — a guard can
 /// only refuse a parameter, so the safest store is one whose opcode is not one.
 ///
-/// # This message has never been answered by a box
+/// # The three checks, and why they outlived the hypothesis
 ///
-/// [`DUMP_KIT_TRACK_SOUND`] is derived from the response-is-request-minus-0x10
-/// rule and nothing else. It may not be a store; it may be a store of something
-/// other than a track's sound. So three things are checked before any of it
-/// reaches a cable, in the order that a wrong hypothesis would break them:
+/// [`DUMP_KIT_TRACK_SOUND`] was derived from the response-is-request-minus-0x10
+/// rule and nothing else, so it might not have been a store at all. It is one —
+/// confirmed on a DT2 and a DN2, see [`ElektronDevice::store_kit_track_sound`].
+///
+/// The checks stay exactly as they were written, and the argument for each is
+/// the stronger now that this is a *shipping* path rather than a probe: what
+/// they guard against is not a wrong opcode but a wrong payload, and a user
+/// double-clicking a preset can reach this far more often than an afternoon of
+/// probing ever did. Three things are checked before any of it reaches a cable,
+/// in the order that a wrong payload would break them:
 ///
 /// 1. **The firmware allowlist**, via the same [`write_gate`] `plan_store`
 ///    uses. An unverified OS build is the case no backup was taken for, and
@@ -271,8 +277,16 @@ pub const KIT_TRACKS: u8 = 16;
 ///    behind the 5-byte wrapper `0x6b` returns. The magic foot is what makes
 ///    this worth doing (see [`decode_sound_dump`]): it does not validate at the
 ///    wrong size, so "this is a sound" is checked rather than assumed. Sending
-///    bytes we cannot decode under an opcode we cannot predict is how a probe
-///    turns into a corrupted kit.
+///    bytes we cannot decode under a store opcode is how a stray slice turns
+///    into a corrupted kit.
+///
+///    **This check was silently refusing good payloads until 2026-08-29**, and
+///    it is worth knowing why, because the failure was invisible: it read as
+///    "not a sound struct" and there was nothing to see. `decode_sound_dump`
+///    recovered a struct's size from a table, and roughly half a DN2's own
+///    presets are 319 bytes — a size no table here ever had. It measures the
+///    foot now. A guard that refuses what it cannot parse is only as honest as
+///    its parser.
 fn plan_track_sound_store(
     identity: Option<&DeviceIdentity>,
     track: u8,
@@ -288,8 +302,9 @@ fn plan_track_sound_store(
             KIT_TRACKS - 1
         )));
     }
-    // Either shape decodes: the wrapper is what `0x6b` hands back, and whether
-    // the store wants it is exactly what the probe is for.
+    // Either shape decodes: the wrapper is what `0x6b` hands back and what the
+    // store turned out to want, and the bare struct is kept accepted because
+    // the probe tried both and this guard should not be the thing that decides.
     let wrapped = payload.get(SOUND_WRAPPER..).map(decode_sound_dump);
     if let Err(bare) = decode_sound_dump(payload) {
         if !matches!(wrapped, Some(Ok(_))) {
@@ -866,16 +881,26 @@ impl ElektronDevice {
     }
 
     /// Store one sound onto a track of the box's **active** kit — the store
-    /// `0x6b`'s existence predicts, and **the one message in this crate that
-    /// has never been answered by a box.**
+    /// `0x6b`'s existence predicts, **confirmed on hardware and now in use.**
     ///
     /// Read [`plan_track_sound_store`] before calling this; it holds the three
-    /// checks and the reasons for them. What that function cannot check is the
-    /// hypothesis itself: `0x5b` is named by arithmetic on `0x6b`, and whether
-    /// the box reads it as a per-track sound store is what
-    /// `examples/probe_sound_store.rs` exists to find out. **Until that probe
-    /// returns a positive on hardware, nothing in the app may call this** —
-    /// PLAN.md §10.6 step 3 is the decision, and §10.4 is what rides on it.
+    /// checks and the reasons for them. What that function could not check was
+    /// the hypothesis itself: `0x5b` is named by arithmetic on `0x6b`, and
+    /// whether a box reads it as a per-track sound store is what
+    /// `examples/probe_sound_store.rs` was written to find out.
+    ///
+    /// **It does.** Positive on a DT2 (0071) on 2026-08-28 and on a DN2 (0050)
+    /// on 2026-08-29 — the wrapped payload accepted first try on both, two
+    /// agreeing reads and the box's own screen as witnesses, and the original
+    /// bytes restoring. So the bar this doc used to set — *nothing in the app
+    /// may call this until the probe returns a positive* — is met, and
+    /// PLAN.md §10.6 step 6 is what walked through it: `preset_load` is the
+    /// caller, and `ui::presets` is the button.
+    ///
+    /// The A4 has no route here at all and never will: it answers no `0x6x`
+    /// request, so there is no `0x6b` for this to mirror. `Product::family` is
+    /// `None` for it, and `ui::presets::load_blocker` is where a user is told
+    /// so in words.
     ///
     /// # Why this is not `safe_write_tracks`
     ///

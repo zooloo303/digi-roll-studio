@@ -41,7 +41,7 @@
 use std::path::PathBuf;
 
 use digi_protocol::drive::{
-    container_offset, decode_drive_preset, file_declared_size, DriveError,
+    container_offset, decode_drive_preset, file_declared_size, preset_load_payload, DriveError,
 };
 use digi_protocol::sound::tag_names_for;
 
@@ -513,4 +513,133 @@ fn an_uncalibrated_box_names_no_tags_at_all() {
     assert!(saw.tags("digitakt").is_empty());
     assert!(saw.tags("").is_empty());
     assert_ne!(saw.tag_mask, 0, "the mask survives even when nothing can name it");
+}
+
+// --- the load payload, PLAN.md §10.6 step 6 ---------------------------------
+//
+// `preset_load_payload` is the whole splice, and the claim it rests on is a
+// measurement over these same 24 files: a digi preset file's payload is
+// byte-for-byte what a `0x6b` kit-track-sound reply carries, so a load sends a
+// slice of the file rather than anything assembled. These tests pin the slice,
+// the two lengths the hardware independently reported, and the three files that
+// must be refused.
+
+/// The payload is the file minus its 31-byte header and 12-byte trailer, and it
+/// opens with the wrapper — not with the container.
+#[test]
+fn a_load_payload_is_the_file_s_own_payload() {
+    let file = fixture("digitone2-soundbanks-A-1-HIDDEN-TEARS-2026-08-29.bin");
+    let payload = preset_load_payload(&file).expect("a native DN2 preset should load");
+
+    assert_eq!(payload, &file[31..31 + 364], "the declared payload, cut out whole");
+    assert_eq!(payload.len(), 364);
+    assert_eq!(&payload[5..9], &[0xbe, 0xef, 0xba, 0xce], "the container is 5 bytes in");
+}
+
+/// The lengths the two ends reported separately, and the reason the splice is a
+/// slice: a DT2 `0x6b` reply is 1,114 bytes and a DT2 preset payload is 1,114;
+/// a DN2's are 364 and 364. Both numbers are from hardware — PLAN.md §9's
+/// `0x5b` probe for the reply, this manifest for the file.
+#[test]
+fn a_payload_is_the_length_that_box_s_kit_track_answers_with() {
+    let dn2 = fixture("digitone2-soundbanks-A-1-HIDDEN-TEARS-2026-08-29.bin");
+    let dt2 = fixture("digitakt2-soundbanks-A-1-ACIDD-2026-08-29.bin");
+
+    assert_eq!(preset_load_payload(&dn2).unwrap().len(), 364);
+    assert_eq!(preset_load_payload(&dt2).unwrap().len(), 1114);
+}
+
+/// Two struct sizes in one DN2 bank, one payload length — which is what makes a
+/// fixed-length comparison against the box's reply a sound check rather than a
+/// coincidence. The 359-byte sound and the 319-byte one both travel in 364.
+#[test]
+fn both_dn2_struct_sizes_travel_in_the_same_payload() {
+    let short = fixture("digitone2-soundbanks-A-2-MONOLOW-2026-08-29.bin");
+    let long = fixture("digitone2-soundbanks-A-6-7THPAD-2026-08-29.bin");
+
+    assert_eq!(decode_drive_preset(&short).unwrap().bytes.len(), 319);
+    assert_eq!(decode_drive_preset(&long).unwrap().bytes.len(), 359);
+    assert_eq!(preset_load_payload(&short).unwrap().len(), 364);
+    assert_eq!(preset_load_payload(&long).unwrap().len(), 364);
+}
+
+/// And the byte that says which of the two is coming is inside the wrapper, so
+/// it travels with the file.
+///
+/// This is the bug the "slice, not a splice" finding prevents: a load that kept
+/// the *track's* wrapper and swapped in the *file's* struct would send `00`
+/// in front of a 359-byte sound whenever the track happened to hold a 319-byte
+/// one.
+#[test]
+fn the_wrapper_carries_the_struct_version_and_travels_with_the_file() {
+    let short = fixture("digitone2-soundbanks-A-2-MONOLOW-2026-08-29.bin");
+    let long = fixture("digitone2-soundbanks-A-6-7THPAD-2026-08-29.bin");
+
+    assert_eq!(preset_load_payload(&short).unwrap()[..5], [0, 0, 0, 0, 0]);
+    assert_eq!(preset_load_payload(&long).unwrap()[..5], [0, 0, 0, 1, 0]);
+}
+
+/// A Digitone mk1 preset off a DN2's own +Drive: browses, tags, and does not
+/// load. PLAN.md §9 — 388 of that box's 1,189 presets are these.
+#[test]
+fn an_mk1_preset_on_a_dn2_browses_but_does_not_load() {
+    let file = fixture("digitone2-soundbanks-C-1-ORGANIC-2026-08-29.bin");
+
+    let sound = decode_drive_preset(&file).expect("an mk1 preset browses");
+    assert_eq!(sound.name, "ORGANIC");
+
+    match preset_load_payload(&file) {
+        Err(DriveError::NotTheBoxsOwnFormat { magic, at }) => {
+            assert_eq!(magic, 0x444e_3153, "DN1S");
+            assert_eq!(at, 31);
+        }
+        other => panic!("an mk1 preset must not be loadable: {other:?}"),
+    }
+}
+
+/// The A4's file is refused here too, though the panel refuses it earlier and
+/// for the better reason: no `0x6b`, so no `0x5b` to send it under.
+#[test]
+fn an_a4_preset_is_not_loadable_either() {
+    let file = fixture("analogfour-soundbanks-A-1-THE-SAW-2026-08-29.bin");
+
+    assert_eq!(decode_drive_preset(&file).unwrap().name, "THE SAW");
+    assert!(matches!(
+        preset_load_payload(&file),
+        Err(DriveError::NotTheBoxsOwnFormat { magic: 0xbeef_baba, at: 31 })
+    ));
+}
+
+/// A truncated file is refused rather than sliced short. The container magic is
+/// the right one, so this is the layout check doing the work and not the format
+/// check.
+#[test]
+fn a_truncated_preset_is_refused_rather_than_cut_short() {
+    let mut file = fixture("digitone2-soundbanks-A-1-HIDDEN-TEARS-2026-08-29.bin");
+    file.truncate(200);
+
+    assert!(matches!(
+        preset_load_payload(&file),
+        Err(DriveError::UnsizedPayload { declared: Some(364), len: 200, .. })
+    ));
+}
+
+/// Every native capture yields a payload, and every one of them is the same
+/// length as the others from its own box. A per-file assertion rather than a
+/// spot check, because "the payload length is a per-box constant" is what the
+/// caller's comparison against the box's reply assumes.
+#[test]
+fn every_native_capture_yields_a_payload_of_its_box_s_length() {
+    for (name, expected) in [
+        ("digitakt2-soundbanks-A-1-ACIDD-2026-08-29.bin", 1114),
+        ("digitakt2-soundbanks-A-8-BLUE-HH-2026-08-29.bin", 1114),
+        ("digitone2-soundbanks-A-1-HIDDEN-TEARS-2026-08-29.bin", 364),
+        ("digitone2-soundbanks-A-3-SYNTHV-G-2026-08-29.bin", 364),
+        ("digitone2-soundbanks-A-8-LONELY-NIGHTS-2026-08-29.bin", 364),
+    ] {
+        let file = fixture(name);
+        let payload = preset_load_payload(&file)
+            .unwrap_or_else(|e| panic!("{name} should yield a load payload: {e}"));
+        assert_eq!(payload.len(), expected, "{name}");
+    }
 }

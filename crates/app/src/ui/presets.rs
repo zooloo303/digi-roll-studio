@@ -7,13 +7,16 @@
 // tags — so this file is the thread, the channel and the screen, and it holds
 // no byte offsets, no opcodes and no decode rules of its own.
 //
-// **Browse only. Nothing here loads a preset onto a track yet** — that is step
-// 6, and it is the half that writes to a box. Every wire this panel touches
-// goes through `drive::assert_read_only_file_op`, which admits List, Open, Read
-// and Close and refuses the write trio and `0x5C` Delete, so pressing anything
-// in here is the same safety class as Identify.
+// **It browses, and since PLAN.md §10.6 step 6 it also loads.** Everything that
+// touches the +Drive still goes through `drive::assert_read_only_file_op`,
+// which admits List, Open, Read and Close and refuses the write trio and `0x5C`
+// Delete — so nothing in here can alter a +Drive. The one thing that *does*
+// write is the load, and it writes somewhere else entirely: `0x5b` onto a track
+// of the kit the box is playing. Those are two different namespaces and the
+// distinction is worth keeping in mind while reading this file — the browser
+// cannot change the library, and the loader cannot touch it.
 //
-// ## Seven decisions
+// ## Eight decisions
 //
 //  1. **The library is the unit, not the bank, and it opens on ALL.** The panel
 //     browsed one bank at a time until Neil put it on three boxes on
@@ -100,6 +103,29 @@
 //     lose the unsaved tail** — the thread is detached and the process does not
 //     wait for it — which is the one gap in this and is called out on screen.
 //
+//  8. **The backup is the read a load had to do anyway, and the first one per
+//     track wins.** §10.4 asks for "one backup when the kit builder opens", and
+//     that cannot be what this panel does: decision 2 is that opening it touches
+//     no port at all, and a sixteen-track pre-read on open would spend nine
+//     round trips to protect an audition nobody has asked for yet.
+//
+//     What it does instead gives the same guarantee for nothing. A load reads
+//     the target track *before* it writes — it has to, because the box's own
+//     reply is the only witness to what length payload it wants — and those
+//     bytes are the backup. Keeping the first one per track, and never
+//     overwriting it, means REVERT goes back to what the track held before the
+//     auditioning started rather than one step back through nineteen of them,
+//     which is §10.4's own definition of the honest unit.
+//
+//     **The backups outlive a change of selected box**, alone among this
+//     panel's state: a library view can be rebuilt from disk and these bytes
+//     exist nowhere else. They do not outlive the app, and the panel says so.
+//
+//     None of this replaces the real undo, which is the box discarding an
+//     unsaved kit when the pattern is reloaded. `midi::preset_load`'s module
+//     doc has the ordering, and the panel says it on screen every time rather
+//     than in the `?` reveal.
+//
 // ## What has been verified, and what has not
 //
 // **On hardware, 2026-08-29:** bank select, LIST and READ TAGS on a DT2 and a DN2
@@ -108,6 +134,17 @@
 // has been scanned, so §10.3's timings remain arithmetic — which is why
 // [`rate_line`] reports presets-per-second and a projection from the run in
 // progress rather than from a constant.
+//
+// **The load runs, on both digis, from this panel** — 2026-08-29, the day it was
+// built: a double-click put the selected preset onto the selected track of a DT2
+// (0071) and a DN2 (0050). That is the whole path rather than the `0x5b` under
+// it, which two boxes had already answered.
+//
+// **What that run did not touch is every refusal.** REVERT, an mk1 preset being
+// turned away by name, the A4's LOAD section reading as a fact rather than a
+// fault, and the OS-build gate speaking through this path are all still
+// desk-only — and the A4 one has a precedent for going wrong, which is
+// decision 4. §9 has the list.
 
 use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -117,15 +154,17 @@ use std::time::{Duration, Instant};
 
 use digi_core::device::{Device, PortRef};
 use digi_core::{DeviceId, Session};
+use digi_midi::preset_load::{load_preset_onto_track, revert_track};
 use digi_midi::preset_scan::{scan_bank, ScanError};
-use digi_midi::ElektronDevice;
-use digi_protocol::device::DeviceIdentity;
+use digi_midi::{ElektronDevice, KIT_TRACKS};
+use digi_protocol::device::{product_for_slug, DeviceIdentity};
 use digi_protocol::drive::{parse_list_entries, ListEntry};
 use digi_protocol::preset_index::{BankIndex, PresetIndex};
 use digi_protocol::sound::tag_names_for;
 pub use digi_protocol::sound::tag_names;
 use eframe::egui::{self, Ui};
 
+use crate::ui::tracks::Selection;
 use crate::ui::transfer::binding;
 
 /// The +Drive directory the preset banks live under. One constant rather than
@@ -426,6 +465,67 @@ pub fn blocker(device: &Device) -> Option<String> {
     }
 }
 
+/// Why this box cannot be loaded onto at all, or `None`.
+///
+/// **Stricter than [`blocker`], and the extra refusal is permanent rather than a
+/// setup step.** Browsing needs two ports and nothing else. Loading needs the
+/// box to answer `0x6b` — a load reads the track before it writes it, and there
+/// is no other way to know what a track held or what length it wants — and a
+/// box with no dump family answers no `0x6x` request whatsoever.
+///
+/// That box is the Analog Four, and the distinction matters because everything
+/// *else* about it works: it lists, it reads, it decodes, it tags, and its
+/// presets sit in this browser next to a DN2's. So the refusal has to say which
+/// half is missing, or it reads as the browser being broken on that box.
+///
+/// **There is nothing to enable here.** No cable, port, OS build or setting
+/// changes it: the box does not have the message. That is why this is a
+/// sentence and not a disabled control with a tooltip.
+pub fn load_blocker(device: &Device) -> Option<String> {
+    let Some(slug) = device.model.slug else {
+        return Some(format!(
+            "This build has no protocol for the {} beyond the names in this list, so it \
+             cannot put a preset on one of its tracks.",
+            device.model.display
+        ));
+    };
+    match product_for_slug(slug) {
+        Some(product) if product.family.is_some() => None,
+        _ => Some(format!(
+            "The {} answers no dump request at all, so there is no way to read a track back \
+             or store a sound onto one. Its presets browse, search and tag here like any \
+             other box's — loading one onto a track is the one thing this protocol does not \
+             give it, and no cable or OS build changes that.",
+            device.model.display
+        )),
+    }
+}
+
+/// The track a load would land on, given the roll's selection and the box in
+/// view — or why there is not one.
+///
+/// **A function so the rule is testable, because it is the one place two
+/// different numbering schemes meet.** The roll counts a device's tracks from
+/// zero and a box's kit holds [`KIT_TRACKS`] of them; a session may hold a model
+/// with fewer, and a selection may still be pointing at a track index the roll
+/// allows and a kit does not. The panel must not silently store onto track 1
+/// because track 17 was selected.
+pub fn load_target(selection: Selection, device_index: usize) -> Result<u8, String> {
+    if selection.device != device_index {
+        // Not reachable while the panel follows the selection's own box, and
+        // checked anyway: this decides where a *write* goes.
+        return Err("the selected box is not the one this browser is showing".into());
+    }
+    match u8::try_from(selection.track) {
+        Ok(track) if track < KIT_TRACKS => Ok(track),
+        _ => Err(format!(
+            "track {} is outside the {KIT_TRACKS} a kit holds, so there is no kit slot to \
+             load onto",
+            selection.track + 1
+        )),
+    }
+}
+
 /// Why the box that answered must not be indexed as the box this row names, or
 /// `None`.
 ///
@@ -600,7 +700,62 @@ enum Event {
     /// This box cannot be tagged at all. Its own event, not a `Failed`, because
     /// the panel renders it as a state rather than as a fault — decision 4.
     NotIndexable(String),
+    /// One preset is on one track, verified by reading it back.
+    ///
+    /// `backup` is what that track held **before** this load, and the panel
+    /// keeps only the first one it is given per track — audition mode's whole
+    /// mechanism, and decision 8 is why it arrives here rather than being
+    /// fetched separately.
+    Loaded { track: u8, loaded: String, replaced: String, backup: Vec<u8> },
+    /// Every track this panel had touched is back to what it found there.
+    /// `failed` names the ones that did not take, which are the ones a person
+    /// has to reload the pattern for.
+    Reverted { restored: Vec<u8>, failed: Vec<String> },
     Failed(String),
+}
+
+/// What the worker in flight is doing.
+///
+/// **A `bool` until step 6, and it stopped being one for a reason worth naming:**
+/// a scan is the only job that can be stopped, and a load is the only job that
+/// writes. Those are different questions, and a second bool beside the first is
+/// how a panel ends up offering STOP on a store — which is the one operation in
+/// here that must run to its read-back.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum JobKind {
+    Listing,
+    Scanning,
+    /// A `0x5b` onto this track, with the preset's address for the progress
+    /// line. Named rather than numbered: at four seconds a person wants to see
+    /// *which* preset is going where.
+    Loading { track: u8, what: String },
+    /// Putting every touched track back.
+    Reverting { tracks: usize },
+}
+
+impl JobKind {
+    /// Whether STOP applies. Only the scan: a load is five round trips that end
+    /// in a verify, and a half-run load is exactly the state nobody can act on.
+    fn stoppable(&self) -> bool {
+        matches!(self, Self::Scanning)
+    }
+
+    /// Whether this job writes to the box. The Setup panel is held off for
+    /// either kind — one desk, one person — but only this one needs the
+    /// consequence line that says so.
+    fn writes(&self) -> bool {
+        matches!(self, Self::Loading { .. } | Self::Reverting { .. })
+    }
+
+    /// The line to show while it runs and no progress has arrived.
+    fn waiting_line(&self) -> String {
+        match self {
+            Self::Listing => "listing…".into(),
+            Self::Scanning => "reading the library…".into(),
+            Self::Loading { track, what } => format!("loading {what} onto T{}…", track + 1),
+            Self::Reverting { tracks } => format!("putting {tracks} track(s) back…"),
+        }
+    }
 }
 
 /// One job in flight.
@@ -613,8 +768,7 @@ struct Job {
     /// That box's name in the session, so a result arriving after the selection
     /// has moved can say whose it was instead of appearing under the wrong one.
     name: String,
-    /// Set when this is the long one, so the panel knows whether to offer STOP.
-    scanning: bool,
+    kind: JobKind,
     rx: Receiver<Event>,
     /// Read by `scan_bank` before every preset, so a cancel costs at most one
     /// round trip.
@@ -848,6 +1002,81 @@ fn scan_worker(
     });
 }
 
+/// The one worker in this file that writes to a box.
+///
+/// `midi::preset_load` is the body of it, exactly as `scan_bank` is the body of
+/// [`scan_worker`] — the pre-read, the length check against the box's own reply,
+/// the store, the settle and the two-read verify all live there and are tested
+/// there against a fake box. What this adds is a thread, a channel and the
+/// identity check.
+///
+/// **The identity check is not inherited from the read path's reasoning, it is
+/// stronger here.** [`mismatched_box`] refuses a read because of what the read
+/// *persists* — a tag index on disk under the wrong box's name. This refuses a
+/// write because of what the write *does*: a store aimed at a DN2 that reaches
+/// a DT2 puts a Digitone sound in a Digitakt's kit, and there is no `0x50` to
+/// put a working buffer back.
+fn load_worker(
+    input: PortRef,
+    output: PortRef,
+    expected: Option<&'static str>,
+    display: String,
+    path: String,
+    track: u8,
+    events: Sender<Event>,
+) {
+    let (mut device, _identity) = match open(&input, &output, expected, &display) {
+        Ok(pair) => pair,
+        Err(why) => {
+            let _ = events.send(Event::Failed(why));
+            return;
+        }
+    };
+
+    let _ = match load_preset_onto_track(&mut device, &path, track) {
+        Ok(report) => events.send(Event::Loaded {
+            track,
+            loaded: report.loaded,
+            replaced: report.replaced,
+            backup: report.backup,
+        }),
+        Err(why) => events.send(Event::Failed(why.to_string())),
+    };
+}
+
+/// Put every track this panel has loaded onto back to what it found there.
+///
+/// **Every track is attempted even after one fails**, which is the opposite of
+/// how the read workers handle an error and is deliberate: this runs when
+/// something has already gone differently than a person wanted, and stopping at
+/// the first failure would leave the tracks after it changed *and* unmentioned.
+/// The failures are collected and named instead.
+fn revert_worker(
+    input: PortRef,
+    output: PortRef,
+    expected: Option<&'static str>,
+    display: String,
+    backups: Vec<(u8, Vec<u8>)>,
+    events: Sender<Event>,
+) {
+    let (mut device, _identity) = match open(&input, &output, expected, &display) {
+        Ok(pair) => pair,
+        Err(why) => {
+            let _ = events.send(Event::Failed(why));
+            return;
+        }
+    };
+
+    let (mut restored, mut failed) = (Vec::new(), Vec::new());
+    for (track, bytes) in backups {
+        match revert_track(&mut device, track, &bytes) {
+            Ok(_) => restored.push(track),
+            Err(why) => failed.push(format!("T{}: {why}", track + 1)),
+        }
+    }
+    let _ = events.send(Event::Reverted { restored, failed });
+}
+
 // --- the panel --------------------------------------------------------------------
 
 #[derive(Debug, Clone, Copy, Default)]
@@ -929,6 +1158,23 @@ pub struct PresetsPanel {
     note: Option<Note>,
     /// The store, held so tests can point it somewhere of their own.
     store: Option<PresetIndex>,
+    /// **Audition mode's backup**: what each track held the *first* time this
+    /// panel loaded onto it, keyed by box and track — decision 8.
+    ///
+    /// Kept across a change of selected box, unlike everything else in this
+    /// panel, and that is the point of the key. The library on screen is a view
+    /// and can be rebuilt from disk; these bytes exist nowhere else, and a
+    /// person who auditions on a DN2, clicks a DT2 track and comes back must
+    /// still be able to put the DN2 back.
+    ///
+    /// Never overwritten by a later load onto the same track: recovery is to
+    /// the state before the auditioning started, not one step back through
+    /// nineteen of them.
+    backups: BTreeMap<(DeviceId, u8), Vec<u8>>,
+    /// The row LOAD would act on, as `(bank, slot)`. `None` until something is
+    /// clicked — a LOAD button with no row picked is a button that cannot say
+    /// what it would do.
+    picked: Option<(String, u32)>,
 }
 
 impl Default for PresetsPanel {
@@ -946,6 +1192,8 @@ impl Default for PresetsPanel {
             job: None,
             note: None,
             store: None,
+            backups: BTreeMap::new(),
+            picked: None,
         }
     }
 }
@@ -1007,10 +1255,11 @@ impl PresetsPanel {
         &mut self,
         ui: &mut Ui,
         session: &Session,
-        selected: usize,
+        selection: Selection,
         blocked: bool,
     ) -> Outcome {
         let mut out = Outcome::default();
+        let selected = selection.device;
         let device = session.devices.get(selected);
 
         // **The selection is settled before the channel is drained, and the
@@ -1060,7 +1309,7 @@ impl PresetsPanel {
         ui.add_space(6.0);
         self.tag_section(ui);
         ui.add_space(6.0);
-        self.rows_section(ui);
+        self.rows_section(ui, device, selection, blocked);
         out
     }
 
@@ -1162,7 +1411,7 @@ impl PresetsPanel {
     fn job_ui(&mut self, ui: &mut Ui) {
         let Some(job) = &self.job else { return };
         let elapsed = job.started.elapsed();
-        let scanning = job.scanning;
+        let kind = job.kind.clone();
         let (line, last) = match &job.progress {
             // "C (3/8) · 142 / 236 · 4.1/s · 23s left" — the bank, where it sits
             // in the run, and the measured rate. The elapsed clock is the whole
@@ -1176,8 +1425,7 @@ impl PresetsPanel {
                 ),
                 name.clone(),
             ),
-            None if scanning => (String::from("reading the library…"), None),
-            None => (String::from("listing…"), None),
+            None => (kind.waiting_line(), None),
         };
         // Whose job this is, said out loud only when it is not the box on
         // screen — decision 6's other half. A spinner with no owner beside a
@@ -1194,7 +1442,18 @@ impl PresetsPanel {
         if let Some(name) = last {
             ui.weak(name);
         }
-        if scanning {
+        if kind.writes() {
+            // No STOP, and said rather than merely absent. A load is a store
+            // followed by the read that proves it landed; stopping between the
+            // two is the one state this panel could produce that nobody could
+            // act on.
+            super::consequence_line(
+                ui,
+                "This one writes to the box, so it runs to its read-back rather than \
+                 offering a stop.",
+            );
+        }
+        if kind.stoppable() {
             if ui
                 .small_button("STOP")
                 .on_hover_text(
@@ -1285,8 +1544,14 @@ impl PresetsPanel {
         }
     }
 
-    /// The presets themselves.
-    fn rows_section(&mut self, ui: &mut Ui) {
+    /// The presets themselves, and the one gesture in this panel that writes.
+    fn rows_section(
+        &mut self,
+        ui: &mut Ui,
+        device: &Device,
+        selection: Selection,
+        blocked: bool,
+    ) {
         let banks = self.in_view();
         let filtered = self.library.filtered(&banks, self.mask, &self.search);
         let caption = format!("{} of {}", filtered.rows.len(), filtered.total);
@@ -1322,61 +1587,223 @@ impl PresetsPanel {
 
         // The bank column earns its place only when more than one is in view.
         let show_bank = matches!(self.view, View::All);
+        let slug = self.library.slug.clone();
+        let picked = self.picked.clone();
+        let target = load_target(selection, selection.device).ok();
+        let mut clicked: Option<(String, u32)> = None;
+        let mut double_clicked: Option<(String, u32)> = None;
+
         egui::ScrollArea::vertical().max_height(360.0).show(ui, |ui| {
             for row in &filtered.rows {
-                ui.horizontal(|ui| {
-                    if show_bank {
-                        ui.label(
-                            egui::RichText::new(bank_label(&row.bank))
-                                .monospace()
-                                .size(10.0)
-                                .color(super::TEXT_DIMMEST),
-                        );
+                let address = (row.bank.clone(), row.slot);
+                let is_picked = picked.as_ref() == Some(&address);
+                // **The whole row senses the click, and the labels inside it do
+                // not.** `super::install_style` makes labels non-selectable for
+                // exactly this reason — `ui::generate`'s destination chip lost
+                // half its clicks to a selectable label eating them — so the
+                // sense goes on the scope and the parts stay decoration.
+                let response = ui
+                    .scope_builder(
+                        egui::UiBuilder::new()
+                            .id_salt(("preset-row", &row.bank, row.slot))
+                            .sense(egui::Sense::click()),
+                        |ui| {
+                            ui.horizontal(|ui| {
+                                if show_bank {
+                                    ui.label(
+                                        egui::RichText::new(bank_label(&row.bank))
+                                            .monospace()
+                                            .size(10.0)
+                                            .color(super::TEXT_DIMMEST),
+                                    );
+                                }
+                                ui.label(
+                                    egui::RichText::new(format!("{:>3}", row.slot))
+                                        .monospace()
+                                        .size(10.0)
+                                        .color(super::TEXT_DIMMER),
+                                );
+                                let name = egui::RichText::new(&row.name).size(11.0).color(
+                                    if is_picked {
+                                        super::CYAN
+                                    } else {
+                                        super::TEXT_PRIMARY
+                                    },
+                                );
+                                ui.label(name);
+                            });
+                        },
+                    )
+                    .response;
+
+                let where_it_is = format!("{}/{}", bank_label(&row.bank), row.slot);
+                let tags = match row.tags {
+                    Some(0) => String::from("no tags"),
+                    Some(mask) => tag_names(mask, &slug).join(", "),
+                    None => String::from("not scanned, so its tags are unknown"),
+                };
+                // The gesture is spelled out on every row rather than once
+                // above the list: a double-click that writes to hardware is not
+                // a thing to leave anybody guessing at, and the tooltip is
+                // where a person checks before trying it.
+                let gesture = match target {
+                    Some(track) => format!("double-click to load onto T{}", track + 1),
+                    None => String::from("no track selected to load onto"),
+                };
+                let response = response.on_hover_text(format!(
+                    "{where_it_is} · {} bytes · {tags}\n{gesture}",
+                    row.size
+                ));
+
+                if response.clicked() {
+                    clicked = Some(address.clone());
+                }
+                if response.double_clicked() {
+                    double_clicked = Some(address);
+                }
+            }
+        });
+
+        if let Some(address) = clicked {
+            // A single click picks, so LOAD has something to name — and so a
+            // person can see what a double-click would have hit before making
+            // one.
+            self.picked = Some(address);
+            self.note = None;
+        }
+
+        self.load_section(ui, device, selection, blocked, &filtered.rows);
+
+        if let Some((bank, slot)) = double_clicked {
+            self.start_load(device, selection, &bank, slot);
+        }
+    }
+
+    /// Where a load would land, what it would displace, and the two buttons.
+    ///
+    /// Drawn under the list rather than over it because it is about the *track*,
+    /// not about the library: everything above this line answers "which preset",
+    /// and this answers "onto what, and what happens to what is there".
+    fn load_section(
+        &mut self,
+        ui: &mut Ui,
+        device: &Device,
+        selection: Selection,
+        blocked: bool,
+        rows: &[Row],
+    ) {
+        ui.add_space(6.0);
+        let target = load_target(selection, selection.device);
+        let caption = match &target {
+            Ok(track) => format!("T{}", track + 1),
+            Err(_) => String::from("no track"),
+        };
+        super::section_header(ui, "LOAD", Some(&caption));
+
+        // The permanent refusal first and on its own: it is not a step somebody
+        // can complete, so putting it above the buttons stops them reading as
+        // "nearly ready".
+        if let Some(why) = load_blocker(device) {
+            super::consequence_line(ui, &why);
+            return;
+        }
+
+        let picked_row = self
+            .picked
+            .as_ref()
+            .and_then(|(bank, slot)| {
+                rows.iter().find(|r| r.bank == *bank && r.slot == *slot)
+            })
+            .cloned();
+
+        let in_flight = self.job.is_some();
+        let ready = !blocked
+            && blocker(device).is_none()
+            && !in_flight
+            && target.is_ok()
+            && picked_row.is_some();
+
+        ui.horizontal_wrapped(|ui| {
+            ui.add_enabled_ui(ready, |ui| {
+                if super::colored_button(
+                    ui,
+                    "LOAD",
+                    super::CYAN_FILL,
+                    super::CYAN_TEXT,
+                    super::CYAN,
+                    super::CYAN,
+                    super::CYAN_INK,
+                )
+                .on_hover_text(
+                    "Writes: puts the picked preset onto the selected track of the kit \
+                     the box is playing right now. Double-clicking a row does the same \
+                     thing. About a kilobyte, and it is read back to prove it landed.",
+                )
+                .clicked()
+                {
+                    if let (Some(row), Ok(_)) = (&picked_row, &target) {
+                        let (bank, slot) = (row.bank.clone(), row.slot);
+                        self.start_load(device, selection, &bank, slot);
                     }
-                    ui.label(
-                        egui::RichText::new(format!("{:>3}", row.slot))
-                            .monospace()
-                            .size(10.0)
-                            .color(super::TEXT_DIMMER),
-                    );
-                    let label = ui.label(
-                        egui::RichText::new(&row.name).size(11.0).color(super::TEXT_PRIMARY),
-                    );
-                    let where_it_is = format!("{}/{}", bank_label(&row.bank), row.slot);
-                    match row.tags {
-                        Some(0) => {
-                            label.on_hover_text(format!(
-                                "{where_it_is} · {} bytes · no tags",
-                                row.size
-                            ));
-                        }
-                        Some(mask) => {
-                            label.on_hover_text(format!(
-                                "{where_it_is} · {} bytes · {}",
-                                row.size,
-                                tag_names(mask, &self.library.slug).join(", ")
-                            ));
-                        }
-                        None => {
-                            label.on_hover_text(format!(
-                                "{where_it_is} · {} bytes · not scanned, so its tags are unknown",
-                                row.size
-                            ));
-                        }
+                }
+            });
+
+            let touched = self.touched(device.id);
+            if !touched.is_empty() {
+                ui.add_enabled_ui(!blocked && !in_flight && blocker(device).is_none(), |ui| {
+                    if ui
+                        .small_button(format!("REVERT {}", touched.len()))
+                        .on_hover_text(
+                            "Writes: puts every track this panel has loaded onto back to \
+                             the sound it held when the first load happened — not one step \
+                             back, all the way back.",
+                        )
+                        .clicked()
+                    {
+                        self.start_revert(device);
                     }
                 });
             }
         });
 
-        // Step 6, named rather than left as a row that mysteriously does
-        // nothing when double-clicked. A labelled gap is a decision; a missing
-        // one is a question asked again every session.
+        match (&target, &picked_row) {
+            (Err(why), _) => super::consequence_line(ui, why),
+            (Ok(track), Some(row)) => {
+                // **Words, not an arrow.** `→` U+2192 is on `ui::mod`'s
+                // known-missing list and it shipped here anyway — drawn once,
+                // read off the screen as `ACIDD □ T1`, and fixed. Fourth
+                // instance of the same lesson and the first where the table
+                // that names the character already existed.
+                super::consequence_line(
+                    ui,
+                    &format!(
+                        "{} onto T{} of the kit {} is playing now.",
+                        row.name,
+                        track + 1,
+                        device.name
+                    ),
+                );
+            }
+            (Ok(_), None) => {
+                super::consequence_line(ui, "Click a preset to pick it, or double-click to load it.")
+            }
+        }
+
+        // **Said every time, not once in the `?` reveal.** This is the only
+        // control in the app that changes a box without a backup this app can
+        // restore from, and PLAN.md §10.4's whole argument is that a quiet
+        // backup policy is worse than a slow one.
         super::consequence_line(
             ui,
-            "Loading a preset onto a track is not built yet. When it is, it will be one \
-             ~1 KB store to the active kit, in an audition mode that takes one backup when \
-             this panel opens rather than one per click.",
+            "A load changes the kit the box is playing, not a stored one. The box's own \
+             undo is reloading the pattern, which discards an unsaved kit — so if you like \
+             what you hear, save the kit on the box before changing pattern.",
         );
+    }
+
+    /// The tracks on `device` this panel has a backup for, in track order.
+    fn touched(&self, device: DeviceId) -> Vec<u8> {
+        self.backups.keys().filter(|(id, _)| *id == device).map(|(_, t)| *t).collect()
     }
 
     /// Put the listing job out.
@@ -1401,7 +1828,7 @@ impl PresetsPanel {
         self.job = Some(Job {
             device: device.id,
             name: device.name.clone(),
-            scanning: false,
+            kind: JobKind::Listing,
             rx,
             cancel: Arc::new(AtomicBool::new(false)),
             started: Instant::now(),
@@ -1443,9 +1870,96 @@ impl PresetsPanel {
         self.job = Some(Job {
             device: device.id,
             name: device.name.clone(),
-            scanning: true,
+            kind: JobKind::Scanning,
             rx,
             cancel,
+            started: Instant::now(),
+            progress: None,
+        });
+    }
+
+    /// Put one preset onto the selected track.
+    ///
+    /// **Everything this decides is decided at the press**, the way
+    /// `ui::transfer` captures its destination and [`Self::start_scan`] captures
+    /// its box: the track comes off the selection *now*, and the job carries the
+    /// box it was started for. A load is seconds rather than minutes, but the
+    /// gesture that makes a stale target possible is one click on the roll, and
+    /// a stale target here is a store onto the wrong track.
+    fn start_load(&mut self, device: &Device, selection: Selection, bank: &str, slot: u32) {
+        if self.job.is_some() {
+            return;
+        }
+        if let Some(why) = load_blocker(device) {
+            self.note = Some(Note::Warn(why));
+            return;
+        }
+        let track = match load_target(selection, selection.device) {
+            Ok(track) => track,
+            Err(why) => {
+                self.note = Some(Note::Bad(why));
+                return;
+            }
+        };
+        let (Some(input), Some(output)) = (device.io.input.clone(), device.io.output.clone())
+        else {
+            self.note = Some(Note::Bad(
+                blocker(device).unwrap_or_else(|| "this box has no ports set".into()),
+            ));
+            return;
+        };
+        self.picked = Some((bank.to_string(), slot));
+        self.note = None;
+        let path = format!("{}/{slot}", bank.trim_end_matches('/'));
+        let what = format!("{}/{slot}", bank_label(bank));
+        let (tx, rx) = channel();
+        let (expected, display) = (device.model.slug, device.model.display.to_string());
+        let sent = path.clone();
+        std::thread::spawn(move || {
+            load_worker(input, output, expected, display, sent, track, tx);
+        });
+        self.job = Some(Job {
+            device: device.id,
+            name: device.name.clone(),
+            kind: JobKind::Loading { track, what },
+            rx,
+            cancel: Arc::new(AtomicBool::new(false)),
+            started: Instant::now(),
+            progress: None,
+        });
+    }
+
+    /// Put every track this panel has touched on this box back.
+    fn start_revert(&mut self, device: &Device) {
+        if self.job.is_some() {
+            return;
+        }
+        let backups: Vec<(u8, Vec<u8>)> = self
+            .backups
+            .iter()
+            .filter(|((id, _), _)| *id == device.id)
+            .map(|((_, track), bytes)| (*track, bytes.clone()))
+            .collect();
+        if backups.is_empty() {
+            return;
+        }
+        let (Some(input), Some(output)) = (device.io.input.clone(), device.io.output.clone())
+        else {
+            return;
+        };
+        self.note = None;
+        let tracks = backups.len();
+        let (tx, rx) = channel();
+        let (expected, display) = (device.model.slug, device.model.display.to_string());
+        std::thread::spawn(move || {
+            revert_worker(input, output, expected, display, backups, tx);
+        });
+        self.job = Some(Job {
+            device: device.id,
+            name: device.name.clone(),
+            kind: JobKind::Reverting { tracks },
+            rx,
+            cancel: Arc::new(AtomicBool::new(false)),
             started: Instant::now(),
             progress: None,
         });
@@ -1470,6 +1984,7 @@ impl PresetsPanel {
             let Some(job) = &mut self.job else { return };
             let Ok(event) = job.rx.try_recv() else { return };
             let mine = Some(job.device) == self.showing;
+            let job_device = job.device;
             let whose = job.name.clone();
             let elapsed = job.started.elapsed();
             // Prefixed when it belongs to a box that is no longer on screen: a
@@ -1560,6 +2075,41 @@ impl PresetsPanel {
                     )));
                     return;
                 }
+                // **The backup is kept whether or not the answer is still on
+                // screen**, which is the one place this panel does not follow
+                // decision 6's "drop what is not mine". A dropped view can be
+                // read back off disk; these bytes exist nowhere else, and the
+                // box they belong to has already been written to.
+                Event::Loaded { track, loaded, replaced, backup } => {
+                    self.job = None;
+                    self.backups.entry((job_device, track)).or_insert(backup);
+                    self.note = Some(Note::Good(attribute(format!(
+                        "T{} is {loaded} — it was {replaced}",
+                        track + 1
+                    ))));
+                    return;
+                }
+                Event::Reverted { restored, failed } => {
+                    self.job = None;
+                    for track in &restored {
+                        self.backups.remove(&(job_device, *track));
+                    }
+                    let put_back = restored.len();
+                    self.note = Some(if failed.is_empty() {
+                        Note::Good(attribute(format!("{put_back} track(s) put back")))
+                    } else {
+                        // The failures name themselves, because the recovery
+                        // for one is walking to the box and reloading the
+                        // pattern, and that cannot be asked for vaguely.
+                        Note::Bad(attribute(format!(
+                            "{put_back} track(s) put back, and {} did not — {}. Reload the \
+                             pattern on the box, and do not save it",
+                            failed.len(),
+                            failed.join("; ")
+                        )))
+                    });
+                    return;
+                }
                 Event::Failed(e) => {
                     self.job = None;
                     self.note = Some(Note::Bad(attribute(e)));
@@ -1589,7 +2139,21 @@ fn reference_prose(ui: &mut Ui) {
     );
     super::consequence_line(
         ui,
-        "Everything this panel sends is read-only: List, Open, Read and Close. It cannot \
-         write to or delete anything on the +Drive.",
+        "Double-click a preset to load it onto the selected track, or click one and press \
+         LOAD. It goes onto the kit the box is playing right now — about a kilobyte, and \
+         it is read back to prove it landed.",
+    );
+    super::consequence_line(
+        ui,
+        "That kit is a working buffer, so the box's own undo is reloading the pattern, \
+         which throws an unsaved kit away. REVERT puts every track this panel has loaded \
+         onto back to what it held before the first load — while the app is open. Quitting \
+         loses that, and the box's undo is what is left.",
+    );
+    super::consequence_line(
+        ui,
+        "Nothing here can change the +Drive itself. The library is read with List, Open, \
+         Read and Close and nothing else — a load writes to the active kit, which is a \
+         different place, and no button in this panel can write to or delete a preset.",
     );
 }

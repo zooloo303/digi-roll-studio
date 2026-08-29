@@ -46,7 +46,7 @@
 
 use crate::device::cstring;
 use crate::pattern::{u16_be, u32_be};
-use crate::sound::{decode_a4_sound, decode_dn1_sound, decode_sound, Sound, SoundError, DN1_SOUND_MAGIC_HEAD, SOUND_MAGIC_FOOT, SOUND_MAGIC_HEAD, SOUND_NAME_OFFSET};
+use crate::sound::{decode_a4_sound, decode_dn1_sound, decode_sound, measure_struct_size, Sound, SoundError, DN1_SOUND_MAGIC_HEAD, SOUND_MAGIC_HEAD, SOUND_WRAPPER};
 
 /// DirList request. Response comes back as `0x90`, per the API's
 /// request-plus-0x80 convention.
@@ -157,6 +157,31 @@ pub enum DriveError {
     NoFootMagic { at: usize },
     /// The container was found and sized and still did not decode.
     NotASound(SoundError),
+    /// The file decodes and browses perfectly well, and its container is **not
+    /// the one the box's own kit speaks** — so it can be listed, named and
+    /// tagged, and it must not be sent under a store opcode.
+    ///
+    /// The case that makes this real is a Digitone II, where 388 of 1,189
+    /// presets are Digitone *mk1* files (`DN1S`) sitting in the same banks as
+    /// the native ones — see PLAN.md §9. They read, they tag, and the DN2 shows
+    /// them in its own browser under its own vocabulary. What nobody has ever
+    /// done is hand an mk1 struct to a DN2 under an `0x5b`, and a load path is
+    /// not the place to find out: the active kit is a working buffer with no
+    /// `0x50` to put it back.
+    ///
+    /// Carries the magic so the refusal can name the format rather than saying
+    /// "unsupported", and so the next box's is diagnosed from this number the
+    /// way [`DriveError::UndecodableContainer`]'s was.
+    NotTheBoxsOwnFormat { magic: u32, at: usize },
+    /// A digi preset file carrying the right container magic in the wrong
+    /// shape, so the bytes a load would send cannot be cut out of it.
+    ///
+    /// Distinct from [`DriveError::NotTheBoxsOwnFormat`] because it is a
+    /// statement about *this file* rather than about its format: the magic was
+    /// the one the box's kit speaks, and the layout the cut depends on — a
+    /// [`FILE_HEADER_LEN`]-byte header, a declared payload, the container
+    /// [`SOUND_WRAPPER`] bytes into it — did not hold.
+    UnsizedPayload { at: usize, declared: Option<u16>, len: usize },
 }
 
 impl std::fmt::Display for DriveError {
@@ -209,8 +234,8 @@ impl std::fmt::Display for DriveError {
             ),
             DriveError::UndecodableContainer { magic, at } => write!(
                 f,
-                "container magic {magic:#010x} at {at} carries no foot magic, so its length \
-                 cannot be measured — this is the A4, and decoding it is not supported yet"
+                "container magic {magic:#010x} at {at} is not one this build maps \
+                 — no box on this desk speaks it"
             ),
             DriveError::NoFootMagic { at } => write!(
                 f,
@@ -218,6 +243,26 @@ impl std::fmt::Display for DriveError {
                  the struct's length"
             ),
             DriveError::NotASound(e) => write!(f, "container did not decode as a sound: {e}"),
+            DriveError::NotTheBoxsOwnFormat { magic, at } => write!(
+                f,
+                "this preset is a {} file (container {magic:#010x} at {at}), which browses \
+                 and tags but has never been loaded onto a track by anything — refusing to \
+                 send a format the box's own kit does not use",
+                match *magic {
+                    DN1_SOUND_MAGIC_HEAD => "Digitone mk1",
+                    A4_CONTAINER_MAGIC => "an Analog Four",
+                    _ => "a foreign",
+                }
+            ),
+            DriveError::UnsizedPayload { at, declared, len } => match declared {
+                Some(n) => write!(
+                    f,
+                    "this {len}-byte file declares a {n}-byte payload with its container at \
+                     {at}, which is not the shape every capture has — the bytes to load \
+                     cannot be cut out of it"
+                ),
+                None => write!(f, "this {len}-byte file has no header declaring a payload"),
+            },
             DriveError::ShortRead { expected, got } => write!(
                 f,
                 "the box reported sending {expected} bytes and {got} were assembled \
@@ -1081,16 +1126,14 @@ pub const A4_CONTAINER_MAGIC: u32 = 0xBEEF_BABA;
 /// table and no per-box knowledge: it is the end of the struct, so finding it
 /// *is* measuring it.
 ///
-/// The search starts past the name field, so a foot cannot be "found" inside
-/// the header it would have to precede.
+/// **The rule itself now lives in [`crate::sound::measure_struct_size`]**, where
+/// `decode_sound_dump` reaches it too — a `0x6b` reply had the identical problem
+/// from the other end and was solving it with the table this file abandoned.
+/// This name is kept because every comment in this module cites it, and because
+/// a sound's extent is a fact about a sound rather than about a +Drive file:
+/// `DEVELOPMENT.md` lesson 5 is what two copies of it would cost.
 fn struct_size(body: &[u8]) -> Option<usize> {
-    let smallest = SOUND_NAME_OFFSET + 16 + 4;
-    let foot = SOUND_MAGIC_FOOT.to_be_bytes();
-    body.windows(4)
-        .enumerate()
-        .skip(smallest.saturating_sub(4))
-        .find(|(_, w)| *w == foot)
-        .map(|(at, _)| at + 4)
+    measure_struct_size(body)
 }
 
 /// The first bytes of a file, as hex, for an error that has to describe
@@ -1201,6 +1244,84 @@ pub fn decode_drive_preset(file: &[u8]) -> Result<Sound, DriveError> {
         // has already earned its keep once: `DN1S` arrived on 2026-08-29 and
         // this arm is where it was diagnosed, carrying the magic that named it.
         _ => Err(DriveError::UndecodableContainer { magic, at }),
+    }
+}
+
+/// The bytes to send under `0x5b` to put this +Drive preset onto a kit track —
+/// PLAN.md §10.6 step 6, and the whole of the splice §10.4 was written about.
+///
+/// # It is a slice, and that is the finding
+///
+/// §10.4 planned this as an assembly job: take the struct out of the preset
+/// file, put it behind the five-byte wrapper a `0x6b` returns, send the result.
+/// The 24-capture measurement of 2026-08-29 makes it neither — **a digi preset
+/// file's payload *is* the `0x6b` payload, byte for byte.** The file is a
+/// [`FILE_HEADER_LEN`]-byte header, a payload of the declared length, and a
+/// 12-byte trailer; and the payload opens with the same [`SOUND_WRAPPER`] the
+/// box puts in front of a kit track's sound. So the payload is
+/// `file[31 .. 31 + declared]` and nothing is built at all.
+///
+/// The lengths agree from both ends and were measured independently: a DT2
+/// preset payload is 1,114 bytes and its `0x6b` reply is 1,114; a DN2's are 364
+/// and 364.
+///
+/// **That the wrapper travels with the file rather than being borrowed from the
+/// track is not a tidiness point.** Its fourth byte carries the word that
+/// selects the struct version — `00` on a 319-byte DN2 sound, `01` on a
+/// 359-byte one, and the [`struct_size`] measurement tracks it. A splice that
+/// kept the *track's* wrapper and swapped in the *file's* struct would hand the
+/// box a length byte describing the sound that used to be there. Copying the
+/// payload whole cannot make that mistake.
+///
+/// # What is refused, and why each refusal is not a workaround
+///
+/// * **A container that is not [`SOUND_MAGIC_HEAD`]** —
+///   [`DriveError::NotTheBoxsOwnFormat`]. A DN2 holds 388 Digitone mk1 presets
+///   that browse and tag perfectly; loading one would be the first time any
+///   box has been handed a foreign struct under a store opcode, and the active
+///   kit is a working buffer with no `0x50` to put it back. The A4 reaches this
+///   too, though a caller should have refused it earlier and for the better
+///   reason: it answers no `0x6b`, so it has no `0x5b` to send this under.
+/// * **A file whose declared payload does not fit the layout every capture
+///   has** — [`DriveError::UnsizedPayload`]. The cut is arithmetic on the
+///   header; when the header is not what it should be, the arithmetic is not
+///   wrong in a way that shows.
+/// * **A payload whose struct does not decode** — the same
+///   [`decode_drive_preset`] the browser already ran. This is the check
+///   `plan_track_sound_store` performs again at the port and it is deliberately
+///   both places: here so a refusal names the *preset*, there so no caller can
+///   reach the wire around it.
+///
+/// # What this cannot check
+///
+/// That the box wants a payload of this length. A preset and a kit track are
+/// the same length on every box measured, but "measured on two" is not "true",
+/// and the witness that settles it is the box's own `0x6b` reply — which this
+/// function has no access to and is the caller's to compare. `midi::preset_load`
+/// is the caller, and it does.
+pub fn preset_load_payload(file: &[u8]) -> Result<&[u8], DriveError> {
+    let at = container_offset(file)
+        .ok_or_else(|| DriveError::NoContainer { len: file.len(), head: head_hex(file) })?;
+    let magic = u32::from_be_bytes([file[at], file[at + 1], file[at + 2], file[at + 3]]);
+    if magic != SOUND_MAGIC_HEAD {
+        return Err(DriveError::NotTheBoxsOwnFormat { magic, at });
+    }
+    let declared = file_declared_size(file);
+    let end = declared.map(|n| FILE_HEADER_LEN + n as usize);
+    match end {
+        Some(end)
+            if at == FILE_HEADER_LEN + SOUND_WRAPPER
+                && end <= file.len()
+                && end > FILE_HEADER_LEN + SOUND_WRAPPER =>
+        {
+            // Decoded before it is returned rather than after it is sent. The
+            // browser has already read this file once, so this costs nothing
+            // and closes the one gap a length check leaves: a payload of the
+            // right size that is not a sound.
+            decode_drive_preset(file)?;
+            Ok(&file[FILE_HEADER_LEN..end])
+        }
+        _ => Err(DriveError::UnsizedPayload { at, declared, len: file.len() }),
     }
 }
 

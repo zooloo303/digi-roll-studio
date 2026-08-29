@@ -48,6 +48,17 @@ pub fn product_for_id(product_id: u8) -> Option<&'static Product> {
     PRODUCTS.iter().find(|p| p.product_id == product_id)
 }
 
+/// The product a `core::DeviceModel`'s slug names, for a caller that has a row
+/// in a session and no box on the wire.
+///
+/// The one thing worth asking it offline is [`Product::family`]: a box with none
+/// answers no `0x6x` request, so it has no `0x6b` to read a kit track back with
+/// and no `0x5b` to store one — which a preset browser needs to know before it
+/// offers to load anything, and can know without opening a port.
+pub fn product_for_slug(slug: &str) -> Option<&'static Product> {
+    PRODUCTS.iter().find(|p| p.slug == slug)
+}
+
 /// Which box a dump *file* came off, from its family byte.
 ///
 /// The handshake is the real answer, but a pattern read off a `.syx` on disk

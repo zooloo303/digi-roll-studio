@@ -2,6 +2,7 @@ use digi_protocol::protocol::split_sysex_stream;
 
 pub mod device;
 pub mod ports;
+pub mod preset_load;
 pub mod preset_scan;
 pub mod sysex_stream;
 
