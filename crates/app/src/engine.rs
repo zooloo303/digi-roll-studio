@@ -217,7 +217,18 @@ impl EngineLink {
         let Some(device) = session.devices.iter().find(|d| d.id == device) else {
             return false;
         };
-        let Some(kind) = device.model.spec().map(|s| s.device) else {
+        // **Keyed off the param tables, not the SysEx spec** — the same
+        // correction `plocks::CuratedPLocks` took on 2026-08-24 and the same
+        // reason: hearing a fader and parsing a dump are different
+        // capabilities. `model.spec()?.device` named the same set of boxes
+        // right up to the moment a live-only one shipped, and then it made the
+        // A4's VOL field a control that drags and sends nothing — the box has
+        // a published chart (CC 95 / NRPN 1/100) and no dump format at all.
+        //
+        // Fixed here on 2026-08-28, against the box, four days after the
+        // identical fix went into `CuratedPLocks` and did not travel. Two
+        // places holding one rule, and the second one forgotten: lesson 5.
+        let Some(kind) = digi_protocol::params::device_kind_key(device.model.key) else {
             return false;
         };
         let Some(track) = session

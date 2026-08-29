@@ -12,7 +12,7 @@
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use digi_core::device::{DeviceModel, PortEnd, PortRef, DN2, DT2};
+use digi_core::device::{DeviceModel, PortEnd, PortRef, A4, DN2, DT2};
 use digi_core::model::Note;
 use digi_core::Session;
 use digi_engine::event::{PortId, PortTable};
@@ -719,6 +719,46 @@ fn a_level_follows_the_track_to_its_own_port_not_its_boxs() {
     let sent = nrpn_sent(&log);
     assert_eq!(sent.len(), 1);
     assert_eq!(sent[0].0, PortId(1).0, "the track's own port, not the box's");
+}
+
+#[test]
+fn a_live_only_box_still_gets_its_level_fader() {
+    // **The A4 has a published level chart and no SysEx spec, and those are
+    // different capabilities.** `params::track_level_midi("A4")` gives CC 95 /
+    // NRPN 1/100; `A4.sysex` is `None` because the box answers no dump request.
+    // Resolving the chart *through* the spec makes the fader dead on every
+    // live-only box — the VOL field is drawn for the track like any other
+    // (`ui::tracks`), it drags, and nothing leaves the machine.
+    //
+    // No existing test could catch it: every one of them runs on
+    // `two_box_session`, and a DT2 and a DN2 each have a spec *and* a chart, so
+    // "has a spec" and "has a chart" give the same answer on both. That is
+    // DEVELOPMENT.md lesson 4's shape exactly — a fixture that makes two
+    // different rules agree — and it needed the third box to tell them apart.
+    let (log, factory) = recording();
+    let mut engine = EngineLink::with_sinks(factory);
+
+    let mut session = Session::default();
+    let id = session.add_device(digi_core::device::Device::new("A4", &A4, 16));
+    session.set_slot_in_scene(0, id, digi_core::session::PatternRef::from_slot(0));
+    session.devices[0].io.output =
+        Some(PortRef { id: "the a4".into(), name: "the a4".into() });
+    set_level(&mut session, 0, 1, Some(100));
+
+    engine.reroute(&session);
+    assert!(engine.send_track_level(&session, id, 1), "the A4 has a level chart");
+    std::thread::sleep(Duration::from_millis(50));
+
+    let log = log.lock().expect("sink log");
+    assert_eq!(
+        nrpn_sent(&log),
+        // Row 2 sits on channel 2 by the 1:1 map, which is channel byte 1 —
+        // and on a factory A4 that is SYNTH TRACK 2, the map being 1:1 outright
+        // rather than something to configure the box to. NRPN 1/100: the A4
+        // sides with the DT2 on the LSB, not the DN2's 110.
+        [(0, 1, vec![(99, 1), (98, 100), (6, 100), (38, 0)])],
+        "the A4's own level number, on the track's channel"
+    );
 }
 
 #[test]
