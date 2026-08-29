@@ -46,6 +46,7 @@
 
 use crate::device::cstring;
 use crate::pattern::{u16_be, u32_be};
+use crate::sound::{decode_sound, Sound, SoundError, SOUND_MAGIC_FOOT, SOUND_MAGIC_HEAD, SOUND_NAME_OFFSET};
 
 /// DirList request. Response comes back as `0x90`, per the API's
 /// request-plus-0x80 convention.
@@ -115,6 +116,21 @@ pub enum DriveError {
     /// is the opposite of what this crate first assumed — see
     /// [`END_OF_TRANSFER`].
     TransferComplete,
+    /// No sound container magic anywhere in the file — so this is not a preset
+    /// file, or not one this parser recognises at all.
+    NoContainer { len: usize },
+    /// A container this crate can find but cannot decode. In practice this is
+    /// the **A4**, whose [`A4_CONTAINER_MAGIC`] container carries no foot magic
+    /// and therefore no discoverable length. Named rather than folded into a
+    /// generic parse failure, because "the A4 is not supported yet" and "this
+    /// file is corrupt" want very different responses.
+    UndecodableContainer { magic: u32, at: usize },
+    /// A digi container with no foot magic after its head. The struct's length
+    /// is measured by finding the foot, so without one there is no size to
+    /// decode at — and guessing is what the foot check exists to prevent.
+    NoFootMagic { at: usize },
+    /// The container was found and sized and still did not decode.
+    NotASound(SoundError),
 }
 
 impl std::fmt::Display for DriveError {
@@ -152,6 +168,21 @@ impl std::fmt::Display for DriveError {
             DriveError::TransferComplete => {
                 write!(f, "the box says the transfer is already complete")
             }
+            DriveError::NoContainer { len } => write!(
+                f,
+                "no sound container magic in {len} bytes — this is not a preset file"
+            ),
+            DriveError::UndecodableContainer { magic, at } => write!(
+                f,
+                "container magic {magic:#010x} at {at} carries no foot magic, so its length \
+                 cannot be measured — this is the A4, and decoding it is not supported yet"
+            ),
+            DriveError::NoFootMagic { at } => write!(
+                f,
+                "container at {at} has no foot magic after its head — refusing to guess \
+                 the struct's length"
+            ),
+            DriveError::NotASound(e) => write!(f, "container did not decode as a sound: {e}"),
             DriveError::ShortRead { expected, got } => write!(
                 f,
                 "the box reported sending {expected} bytes and {got} were assembled \
@@ -961,6 +992,69 @@ pub fn container_offset(file: &[u8]) -> Option<usize> {
     })
 }
 
+/// The A4's container magic, where the digis use [`SOUND_MAGIC_HEAD`].
+///
+/// Named so that [`decode_drive_preset`] can refuse it *as itself* rather than
+/// as a corrupt digi file. The difference matters to whoever reads the error.
+pub const A4_CONTAINER_MAGIC: u32 = 0xBEEF_BABA;
+
+/// How long the sound struct at `body`'s front is, found by locating its foot
+/// magic.
+///
+/// **A size table cannot do this job.** `KNOWN_SOUND_SIZES` was written when the
+/// size looked like a per-box constant; the 2026-08-29 capture shows one DN2
+/// bank holding both 319 and 359, tracking the word at `+4`. The foot needs no
+/// table and no per-box knowledge: it is the end of the struct, so finding it
+/// *is* measuring it.
+///
+/// The search starts past the name field, so a foot cannot be "found" inside
+/// the header it would have to precede.
+fn struct_size(body: &[u8]) -> Option<usize> {
+    let smallest = SOUND_NAME_OFFSET + 16 + 4;
+    let foot = SOUND_MAGIC_FOOT.to_be_bytes();
+    body.windows(4)
+        .enumerate()
+        .skip(smallest.saturating_sub(4))
+        .find(|(_, w)| *w == foot)
+        .map(|(at, _)| at + 4)
+}
+
+/// Decode a whole +Drive preset file into the [`Sound`] it contains.
+///
+/// This is the container layer PLAN.md §10.2 is about, and the thing standing
+/// between a preset listing and a tag index: `0x54`/`0x55`/`0x56` return a
+/// file, and until this existed nothing turned one into a sound.
+///
+/// The file is a header, then a sound container, then a 43-byte tail this does
+/// not interpret. Neither the header's length nor the struct's is a constant —
+/// 36 bytes of header on the digis and 31 on an A4, 299/319/359 of struct — so
+/// both are *found*: the container by its magic, the struct by its foot.
+///
+/// # The A4 is refused, deliberately and by name
+///
+/// Its container announces itself with [`A4_CONTAINER_MAGIC`] and **carries no
+/// foot magic at all** — not once in any of the eight files captured on
+/// 2026-08-29. [`decode_sound`] leans on the foot to make a size safe, so there
+/// is no honest way to decode an A4 preset yet and this returns
+/// [`DriveError::UndecodableContainer`] rather than guessing an extent.
+///
+/// The tempting fix was to let the head magic vary, since [`container_offset`]
+/// already accepts both. That would have produced a `Sound` with a plausible
+/// name, a plausible tag mask and a wrong length — the exact failure the foot
+/// check exists to prevent. A browser can still *list* an A4's +Drive; it
+/// cannot tag it, and §10.2 says to ship that rather than block two boxes on
+/// the third.
+pub fn decode_drive_preset(file: &[u8]) -> Result<Sound, DriveError> {
+    let at = container_offset(file).ok_or(DriveError::NoContainer { len: file.len() })?;
+    let body = &file[at..];
+    let magic = u32::from_be_bytes([body[0], body[1], body[2], body[3]]);
+    if magic != SOUND_MAGIC_HEAD {
+        return Err(DriveError::UndecodableContainer { magic, at });
+    }
+    let size = struct_size(body).ok_or(DriveError::NoFootMagic { at })?;
+    decode_sound(body, size).map_err(DriveError::NotASound)
+}
+
 #[cfg(test)]
 mod file_read_tests {
     use super::*;
@@ -968,9 +1062,16 @@ mod file_read_tests {
     // Every reply below is a verbatim capture from `probe_drive_read` on
     // 2026-08-28 — a DT2 (0071/1.15C) and a DN2 (0050/1.10E). None of them
     // carries a preset name: the Read capture's payload is the file's own
-    // header, which holds the OS build and nothing a user wrote. That is
-    // deliberate, and it is the same care the source document took when it
-    // withheld a populated listing.
+    // header, which holds the OS build and nothing a user wrote.
+    //
+    // **That is a property of these captures, not a rule, and it was narrowed
+    // on 2026-08-29.** The restraint it came from was about a *listing* the
+    // source document's author withheld — someone else's data, withheld by
+    // them. It was never a rule about this desk's own boxes. Whole preset
+    // files, names and tag masks included, are captured and committed under
+    // `tests/fixtures/drive/` by `capture_drive_presets.rs`, because a tag
+    // index cannot be derived from files with the tags taken out. Owner's
+    // decision, taken knowingly.
 
     fn hex(s: &str) -> Vec<u8> {
         s.split_whitespace().map(|b| u8::from_str_radix(b, 16).unwrap()).collect()

@@ -31,13 +31,25 @@ pub fn u16_be(b: &[u8], o: usize) -> u16 {
 pub fn u32_be(b: &[u8], o: usize) -> u32 {
     ((b[o] as u32) << 24) | ((b[o + 1] as u32) << 16) | ((b[o + 2] as u32) << 8) | b[o + 3] as u32
 }
+/// A NUL-terminated 16-byte name field, decoded as **Windows-1252**.
+///
+/// It used to be `from_utf8_lossy`, which is wrong in one direction that shows:
+/// every byte above 0x7F became U+FFFD, so a DT2 preset called `BLÅ VIND` read
+/// back as `BL? VIND`. The boxes encode names in Windows-1252 throughout — the
+/// listing side has always known this, via elk-herd's `argString0win1252` — and
+/// the two halves of this crate simply disagreed until 2026-08-29, when 24
+/// captured preset files made it visible.
+///
+/// ASCII is unaffected: 0x00–0x7F is identical under both readings, so this
+/// changes only the names that were already wrong. [`crate::device::cp1252_char`]
+/// is the single decoder, rather than a second table living here.
 pub fn chars16(bytes: &[u8], offset: usize) -> String {
     let mut end = offset;
     let limit = (offset + 16).min(bytes.len());
     while end < limit && bytes[end] != 0 {
         end += 1;
     }
-    String::from_utf8_lossy(&bytes[offset..end]).into_owned()
+    bytes[offset..end].iter().map(|&b| crate::device::cp1252_char(b)).collect()
 }
 pub fn length_byte_to_steps(v: u8) -> f64 {
     if v >= 127 {

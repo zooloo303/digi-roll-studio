@@ -780,9 +780,16 @@ things out and the negatives are what stop them being re-tried.
   matching the device's own display bit for bit. `sound::TAG_NAMES` is correct.
 - **The `0x53` +Drive file API, on both boxes.** `/projects` (128),
   `/soundbanks` (8 × 256), `/kits` (8 × 128). 1,189 occupied presets on the DN2,
-  148 on the DT2. Every preset entry's size equals the `0x6b` payload size, so
-  `0x54`/`0x55`/`0x56` returns a container `sound::decode_sound_dump` already
-  reads.
+  148 on the DT2. Every preset entry's size equals the `0x6b` payload size.
+
+  **The inference drawn from that here was wrong, and reading a file proved it
+  on 2026-08-28.** This bullet used to conclude that `0x54`/`0x55`/`0x56`
+  therefore returns "a container `sound::decode_sound_dump` already reads". It
+  does not: the sizes match at the *entry* level and diverge inside, where the
+  struct is shorter than the payload and one of the three lengths is not in
+  `KNOWN_SOUND_SIZES` at all. Two sizes agreeing is not two formats agreeing —
+  the same shape as §9's level bug, where two things that photograph identically
+  came apart the moment a third box asked.
 
 **Ruled out, so nobody repeats them:**
 
@@ -828,10 +835,14 @@ the failing variable regardless of size, and the checksum is crc32 seeded with
 - **"Read patch names" on the *second* box.** One box answered on 2026-08-22 and
   the other has not been tried, so `NotThisBox` and the DT2/DN2 difference in kit
   layout are still fake-only.
-- **Reading a +Drive preset's contents.** `0x53` List gives names, indices and
-  sizes, verified. `0x54` Open / `0x55` Read / `0x56` Close are implemented
-  nowhere — the browser can list 1,189 presets and cannot yet open one, so no
-  preset's tag mask has been read off the +Drive itself.
+- **Decoding a +Drive preset's contents.** The *reading* half landed 2026-08-28:
+  `0x54`/`0x55`/`0x56` are implemented and hardware-verified, so the browser can
+  now open a preset and get its bytes. What it cannot do is *understand* them —
+  the struct inside the payload is shorter than the payload (299 on the DT2, 319
+  or 359 on the DN2, only one of which is in `KNOWN_SOUND_SIZES`), a DT2 file
+  holds a second `BEEFBACE` at 1060, and names are Windows-1252. **So still no
+  preset's tag mask has been read off the +Drive itself**, which is the claim
+  that matters to §10.3 and the one that has not moved.
 - **The DT2 half of the dump-index sweep.** Piped through `tail` twice and lost.
   The DN2 was the target; that data was simply not collected.
 - **Paging a listing.** Every call used `start = 0, count = 0` (list everything)
@@ -1117,11 +1128,81 @@ through a pipe with no terminal on stdin, where `read_line` returns end-of-file
 immediately and the hold silently does not happen. Same shape as the cliclick
 note in `DEVELOPMENT.md` — a wait that nothing drives is not a wait.
 
-**Not yet tried:** the **DN2**, whose sound struct is 359 bytes against the DT2's
-1109, and which §10.1 treats as its own column. One box proving an opcode is one
-box. The **A4** cannot be tried at all — it answers no `0x6x` dump request, so it
-has no `0x6b` to mirror, and the probe skips it with that reason rather than
+The **A4** cannot be tried at all — it answers no `0x6x` dump request, so it has
+no `0x6b` to mirror, and the probe skips it with that reason rather than
 silently.
+
+### The DN2 says the same thing — 2026-08-29, DN2 0050
+
+The second box, which is what turns one box proving an opcode into an opcode.
+Same probe, unchanged, `--write --box Digitone --hold 45` on track 16.
+
+- **Positive on both witnesses again.** Two agreeing reads returned `PROBE5B`,
+  and the box's own screen showed it during the hold. Restore confirmed by
+  re-read: T16 back to `PRESET 16`.
+- **The struct size does not matter to the opcode.** The DN2's payload is 364
+  bytes to the DT2's 1114 — 359 and 1109 behind the same 5-byte wrapper — and
+  the store took the wrapped shape on the first try on both. §10.1's "the DN2 is
+  its own column" was right about sizes and wrong about nothing here: the
+  opcode's *shape* is common, only the length differs.
+- **So `0x5b` is the load path for both digis**, not a DT2 finding the DN2 was
+  assumed to share.
+
+**What is still untested is the same thing on both boxes.** The wrapped payload
+worked first on the DT2 and first again on the DN2, so the *struct only*
+alternative `probe_sound_store.rs` carries has now failed to run twice. It is
+untested rather than rejected, and two positives on the wrapped shape are a
+reason to stop caring about it, not evidence against it.
+
+**Nothing new was learned about the traps**, which is worth one line: the echo
+guard passed silently, the `--hold` clock did its job with nobody having to
+press anything, and neither had to be rediscovered. Both were built on the DT2
+run the day before, and this run is what a register earns you.
+
+### What 24 preset files say about the container — 2026-08-29
+
+`capture_drive_presets.rs`, eight presets from `/soundbanks/A` on each of the
+three boxes, committed under `tests/fixtures/drive/` with a manifest. Read-only,
+through the same allowlist. Four findings, and the third is the one that matters.
+
+**The layout is common to all three boxes.** Head magic, then a u32 at +4, then
+the tag mask at +8, then the name at +12 — the A4 included. `THE SAW` reads out
+of `be ef ba ba | 00 00 00 05 | 05 84 00 03 | 54 48 45 20 53 41 57` exactly as
+§9's struct map predicts, so `BEEFBABA` is the same shape under a different
+magic rather than a different format.
+
+**Names are Windows-1252 and decode cleanly** — `BLÅ VIND`, `BLÅ LOFI BASS`,
+`SYNTHVÅG`. The mangling recorded on 2026-08-28 is `chars16`'s encoding
+assumption and nothing about the file. That is a decoder to write, not a format
+to reverse.
+
+**The A4 has no foot magic anywhere in the file, and that is the blocker.**
+`BACEF00C` appears at 331 in every DT2 file and at 351 or 391 in every DN2 one,
+and **not once in any A4 file.** `decode_sound` calls the foot check "the
+point" — it is what makes guessing a size safe — so the A4 cannot be decoded by
+relaxing the head magic, which was the obvious fix and is the wrong one. The
+third box again separates two rules that looked like one, for the third time in
+four days.
+
+**Struct size is not a per-box constant, so `KNOWN_SOUND_SIZES` is the wrong
+shape.** One DN2 bank holds both 319 and 359, and the size tracks the u32 at +4:
+`0` → 319, `1` → 359. The DT2 is 299 at `0`, so that word is scoped per box and
+is not the dump struct's version field, which §9 records as DT2 3 / DN2 2. **The
+size should be found by locating the foot, not by consulting a table** — which
+works on both digis and, again, not on the A4.
+
+| box | container at | magic | +4 | struct | file |
+|---|---|---|---|---|---|
+| DT2 | 36 | `BEEFBACE` | 0 | 299 | 1157 |
+| DN2 | 36 | `BEEFBACE` | 0 / 1 | 319 / 359 | 407 |
+| A4 | 31 | `BEEFBABA` | 5 | **no foot** | 409 |
+
+Every file is `declared + 43` bytes on all three boxes, declared being the size
+at +27 — so the 43-byte tail is a constant worth naming and is not yet read.
+
+**Tag masks came back populated and varied** (`0x00902000`, `0x04880804`,
+`0x0400c088`), which is what §10.3's index needs and the reason the captures
+carry real names rather than blanked ones.
 
 ## 10. The kit builder — scope, 2026-08-26
 
@@ -1144,9 +1225,12 @@ open question.
 `0x53`–`0x56` and the `0x57`–`0x59` write trio, so it publishes the same
 `0x53` file API — which is a separate question from its having no `0x6x` dump
 request at all, and the whole reason `Product.family` became an `Option<u8>`.
-**Nothing on the A4's +Drive has been listed yet**: everything below is still
-DT2/DN2 evidence, and "the A4 advertises the opcodes" is a reason to point a
-probe at it, not a third column in the table. Note also that the A4 is
+**The A4's +Drive was read on 2026-08-28** and it is now a third column rather
+than a reason to point a probe: it lists, opens and reads. Its container magic
+is `BEEFBABA` where the digis' is `BEEFBACE` and its header is 31 bytes where
+theirs is 36 — the third box again telling two rules apart, and the reason
+`container_offset` finds the magic rather than trusting a constant. Note also
+that the A4 is
 `sysex: None`, so it has no `KitSpec` and no `Spec::device` — §10's code must
 key parameter and preset lookups off the **model key**, the way
 `plocks::CuratedPLocks` and (since 2026-08-28) `EngineLink::send_track_level`
@@ -1156,19 +1240,55 @@ both do. That is the trap §9's level bug already sprang once.
 
 | step | protocol | what is missing |
 |---|---|---|
-| browse | `0x53` List ships, hardware-verified on both boxes | `0x54`/`0x55`/`0x56`, and a tag index |
-| load | the splice is arithmetic; sizes already match | a store opcode that is not a whole pattern |
+| browse | List, read and the container layer all ship, verified on all three boxes | a tag index; the A4 decodes not at all |
+| load | `0x5b` per-track sound store, hardware-verified on both digis | the panel and audition mode; the A4 has no path at all |
 | save | nothing | everything, plus a widened write guard |
 
 ### 10.2 Reading a preset — the real v1 work
 
-`0x54` Open, `0x55` Read and `0x56` Close exist as constants in `drive.rs` and are
-already admitted by `assert_read_only_file_op`. Nothing implements them. **The
-source document names them and does not specify their argument layout** — only
-List's body is written down — so this starts with a probe against a box, the same
-way `browse_drive_dn.rs` derived the entry layout from a real reply rather than
-inventing one. That example is the template: print bytes, derive the shape, then
-write the parser.
+**The transport half of this is done** — `0x54` Open, `0x55` Read and `0x56`
+Close were derived by probe and implemented on 2026-08-28, and
+`drive_read_file` returns a preset's bytes on all three boxes. The probe was
+needed because the source document names the opcodes and specifies the argument
+layout of none of them; `probe_drive_read.rs` is kept, the way
+`browse_drive_dn.rs` was.
+
+**Built 2026-08-29: `drive::decode_drive_preset` turns a preset file into a
+`Sound`.** §9's entry of the same date is the evidence base — 24 files across
+three boxes — and the layer is pinned against those files by
+`tests/drive_preset.rs`. Two of the three jobs were smaller than recorded and
+the fourth thing is the one that stayed open:
+
+- **The struct is measured, not looked up.** `struct_size` finds `BACEF00C`
+  after the head, and the length falls out of where it lands. `KNOWN_SOUND_SIZES`
+  could never have carried this: one DN2 bank holds both 319 and 359.
+- **Names are Windows-1252, and that was a one-line fix in the wrong file.**
+  `chars16` used `from_utf8_lossy`, so every byte over 0x7F became U+FFFD and
+  `BLÅ VIND` read as `BL? VIND`. The listing side had used `cp1252_char` since
+  it was ported — elk-herd's `argString0win1252` — so **the two halves of this
+  crate disagreed about the box's encoding for three days** and only a file with
+  an `Å` in its name could show it. `chars16` now shares the one decoder.
+- **The A4 is refused by name**, `DriveError::UndecodableContainer`, rather than
+  falling out as a `BadHead` that reads like corruption.
+
+**The open question, and it is not small: the A4 has no foot magic at all.** Not
+once in any of eight files, which `no_a4_capture_contains_a_foot_magic_anywhere`
+asserts directly so that a firmware which starts emitting one is a failing test
+rather than a discovery nobody makes. The foot is what lets `decode_sound` trust
+a size, so the A4 needs its extent established some other way — the `+4` word,
+the 43-byte tail, or a capture of Transfer reading one.
+
+**The trap that shaped the API, and it is worth naming.** The obvious fix was to
+let the head magic vary, since `container_offset` already accepts both. That
+would have "worked": an A4 preset would decode to a plausible name, a plausible
+tag mask and a **wrong length** — silently, and exactly what the foot check
+exists to prevent. It is the `0x5b` echo hazard's shape in a parser: the failure
+manufactures a positive. `an_a4_preset_is_refused_as_the_a4_rather_than_as_corruption`
+is the guard, and it asserts the specific error for that reason.
+
+A DT2 file also carries a **second `BEEFBACE` at 1060**, so finding the magic is
+not the same as finding the sound — `container_offset` takes the first, and a
+test now says so before someone turns it into a reverse search.
 
 Two things are already known and make the rest cheap. Every preset entry's size
 equals the `0x6b` payload size, so what comes back is a container
@@ -1241,10 +1361,11 @@ not a backup this code took. Audition mode still stands and the panel must still
 say plainly that recovery is to the state it opened in. What changed is that a
 load is now cheap, not that it is free.
 
-**Two things this does not settle.** The DN2 has never been sent an `0x5b` (359-
-byte struct against the DT2's 1109), and only the *wrapped* payload shape has
-ever been accepted — it worked first, so the struct-only alternative the probe
-carries has never run.
+**One thing this does not settle.** Only the *wrapped* payload shape has ever
+been accepted — it worked first on the DT2 and first again on the DN2, so the
+struct-only alternative the probe carries has still never run. The DN2 half is
+no longer open: `0x5b` was confirmed there on 2026-08-29, same shape, both
+witnesses, 364-byte payload against the DT2's 1114.
 
 Note also that `write_gate` keys on an OS-build allowlist, so loading is refused on
 any build not yet write-verified. That is correct and should stay; the panel needs
@@ -1277,20 +1398,29 @@ Recorded now so v2 starts from evidence:
 
 ### 10.6 Order of work
 
-1. Probe `0x54`/`0x55`/`0x56` argument layouts against a box; derive, then parse.
-2. `ElektronDevice::drive_read_file`, read-only, guarded as `drive_list` is.
+1. ~~Probe `0x54`/`0x55`/`0x56` argument layouts against a box; derive, then
+   parse.~~ **Done 2026-08-28**, derived on all three boxes and the same answer
+   from each — `probe_drive_read.rs` is kept. Read addresses a chunk by
+   **sequence number, not a byte offset**, which is the one place the renumbered
+   API is a genuinely different call rather than gen-1 with new opcodes.
+2. ~~`ElektronDevice::drive_read_file`, read-only, guarded as `drive_list` is.~~
+   **Done 2026-08-28**, `device.rs:716`, verified on fifteen files across three
+   boxes with three independently-sourced sizes agreeing on every one. The
+   *parse* half of step 1 is what is left, and it is the container layer that
+   step 4 needs — see §10.2.
 3. ~~Probe `0x5b` as a per-track sound store (§10.4). Decide the load path on
-   the result.~~ **Done 2026-08-28, positive on a DT2** — see §9 and §10.4. The
-   load path is `0x5b`. What is left of this step is the DN2, and that is a
-   re-run of `examples/probe_sound_store.rs` against a throwaway project
-   rather than new work.
-4. The tag index: scan, persist, cancel, resume per bank.
+   the result.~~ **Done — positive on a DT2 2026-08-28 and on a DN2 2026-08-29**,
+   see §9 and §10.4. The load path is `0x5b` on both digis, wrapped payload,
+   and the A4 has no `0x6b` to mirror so it has no load path at all.
+4. The tag index: scan, persist, cancel, resume per bank. **Unblocked
+   2026-08-29** — `decode_drive_preset` gives a tag mask per file, so the scan
+   has something to scan. Digis only: the A4 lists and does not decode.
 5. The panel — sixth rail slot, following `Sidebars`/`Tool`, worker thread and
    `mpsc` like `transfer.rs` and `sync.rs`.
 6. Load-to-track on the path step 3 chose, with audition mode and its backup.
 7. Exercise paging on a 256-entry bank.
 
 Steps 1–3 are hardware work and cannot be done from a desk without a box, and
-all three are now done bar the DN2 half of step 3. Steps 4–7 can be built
+all three are now done. Steps 4–7 can be built
 against fixtures and only need a box to be believed — which is
 §9's standard, and the one this project keeps.

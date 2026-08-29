@@ -2,6 +2,17 @@
 // kit — PLAN.md §10.6 step 3, and the question §10.4 says to settle before the
 // kit builder's load path is designed rather than after.
 //
+// **Answered, positively, on both digis: DT2 0071 on 2026-08-28 and DN2 0050 on
+// 2026-08-29.** Both took the *wrapped* payload on the first try, both were
+// confirmed by two agreeing reads and by the box's own screen, and both
+// restored. The hypothesis below is left standing as written, because it is the
+// reasoning that earned the probe and it reads as a record rather than a claim —
+// but where it says no box has ever been sent an `0x5b`, two now have.
+//
+// The file is kept because the question it settles is per-box: a fourth
+// Elektron on this desk gets this pointed at it before anything is designed
+// around its load path.
+//
 // # The hypothesis, and where it comes from
 //
 // `0x6b` returns the *active* kit's per-track sound for index 0-15: a 5-byte
