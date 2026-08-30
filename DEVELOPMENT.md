@@ -97,6 +97,30 @@ you deliberately want one, and they are ordered by what they can do to it.
 - `cargo run -p digi_roll_studio --example safe_write_track -- --write` — **stores
   bytes in a slot.** Asks for the typed word `overwrite` per box and backs the
   whole destination pattern up first.
+- `cargo run -p digi_roll_studio --example browse_drive_dn` — **read-only.** Lists
+  the +Drive through the `0x53` file API. Every call goes through
+  `assert_read_only_file_op`, the allowlist admitting List, Open, Read and Close
+  and nothing else.
+- `cargo run -p digi_roll_studio --example capture_drive_file` /
+  `capture_drive_project` — **read-only**, same allowlist. The project one takes
+  `--port` and reads megabytes, so it does not fan out across the desk.
+- `cargo run -p digi_roll_studio --example recover_drive_write -- --port "<box>"` —
+  **read-only as shown.** Diagnoses a box left deaf by an interrupted write:
+  asks `0x53` and `0x01` and reports which answers. Adding `--close` sends
+  `0x59` WriteClose against candidate handles, which **can commit a short file**
+  in whatever slot the abandoned WriteOpen named.
+- `cargo run -p digi_roll_studio --example probe_drive_write -- --port "<box>"
+  --into <path> --from <path>` — **writes a file to the +Drive.** The only thing
+  outside the app that does. It refuses a target the listing reports occupied,
+  so it cannot overwrite; `0x59` is the commit and every failure path returns
+  before it; and it verifies by reading back. Guarded by `assert_write_file_op`,
+  a **second and disjoint** allowlist admitting WriteOpen, Write and WriteClose
+  — `0x5A` Move, `0x5B` Copy and `0x5C` **Delete** are not implemented anywhere
+  in this workspace and nothing here can reach them.
+
+  **A malformed write can take a box's whole SysEx API down** until it is
+  power-cycled — see lesson 13. That is a property of the box, not of this
+  example, but this is the file that can provoke it.
 - `cargo run -p digi_engine --example jitter --release -- "<DT2>" "<DN2>"` —
   **sends** clock and notes for ten seconds, so a box on external clock will start
   playing. `--release` matters: a debug build measures the debug build.
@@ -600,6 +624,82 @@ the reading of where it sat was not. `examples/capture_drive_file.rs` exists so
 that never has to be repeated: it takes exact paths and writes the bytes out. A
 96-character hex string read by eye is not evidence, and reading it more
 carefully is not the fix.
+
+### 12. Witnesses that agree unanimously can be blind in the same place
+
+`file_declared_size` read a +Drive file's payload length as a `u16be` at `+27`.
+It is a `u32be` at `+25`. The doc comment on the constant said "confirmed on
+three boxes against three different sizes — 1114, 364 and 366", and that was
+true: all three agree, on real hardware, across three products.
+
+They agree because **all three fit in sixteen bits**. The low half of a `u32be`
+at 25 and a `u16be` at 27 are the same two bytes, so every preset any of these
+boxes stores reads identically under both. Thirty-two committed captures could
+not fail the test that pinned it, and the test looked thorough — it walked the
+whole fixture directory and asserted a count.
+
+The first file that could tell them apart was an **A4 project**: 2,061,057 bytes
+declaring 2,061,014, where the old reading returns 29,398 — the bottom sixteen
+bits, which is not a number that announces itself as wrong. It is a plausible
+size for a file.
+
+- **A fixture set is a sample, and a sample has a shape.** Every one of those 32
+  was a preset, because presets were what the work needed at the time. Unanimity
+  across a homogeneous sample measures the sample, not the claim. Ask what
+  *dimension* the fixtures vary along — these varied by box and by struct
+  version and not once by **order of magnitude**, which was the only axis that
+  mattered.
+- **The corroboration that finally settled it was structural, not empirical.**
+  Under the new reading the header closes exactly: payload `u32be` at 25,
+  trailer length `u16be` at 29, header ends at 31, nothing spare. Under the old
+  one, bytes 25 and 26 were unexplained and nobody had noticed. A layout with
+  unaccounted bytes in it is a standing invitation to this bug.
+- **The regression test names the evidence it cannot contain.** The project is
+  two megabytes of someone's music and is not committed, so the test transcribes
+  its 31-byte header and says in its own body that the fixtures cannot fail it.
+  A test whose weakness is documented inside it is worth more than one that
+  quietly passes for the wrong reason.
+
+### 13. When a wrong guess costs hardware state, stop guessing and go and look
+
+Two days went into deriving the `0x58` +Drive Write body by putting candidate
+layouts to an Analog Four. Six candidates: three earned a clean refusal
+(`Invalid sequence number`) and three earned silence — and on this box **a body
+it cannot parse takes down the whole SysEx API**, not just the file layer. It
+stops answering `0x01` Device, while a DT2 and a DN2 on the same bus answer
+normally throughout, and it comes back only on a power cycle. Four power cycles,
+each one a person walking to the desk.
+
+The yield was three true facts and no working write. What settled it was
+installing a CoreMIDI spy driver and capturing **Elektron's own Transfer**
+uploading one sound to the same box — minutes of work, and the answer complete
+and exact.
+
+The three details that made guessing hopeless are worth naming, because they
+are what a sweep cannot reach: the body carries **four** `u32` fields in an
+order no earlier opcode uses; `0x59` WriteClose's second field is a literal `1`
+where symmetry with `0x56` Close says total length; and the checksum is a
+zero-seeded CRC32 **that is then inverted**. Any one of those alone defeats a
+search over the other two.
+
+- **Price the probe, not just the answer.** A sweep is the right tool when a
+  wrong guess costs a round trip. It is the wrong tool when a wrong guess costs
+  a power cycle, because the budget is now someone's patience and it runs out
+  long before the search space does.
+- **"No reply" is not a data point of the same kind as "refused".** A refusal is
+  the box parsing your bytes and disagreeing; silence is it failing to parse
+  them at all. The sweep treated them as one and drew a rule from the mix —
+  "three `u32` fields get answered" — that the very next run falsified. Sort
+  outcomes by *what the box did*, not by pass and fail.
+- **A reference implementation is evidence, and it is usually installed
+  already.** `Transfer.app` had been on this machine the whole time. The
+  question "who else already speaks this protocol, and can I watch them?" is
+  worth asking on day one, not after the fourth power cycle.
+- **Retrying is not free once you are writing.** The generic request path
+  re-sent every unanswered message three times, which is correct for a read and
+  wrong for a write chunk: a chunk the box took and answered slowly gets
+  delivered twice more to a transfer that has moved past it. Every wedge had
+  three identical writes behind it.
 
 ---
 

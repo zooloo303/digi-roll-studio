@@ -149,11 +149,13 @@ pub enum DriveError {
     /// not the shape every A4 capture has: a [`FILE_HEADER_LEN`]-byte header
     /// declaring a payload size, with the container flush against it.
     ///
-    /// The A4 has no foot magic, so the declared payload size is the *only*
-    /// witness to the struct's extent. When the layout does not hold, that
-    /// witness is gone and there is nothing left to fall back on — so this
-    /// refuses rather than computing an offset from one box's worth of
-    /// evidence.
+    /// The declared payload size is the *only* witness this code uses for the
+    /// struct's extent. The A4 does carry a foot magic — `BABEFACE`, not the
+    /// digis' `BACEF00C`, which is why it was long recorded as having none —
+    /// but a **declared** length is a better witness than a searched-for one,
+    /// so nothing here was rewritten to use it. When the layout does not hold,
+    /// that witness is gone and this refuses rather than computing an offset
+    /// from one box's worth of evidence.
     UnsizedContainer { at: usize, declared: Option<u32> },
     /// A digi container with no foot magic after its head. The struct's length
     /// is measured by finding the foot, so without one there is no size to

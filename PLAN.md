@@ -769,6 +769,12 @@ re-run on them.
   the live read covered by nothing; a real box has now answered a kit fetch the
   way `PatternIo`'s fake does. **Which of the two boxes was not recorded**, so
   what this closes is "a box answers" rather than "both do" — see below.
+- **The first +Drive write, and the first project read** — 2026-08-30, A4 0195.
+  A 2 MB project read off the box four times to the same digest across a power
+  cut and a factory reset, and three sound files written to `/soundbanks/P` and
+  read back identical but for the box's own location stamp. The write layouts
+  came off a spy capture of Elektron's Transfer rather than out of a probe; see
+  the two sections above for what the probing cost.
 - **v0.1.2 in real use** — 2026-08-22. The registers, the longer basslines and ↻
   were all reported from a stretch of playing rather than from a test, which is
   how the three of them came to be the release.
@@ -857,6 +863,11 @@ the failing variable regardless of size, and the checksum is crc32 seeded with
   larger of the two payloads has only ever gone out over CoreMIDI. See §8.
 - **Linux**, beyond the observation that the chunking is correct for ALSA.
 - **`copy_track`** — it has no caller, so nothing can drive it.
+- **A multi-chunk +Drive write.** Single-chunk is verified; everything above
+  16 KiB is refused rather than guessed, so no project has ever been written
+  back to a box. This is what stands between the A4 and whole-project backup
+  and restore — and, because the A4 exposes no pattern path and answers no
+  `0x6x`, between it and writing a pattern by any route at all.
 - **"Read patch names" on the *second* box.** One box answered on 2026-08-22 and
   the other has not been tried, so `NotThisBox` and the DT2/DN2 difference in kit
   layout are still fake-only.
@@ -1594,7 +1605,21 @@ to reverse.
 
 **The A4 has no foot magic anywhere in the file, and that is the blocker.**
 `BACEF00C` appears at 331 in every DT2 file and at 351 or 391 in every DN2 one,
-and **not once in any A4 file.** `decode_sound` calls the foot check "the
+and **not once in any A4 file.**
+
+> **Wrong twice over, corrected 2026-08-30.** The A4 has a foot magic; it is
+> `BABEFACE`, and it sits at 377 in all eight A4 captures and at the end of the
+> A4 project's payload. It appears in **no** digi file, exactly as `BACEF00C`
+> appears in no A4 file — the two boxes have a magic *pair* each, `BEEFBABA`/
+> `BABEFACE` against `BEEFBACE`/`BACEF00C`, and only the head halves had ever
+> been compared. "Not once in any A4 file" was a true statement about
+> `BACEF00C` and the conclusion drawn from it was about foot magics in general.
+>
+> This is lesson 11's error in its purest form: searching for a constant that
+> belongs to the other box and reading the absence as a property of this one.
+> It is the *third* time on this page — the `0x10` DirList sweep and the `0x6x`
+> dump sweep are the other two — which is why the lesson is now its own entry
+> rather than a paragraph here. `decode_sound` calls the foot check "the
 point" — it is what makes guessing a size safe — so the A4 cannot be decoded by
 relaxing the head magic, which was the obvious fix and is the wrong one. The
 third box again separates two rules that looked like one, for the third time in
@@ -1617,7 +1642,7 @@ works on both digis and, again, not on the A4.
 |---|---|---|---|---|---|
 | DT2 | 36 | `BEEFBACE` | 0 | 299 | 1157 |
 | DN2 | 36 | `BEEFBACE` | 0 / 1 | 319 / 359 | 407 |
-| A4 | 31 | `BEEFBABA` | 5 | **no foot** | 409 |
+| A4 | 31 | `BEEFBABA` | 5 | foot `BABEFACE` @377 | 409 |
 
 Every file is `declared + 43` bytes on all three boxes, declared being the size
 at +27.
@@ -1747,11 +1772,20 @@ the fourth thing is the one that stayed open:
 
 ### The A4 browses and tags — closed 2026-08-29, and both stated blockers were wrong
 
-**The A4 has no foot magic at all** — not once in any of eight files, which
-`no_a4_capture_contains_a_foot_magic_anywhere` asserts directly so that a
+**The A4 carries no `BACEF00C`** — not once in any of eight files, which
+`the_a4_has_its_own_foot_magic_and_not_the_digis` asserts directly so that a
 firmware which starts emitting one is a failing test rather than a discovery
 nobody makes. The foot is what lets `decode_sound` trust a size. That much was
 true and is still true; everything this section used to conclude from it was not.
+
+**And it was read as "no foot magic", which is a different claim and a false
+one** (corrected 2026-08-30). `BACEF00C` is the *digis'* constant. The A4 has
+`BABEFACE` at 377 in all eight, and no digi file carries it — a magic **pair**
+per product, of which only the head halves had ever been compared. The test now
+asserts both directions on both families, because one that only looks for the
+other box's constant can only confirm what it already assumed. Nothing below
+changes: a *declared* length is a better witness than a searched-for magic
+whether or not the magic exists.
 
 **Blocker one, the extent, was never a blocker.** Measuring the layout (§9, same
 date) gives the A4's extent for free: its payload is 366 bytes and its container
