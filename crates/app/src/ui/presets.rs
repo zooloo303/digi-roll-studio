@@ -16,7 +16,7 @@
 // distinction is worth keeping in mind while reading this file — the browser
 // cannot change the library, and the loader cannot touch it.
 //
-// ## Eight decisions
+// ## Nine decisions
 //
 //  1. **The library is the unit, not the bank, and it opens on ALL.** The panel
 //     browsed one bank at a time until Neil put it on three boxes on
@@ -126,6 +126,28 @@
 //     doc has the ordering, and the panel says it on screen every time rather
 //     than in the `?` reveal.
 //
+//  9. **A preset the box will not take says so on its own row, and the mark is
+//     a recorded fact rather than an inference.** A DN2's library is two
+//     formats: 388 of 1,189 presets are Digitone mk1 files, across banks B, C
+//     and D. The box **ignores** one sent under `0x5b` — probed 2026-08-29,
+//     and it accepted the very next store on the same track, so that is a
+//     refusal and not a deaf box.
+//
+//     Shipped without this, a third of the library refused *after* five round
+//     trips with nothing on screen to warn anyone, and the refusal appeared at
+//     the top of the panel rather than beside the row that was double-clicked.
+//     Both are fixed: [`Row::format`] carries the container magic out of the
+//     index, [`foreign_format`] turns it into a dim mark, and a load with a
+//     known-foreign format is refused with no port opened at all.
+//
+//     **The magic is stored, not a verdict.** `IndexEntry::format` keeps
+//     `BEEFBACE`/`DN1S`/`BEEFBABA` rather than a `loadable: bool`, for the same
+//     reason the tag mask is a mask and not a list of words: a verdict is
+//     policy, policy lives in `drive::preset_load_payload`, and every index
+//     written before a policy change would otherwise be wrong. And **unknown is
+//     not native** — an index from before the field reads as `None`, draws no
+//     mark, and is backfilled by the next READ TAGS.
+//
 // ## What has been verified, and what has not
 //
 // **On hardware, 2026-08-29:** bank select, LIST and READ TAGS on a DT2 and a DN2
@@ -138,13 +160,18 @@
 // **The load runs, on both digis, from this panel** — 2026-08-29, the day it was
 // built: a double-click put the selected preset onto the selected track of a DT2
 // (0071) and a DN2 (0050). That is the whole path rather than the `0x5b` under
-// it, which two boxes had already answered.
+// it, which two boxes had already answered. **The A4's refusal is legible** on
+// the same day's testing: double-clicking one of its presets shows the LOAD
+// section explaining that the box has no such message, which is decision 4
+// holding on the box that taught it.
 //
-// **What that run did not touch is every refusal.** REVERT, an mk1 preset being
-// turned away by name, the A4's LOAD section reading as a fact rather than a
-// fault, and the OS-build gate speaking through this path are all still
-// desk-only — and the A4 one has a precedent for going wrong, which is
-// decision 4. §9 has the list.
+// **The mk1 refusal has met a user** — Neil found it before decision 9 existed,
+// which is how decision 9 came to. **The marks have not met a screen**, let
+// alone a library: no index on this desk carries `IndexEntry::format` yet, so a
+// DN2 shows no marks until the next READ TAGS backfills them, and the attempt
+// to photograph them ran into the windowless-relaunch limit. Still desk-only
+// besides: REVERT, and the OS-build gate speaking through this path. §9 has the
+// list.
 
 use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -158,9 +185,9 @@ use digi_midi::preset_load::{load_preset_onto_track, revert_track};
 use digi_midi::preset_scan::{scan_bank, ScanError};
 use digi_midi::{ElektronDevice, KIT_TRACKS};
 use digi_protocol::device::{product_for_slug, DeviceIdentity};
-use digi_protocol::drive::{parse_list_entries, ListEntry};
+use digi_protocol::drive::{parse_list_entries, ListEntry, A4_CONTAINER_MAGIC};
 use digi_protocol::preset_index::{BankIndex, PresetIndex};
-use digi_protocol::sound::tag_names_for;
+use digi_protocol::sound::{tag_names_for, DN1_SOUND_MAGIC_HEAD, SOUND_MAGIC_HEAD};
 pub use digi_protocol::sound::tag_names;
 use eframe::egui::{self, Ui};
 
@@ -196,6 +223,11 @@ pub struct Row {
     /// tags" — and a browser that showed them the same would make an unscanned
     /// library look like a library of untagged presets.
     pub tags: Option<u32>,
+    /// The container magic, when the index has read this preset. `None` is
+    /// *unknown* — a listing knows names and slots and nothing about what is
+    /// inside a file — and unknown is drawn as no mark at all rather than as an
+    /// assumption either way.
+    pub format: Option<u32>,
 }
 
 /// What a filter pass produced, and what it had to leave out to produce it.
@@ -221,7 +253,17 @@ pub enum Tagging {
     /// no presets to `want`, so without this a library with one scanned bank
     /// and seven untouched ones would read as complete.
     Partial { have: u32, want: u32, unread_banks: usize },
-    Complete { count: u32 },
+    /// Everything in view is tagged. `unread_formats` is how many of those
+    /// entries predate `IndexEntry::format` and so cannot say whether their
+    /// preset can be loaded.
+    ///
+    /// **Not folded into `Partial`, because the tags really are complete.** An
+    /// index written before 2026-08-29 holds every tag it should; what it lacks
+    /// is a second fact about the same files. Reporting that as "801 of 1,189
+    /// tagged" would be a lie about the thing this index is named for — so it
+    /// says so in its own words, and keeps READ TAGS on the screen so the gap
+    /// can be closed.
+    Complete { count: u32, unread_formats: usize },
     /// **This box's presets cannot be decoded at all** — the A4. Not a failure
     /// of this bank or this cable, so there is no retry offered for it. See
     /// decision 4.
@@ -239,7 +281,15 @@ impl Tagging {
     /// tagged, and false for a box that cannot be indexed — the two reasons not
     /// to press it are different and neither one is a failure.
     pub fn offers_scan(&self) -> bool {
-        matches!(self, Self::NotScanned | Self::Partial { .. })
+        match self {
+            Self::NotScanned | Self::Partial { .. } => true,
+            // A complete tag index that cannot say which presets are loadable
+            // still has work READ TAGS can do — `BankIndex::missing` counts
+            // those entries as missing, so the scan backfills exactly them and
+            // is a no-op afterwards.
+            Self::Complete { unread_formats, .. } => *unread_formats > 0,
+            Self::Unavailable { .. } => false,
+        }
     }
 
     /// The BANK header's right-hand caption.
@@ -257,7 +307,10 @@ impl Tagging {
             Self::Partial { have, unread_banks, .. } => {
                 format!("{have} tagged · {unread_banks} bank(s) unread")
             }
-            Self::Complete { count } => format!("{count} tagged"),
+            Self::Complete { count, unread_formats: 0 } => format!("{count} tagged"),
+            Self::Complete { count, unread_formats } => {
+                format!("{count} tagged · {unread_formats} unread")
+            }
             Self::Unavailable { .. } => "cannot be tagged".into(),
         }
     }
@@ -330,10 +383,13 @@ impl Library {
         let mut have = 0u32;
         let mut want = 0u32;
         let mut unread_banks = 0usize;
+        let mut unread_formats = 0usize;
         for bank in banks {
             match self.data.get(bank) {
                 Some(data) if data.known() => {
                     have += data.index.as_ref().map(|i| i.entries.len() as u32).unwrap_or(0);
+                    unread_formats +=
+                        data.index.as_ref().map(|i| i.unread_formats()).unwrap_or(0);
                     want += data.want();
                 }
                 // Neither listed nor indexed: this bank's size is not merely
@@ -349,7 +405,7 @@ impl Library {
             return Tagging::NotScanned;
         }
         if unread_banks == 0 && have >= want {
-            return Tagging::Complete { count: have };
+            return Tagging::Complete { count: have, unread_formats };
         }
         Tagging::Partial { have, want, unread_banks }
     }
@@ -377,6 +433,7 @@ impl Library {
                         name: found.map(|e| e.name.clone()).unwrap_or_else(|| row.name.clone()),
                         size: found.map(|e| e.size).unwrap_or(row.size),
                         tags: found.map(|e| e.tag_mask),
+                        format: found.and_then(|e| e.format),
                     }
                 })),
                 None => base.extend(data.index.iter().flat_map(|i| i.entries.iter()).map(
@@ -386,6 +443,7 @@ impl Library {
                         name: e.name.clone(),
                         size: e.size,
                         tags: Some(e.tag_mask),
+                        format: e.format,
                     },
                 )),
             }
@@ -463,6 +521,56 @@ pub fn blocker(device: &Device) -> Option<String> {
         (None, Some(_)) => Some("No in port — the +Drive's answers come back on the input".into()),
         (Some(_), None) => Some("No out port — the request goes out on it".into()),
     }
+}
+
+/// The short mark a row wears when its container is one the box's own kit will
+/// not take, or `None` for a native preset and for one nothing has read.
+///
+/// **Probed rather than assumed, 2026-08-29.** A DN2 was sent a real mk1
+/// preset's payload under `0x5b` — 364 bytes, exactly the length its own `0x6b`
+/// reply carries, so nothing about the size could have refused it — and it
+/// **ignored the store**, then accepted the very next one on the same track in
+/// the same session. So the box is not deaf and it is not converting: it reads
+/// the head magic and declines. `examples/probe_mk1_store` is that probe and is
+/// kept, because the question is per-box.
+///
+/// That is why this is a permanent mark rather than a temporary gap. 388 of a
+/// DN2's 1,189 presets are mk1, across banks B, C and D, and until this existed
+/// a third of the library refused *after* a round trip with nothing on screen to
+/// warn anyone — which is exactly how Neil met it.
+///
+/// `None` for an unrecorded format is deliberate: an index written before this
+/// was stored knows nothing, and drawing nothing is honest where drawing
+/// "native" would be a guess. `BankIndex::missing` backfills those on the next
+/// READ TAGS.
+pub fn foreign_format(format: Option<u32>) -> Option<&'static str> {
+    match format? {
+        SOUND_MAGIC_HEAD => None,
+        DN1_SOUND_MAGIC_HEAD => Some("mk1"),
+        A4_CONTAINER_MAGIC => Some("A4"),
+        // A magic nobody has mapped. Marked, because "unrecognised" is a
+        // stronger reason not to send something than "recognised and foreign".
+        _ => Some("other"),
+    }
+}
+
+/// The sentence a row's format earns when a load would refuse it.
+pub fn foreign_format_reason(format: Option<u32>) -> Option<String> {
+    Some(match format? {
+        SOUND_MAGIC_HEAD => return None,
+        DN1_SOUND_MAGIC_HEAD => "This is a Digitone mk1 preset. It browses, searches and tags \
+             like any other, and the box will not take one onto a kit track — asked \
+             directly on 2026-08-29, it ignores the store. Load it from the box's own \
+             browser instead."
+            .to_string(),
+        A4_CONTAINER_MAGIC => "This is an Analog Four preset, and that box answers no dump \
+             request at all — there is no message that puts one on a track."
+            .to_string(),
+        magic => format!(
+            "This preset's container is {magic:#010x}, which this build does not recognise. \
+             It is not sent under a store opcode for that reason."
+        ),
+    })
 }
 
 /// Why this box cannot be loaded onto at all, or `None`.
@@ -583,6 +691,8 @@ pub fn listing_rows(bank: &str, entries: &[ListEntry]) -> Vec<Row> {
                 name: e.name.clone(),
                 size: e.size.unwrap_or(0),
                 tags: None,
+                // A listing has not opened the file, so it cannot know.
+                format: None,
             })
         })
         .collect()
@@ -1155,7 +1265,19 @@ pub struct PresetsPanel {
     mask: u32,
     search: String,
     job: Option<Job>,
+    /// What the last *read* said — LIST, READ TAGS — drawn under BANK beside
+    /// the buttons that start them.
     note: Option<Note>,
+    /// What the last *write* said — a load, a revert — drawn in the LOAD
+    /// section beside the gesture that started it.
+    ///
+    /// **Two notes rather than one, and the split was earned.** A single note
+    /// rendered under BANK put a load's refusal at the top of the panel, an
+    /// entire preset list away from the row that was double-clicked and often
+    /// off-screen from it. A reply belongs where the action was — the same
+    /// lesson decision 4 records for the READ TAGS button on an A4, which is
+    /// this panel learning it for the second time.
+    load_note: Option<Note>,
     /// The store, held so tests can point it somewhere of their own.
     store: Option<PresetIndex>,
     /// **Audition mode's backup**: what each track held the *first* time this
@@ -1191,6 +1313,7 @@ impl Default for PresetsPanel {
             search: String::new(),
             job: None,
             note: None,
+            load_note: None,
             store: None,
             backups: BTreeMap::new(),
             picked: None,
@@ -1279,6 +1402,12 @@ impl PresetsPanel {
             self.mask = 0;
             self.search.clear();
             self.note = None;
+            // The picked row and the load's reply both name a preset on the box
+            // that is leaving the screen. The *backups* deliberately survive —
+            // see decision 8; they are the one thing here that exists nowhere
+            // else.
+            self.load_note = None;
+            self.picked = None;
             if let Some(slug) = device.and_then(|d| d.model.slug) {
                 self.load_library(slug);
             }
@@ -1623,14 +1752,28 @@ impl PresetsPanel {
                                         .size(10.0)
                                         .color(super::TEXT_DIMMER),
                                 );
+                                let foreign = foreign_format(row.format);
                                 let name = egui::RichText::new(&row.name).size(11.0).color(
-                                    if is_picked {
-                                        super::CYAN
-                                    } else {
-                                        super::TEXT_PRIMARY
+                                    match (is_picked, foreign.is_some()) {
+                                        (true, _) => super::CYAN,
+                                        // Dimmed rather than struck through or
+                                        // hidden: it is a real preset, it can be
+                                        // searched for and it can be loaded from
+                                        // the box's own browser. What it cannot
+                                        // do is come from here.
+                                        (false, true) => super::TEXT_DIMMER,
+                                        (false, false) => super::TEXT_PRIMARY,
                                     },
                                 );
                                 ui.label(name);
+                                if let Some(mark) = foreign {
+                                    ui.label(
+                                        egui::RichText::new(mark)
+                                            .monospace()
+                                            .size(9.0)
+                                            .color(super::TEXT_DIMMEST),
+                                    );
+                                }
                             });
                         },
                     )
@@ -1646,9 +1789,14 @@ impl PresetsPanel {
                 // above the list: a double-click that writes to hardware is not
                 // a thing to leave anybody guessing at, and the tooltip is
                 // where a person checks before trying it.
-                let gesture = match target {
-                    Some(track) => format!("double-click to load onto T{}", track + 1),
-                    None => String::from("no track selected to load onto"),
+                // **The gesture line tells the truth per row.** Saying
+                // "double-click to load" over a preset that will refuse is the
+                // tooltip actively misleading, and on a DN2 that is a third of
+                // them.
+                let gesture = match (foreign_format(row.format), target) {
+                    (Some(mark), _) => format!("{mark} format — cannot be loaded onto a track"),
+                    (None, Some(track)) => format!("double-click to load onto T{}", track + 1),
+                    (None, None) => String::from("no track selected to load onto"),
                 };
                 let response = response.on_hover_text(format!(
                     "{where_it_is} · {} bytes · {tags}\n{gesture}",
@@ -1667,9 +1815,13 @@ impl PresetsPanel {
         if let Some(address) = clicked {
             // A single click picks, so LOAD has something to name — and so a
             // person can see what a double-click would have hit before making
-            // one.
+            // one. The last load's reply goes with it: it named a different
+            // preset, and a stale green line under a new pick reads as this
+            // one having loaded.
+            if self.picked.as_ref() != Some(&address) {
+                self.load_note = None;
+            }
             self.picked = Some(address);
-            self.note = None;
         }
 
         self.load_section(ui, device, selection, blocked, &filtered.rows);
@@ -1716,12 +1868,19 @@ impl PresetsPanel {
             })
             .cloned();
 
+        // Known before a port is opened, because the index read it — so a
+        // preset the box will not take is refused here rather than five round
+        // trips later. That round trip is what made the refusal feel like a
+        // fault the first time anyone met it.
+        let foreign = picked_row.as_ref().and_then(|r| foreign_format_reason(r.format));
+
         let in_flight = self.job.is_some();
         let ready = !blocked
             && blocker(device).is_none()
             && !in_flight
             && target.is_ok()
-            && picked_row.is_some();
+            && picked_row.is_some()
+            && foreign.is_none();
 
         ui.horizontal_wrapped(|ui| {
             ui.add_enabled_ui(ready, |ui| {
@@ -1766,7 +1925,18 @@ impl PresetsPanel {
             }
         });
 
+        // The load surface's own note, drawn where the gesture happened. The
+        // read jobs' note lives up under BANK beside the buttons that start
+        // them; a load's belongs here, and putting both in one place is what
+        // left a refusal at the top of a panel scrolled past its own list.
+        if let Some(note) = &self.load_note {
+            ui.colored_label(note.colour(), note.text());
+        }
+
         match (&target, &picked_row) {
+            _ if foreign.is_some() => {
+                super::consequence_line(ui, &foreign.unwrap_or_default());
+            }
             (Err(why), _) => super::consequence_line(ui, why),
             (Ok(track), Some(row)) => {
                 // **Words, not an arrow.** `→` U+2192 is on `ui::mod`'s
@@ -1891,25 +2061,44 @@ impl PresetsPanel {
             return;
         }
         if let Some(why) = load_blocker(device) {
-            self.note = Some(Note::Warn(why));
+            self.load_note = Some(Note::Warn(why));
             return;
         }
         let track = match load_target(selection, selection.device) {
             Ok(track) => track,
             Err(why) => {
-                self.note = Some(Note::Bad(why));
+                self.load_note = Some(Note::Bad(why));
                 return;
             }
         };
+        // Costs no round trip: the index already read this file once, and a
+        // format the box will not take is a fact rather than an outcome.
+        let format = self
+            .library
+            .filtered(&self.in_view(), 0, "")
+            .rows
+            .iter()
+            .find(|r| r.bank == bank && r.slot == slot)
+            .and_then(|r| r.format);
+        if foreign_format_reason(format).is_some() {
+            // **Picked, and not also noted.** The LOAD section draws this
+            // preset's reason as its standing line for as long as the row is
+            // picked, so a note here would print the same sentence twice — once
+            // in amber and once dim, two inches apart. Picking the row *is* the
+            // reply: the section changes to say why this one cannot go.
+            self.picked = Some((bank.to_string(), slot));
+            self.load_note = None;
+            return;
+        }
         let (Some(input), Some(output)) = (device.io.input.clone(), device.io.output.clone())
         else {
-            self.note = Some(Note::Bad(
+            self.load_note = Some(Note::Bad(
                 blocker(device).unwrap_or_else(|| "this box has no ports set".into()),
             ));
             return;
         };
         self.picked = Some((bank.to_string(), slot));
-        self.note = None;
+        self.load_note = None;
         let path = format!("{}/{slot}", bank.trim_end_matches('/'));
         let what = format!("{}/{slot}", bank_label(bank));
         let (tx, rx) = channel();
@@ -1985,6 +2174,8 @@ impl PresetsPanel {
             let Ok(event) = job.rx.try_recv() else { return };
             let mine = Some(job.device) == self.showing;
             let job_device = job.device;
+            // Which surface this job's answer belongs to — see `load_note`.
+            let writes = job.kind.writes();
             let whose = job.name.clone();
             let elapsed = job.started.elapsed();
             // Prefixed when it belongs to a box that is no longer on screen: a
@@ -2083,7 +2274,7 @@ impl PresetsPanel {
                 Event::Loaded { track, loaded, replaced, backup } => {
                     self.job = None;
                     self.backups.entry((job_device, track)).or_insert(backup);
-                    self.note = Some(Note::Good(attribute(format!(
+                    self.load_note = Some(Note::Good(attribute(format!(
                         "T{} is {loaded} — it was {replaced}",
                         track + 1
                     ))));
@@ -2095,7 +2286,7 @@ impl PresetsPanel {
                         self.backups.remove(&(job_device, *track));
                     }
                     let put_back = restored.len();
-                    self.note = Some(if failed.is_empty() {
+                    self.load_note = Some(if failed.is_empty() {
                         Note::Good(attribute(format!("{put_back} track(s) put back")))
                     } else {
                         // The failures name themselves, because the recovery
@@ -2112,7 +2303,12 @@ impl PresetsPanel {
                 }
                 Event::Failed(e) => {
                     self.job = None;
-                    self.note = Some(Note::Bad(attribute(e)));
+                    let note = Note::Bad(attribute(e));
+                    if writes {
+                        self.load_note = Some(note);
+                    } else {
+                        self.note = Some(note);
+                    }
                     return;
                 }
             }

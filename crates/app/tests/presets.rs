@@ -14,10 +14,11 @@ use digi_core::device::{Device, DeviceIo, PortRef, A4, DN2, DT2};
 use digi_protocol::device::DeviceIdentity;
 use digi_protocol::drive::ListEntry;
 use digi_protocol::preset_index::{BankIndex, IndexEntry};
+use digi_protocol::sound::{DN1_SOUND_MAGIC_HEAD, SOUND_MAGIC_HEAD};
 use digi_roll_studio::ui::presets::{
-    bank_label, bank_paths, blocker, listing_rows, load_blocker, load_target, mismatched_box,
-    rate_line, report_line, tag_names, BankData, Library, Row, Tagging, View, DEFAULT_BANKS,
-    SOUNDBANKS,
+    bank_label, bank_paths, blocker, foreign_format, foreign_format_reason, listing_rows,
+    load_blocker, load_target, mismatched_box, rate_line, report_line, tag_names, BankData,
+    Library, Row, Tagging, View, DEFAULT_BANKS, SOUNDBANKS,
 };
 use digi_roll_studio::ui::tracks::Selection;
 
@@ -45,7 +46,13 @@ fn identity(slug: &str, name: &str) -> DeviceIdentity {
 }
 
 fn entry(name: &str, mask: u32, size: u32) -> IndexEntry {
-    IndexEntry { name: name.into(), tag_mask: mask, size }
+    IndexEntry { name: name.into(), tag_mask: mask, size, format: Some(SOUND_MAGIC_HEAD) }
+}
+
+/// A preset in a format the box's own kit will not take — a Digitone mk1 file
+/// on a DN2, which is 388 of that box's 1,189.
+fn mk1_entry(name: &str, mask: u32) -> IndexEntry {
+    IndexEntry { name: name.into(), tag_mask: mask, size: 302, format: Some(DN1_SOUND_MAGIC_HEAD) }
 }
 
 fn path(bank: &str) -> String {
@@ -308,7 +315,7 @@ fn one_scanned_bank_does_not_make_an_unread_library_complete() {
     // Looking at bank A alone, it *is* complete — the same data, a different
     // question.
     let just_a = View::One(path("A")).banks(&lib.banks);
-    assert_eq!(lib.tagging(&just_a), Tagging::Complete { count: 2 });
+    assert_eq!(lib.tagging(&just_a), Tagging::Complete { count: 2, unread_formats: 0 });
     assert!(!lib.tagging(&just_a).offers_scan());
 }
 
@@ -342,7 +349,7 @@ fn an_index_off_disk_browses_with_no_box_attached() {
     let filtered = lib.filtered(&all(&lib), 0, "");
     assert_eq!(filtered.rows.len(), 2, "the browser works with the box unplugged");
     assert_eq!(filtered.rows[0].name, "HIDDEN TEARS");
-    assert_eq!(lib.tagging(&all(&lib)), Tagging::Complete { count: 2 });
+    assert_eq!(lib.tagging(&all(&lib)), Tagging::Complete { count: 2, unread_formats: 0 });
     assert!(!lib.tagging(&all(&lib)).offers_scan(), "nothing left to read");
 }
 
@@ -691,4 +698,107 @@ fn a_track_outside_a_kit_is_refused_by_the_number_on_screen() {
 #[test]
 fn a_selection_pointing_at_another_box_is_not_a_load_target() {
     assert!(load_target(Selection { device: 1, track: 3 }, 0).is_err());
+}
+
+// --- the formats a box's own kit will not take ------------------------------
+//
+// A DN2's library is two formats: 388 of its 1,189 presets are Digitone mk1
+// files, spread across banks B, C and D. They browse, search and tag; the box
+// ignores them under `0x5b` — asked directly by `probe_mk1_store` on 2026-08-29,
+// and it accepted the very next store on the same track, so that is a refusal
+// rather than a deaf box. These pin what the browser does about it.
+
+#[test]
+fn a_native_preset_wears_no_mark() {
+    assert_eq!(foreign_format(Some(SOUND_MAGIC_HEAD)), None);
+    assert_eq!(foreign_format_reason(Some(SOUND_MAGIC_HEAD)), None);
+}
+
+#[test]
+fn an_mk1_preset_is_marked_and_says_why() {
+    assert_eq!(foreign_format(Some(DN1_SOUND_MAGIC_HEAD)), Some("mk1"));
+
+    let why = foreign_format_reason(Some(DN1_SOUND_MAGIC_HEAD)).expect("a reason");
+    assert!(why.contains("Digitone mk1"), "named, not called unsupported: {why}");
+    assert!(
+        why.contains("browses") || why.contains("browse"),
+        "and the rest of the panel still works on it: {why}"
+    );
+}
+
+/// **Unknown is not native.** An index written before the format was recorded
+/// knows nothing about its presets' containers, and drawing them as loadable
+/// would be an assumption that costs a round trip and a refusal. No mark, and
+/// the load path still checks.
+#[test]
+fn an_unrecorded_format_is_not_marked_and_is_not_refused() {
+    assert_eq!(foreign_format(None), None);
+    assert_eq!(foreign_format_reason(None), None);
+}
+
+/// A magic nobody has mapped is marked. "Unrecognised" is a stronger reason not
+/// to send something than "recognised and foreign", so this must not fall
+/// through to the native branch.
+#[test]
+fn an_unmapped_container_is_marked_rather_than_assumed_native() {
+    assert_eq!(foreign_format(Some(0xdead_beef)), Some("other"));
+    let why = foreign_format_reason(Some(0xdead_beef)).expect("a reason");
+    assert!(why.contains("0xdeadbeef"), "the magic names itself: {why}");
+}
+
+/// The row carries the format through from the index, which is what lets the
+/// list mark a preset before anybody clicks it.
+#[test]
+fn a_scanned_row_carries_its_container_format() {
+    let mut lib = library(&["C"]);
+    let mut index = BankIndex::new("digitone2", &path("C"), "0050", 2);
+    index.insert(1, mk1_entry("ORGANIC", 0x0000_0404));
+    index.insert(2, entry("DEEP SPACE", 0x0000_0400, 359));
+    put(&mut lib, "C", None, Some(index));
+
+    let rows = lib.filtered(&all(&lib), 0, "").rows;
+    let organic = rows.iter().find(|r| r.name == "ORGANIC").expect("the mk1 one");
+    let deep = rows.iter().find(|r| r.name == "DEEP SPACE").expect("the native one");
+
+    assert_eq!(foreign_format(organic.format), Some("mk1"));
+    assert_eq!(foreign_format(deep.format), None);
+}
+
+/// A row from a listing has no format, because a listing never opened the file.
+#[test]
+fn a_listed_row_has_no_format_because_nothing_read_the_file() {
+    let rows = listing_rows(&path("A"), &[preset(1, "ACIDD", 1114)]);
+    assert_eq!(rows[0].format, None);
+}
+
+/// A fully tagged library whose formats predate the field still offers READ
+/// TAGS, because `BankIndex::missing` has work for it — otherwise an index from
+/// before 2026-08-29 could never be backfilled without deleting the file.
+#[test]
+fn a_tagged_library_with_no_formats_still_offers_a_scan() {
+    let mut lib = library(&["A"]);
+    let mut index = BankIndex::new("digitone2", &path("A"), "0050", 2);
+    index.insert(1, IndexEntry { name: "OLD".into(), tag_mask: 4, size: 319, format: None });
+    index.insert(2, IndexEntry { name: "ALSO OLD".into(), tag_mask: 8, size: 319, format: None });
+    put(&mut lib, "A", None, Some(index));
+
+    let tagging = lib.tagging(&all(&lib));
+    assert_eq!(tagging, Tagging::Complete { count: 2, unread_formats: 2 });
+    assert!(tagging.offers_scan(), "there is still something to read");
+    assert!(tagging.caption().contains("2 unread"), "and it says so: {}", tagging.caption());
+}
+
+/// Once the formats are in, the same library is done and stops offering.
+#[test]
+fn a_library_with_its_formats_read_is_finished() {
+    let mut lib = library(&["A"]);
+    let mut index = BankIndex::new("digitone2", &path("A"), "0050", 2);
+    index.insert(1, entry("HIDDEN TEARS", 4, 319));
+    index.insert(2, mk1_entry("ORGANIC", 8));
+    put(&mut lib, "A", None, Some(index));
+
+    let tagging = lib.tagging(&all(&lib));
+    assert_eq!(tagging, Tagging::Complete { count: 2, unread_formats: 0 });
+    assert!(!tagging.offers_scan());
+    assert_eq!(tagging.caption(), "2 tagged");
 }

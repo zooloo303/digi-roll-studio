@@ -56,7 +56,9 @@ use digi_protocol::protocol::{
     DUMP_PATTERN_KIT_REQUEST, DUMP_PROJECT_SETTINGS, DUMP_SOUND_REQUEST,
     DUMP_WHOLE_PROJECT_REQUEST, SysExKind,
 };
-use digi_protocol::sound::{decode_sound_dump, SOUND_WRAPPER};
+use digi_protocol::sound::{
+    decode_dn1_sound, decode_sound_dump, measure_struct_size, SoundError, SOUND_WRAPPER,
+};
 use digi_protocol::safe_write::{write_gate, PatternIo};
 
 use crate::ports::{resolve_input, resolve_output, PortBinding, CLIENT_NAME};
@@ -305,8 +307,31 @@ fn plan_track_sound_store(
     // Either shape decodes: the wrapper is what `0x6b` hands back and what the
     // store turned out to want, and the bare struct is kept accepted because
     // the probe tried both and this guard should not be the thing that decides.
-    let wrapped = payload.get(SOUND_WRAPPER..).map(decode_sound_dump);
-    if let Err(bare) = decode_sound_dump(payload) {
+    //
+    // **A Digitone mk1 struct counts too, and that was a conflation worth
+    // untangling.** This check asks one question — *are these bytes a sound* —
+    // and until 2026-08-29 it answered it with a decoder that knew one head
+    // magic, so it also silently answered a second question it was never asked:
+    // *is this a format this box's kit takes*. Those are different, and the
+    // second belongs to `drive::preset_load_payload`, which is where a caller
+    // can see it and reason about it. An mk1 payload validates exactly as
+    // strongly as a native one — head `DN1S` at +0 and [`SOUND_MAGIC_FOOT`] at
+    // its measured end, both checked by [`decode_dn1_sound`] — so refusing it
+    // *here* was never about the bytes being unsafe.
+    //
+    // Nothing in the app reaches this with one: the load path refuses mk1
+    // presets a layer above, deliberately, until a box says what it does with
+    // them. What this unblocks is the probe that asks — `probe_mk1_store`.
+    let sound_at = |bytes: &[u8]| -> Result<(), SoundError> {
+        decode_sound_dump(bytes).map(|_| ()).or_else(|digi| {
+            match measure_struct_size(bytes) {
+                Some(size) => decode_dn1_sound(bytes, size).map(|_| ()).map_err(|_| digi),
+                None => Err(digi),
+            }
+        })
+    };
+    let wrapped = payload.get(SOUND_WRAPPER..).map(sound_at);
+    if let Err(bare) = sound_at(payload) {
         if !matches!(wrapped, Some(Ok(_))) {
             return Err(MidiError::WriteRefused(format!(
                 "payload is not a sound struct at +0 ({bare}) or +{SOUND_WRAPPER} ({}) \

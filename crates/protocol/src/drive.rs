@@ -163,11 +163,25 @@ pub enum DriveError {
     ///
     /// The case that makes this real is a Digitone II, where 388 of 1,189
     /// presets are Digitone *mk1* files (`DN1S`) sitting in the same banks as
-    /// the native ones — see PLAN.md §9. They read, they tag, and the DN2 shows
-    /// them in its own browser under its own vocabulary. What nobody has ever
-    /// done is hand an mk1 struct to a DN2 under an `0x5b`, and a load path is
-    /// not the place to find out: the active kit is a working buffer with no
-    /// `0x50` to put it back.
+    /// the native ones — B, C and D, not one bank — see PLAN.md §9. They read,
+    /// they tag, and the DN2 shows them in its own browser under its own
+    /// vocabulary.
+    ///
+    /// **The box was asked directly on 2026-08-29, and it says no.** A real mk1
+    /// preset's payload went out under `0x5b` — 364 bytes, exactly the length
+    /// that box's own `0x6b` reply carries, so no size check could have been
+    /// what refused it — and the track did not change. The very next store on
+    /// the same track in the same session was accepted, so this is the box
+    /// reading the head magic and declining rather than a box that had stopped
+    /// listening. `examples/probe_mk1_store` is the probe and is kept, because
+    /// the question is per-box and the next Elektron on the desk gets it
+    /// pointed at it.
+    ///
+    /// So this refusal is **permanent and correct**, not a caution awaiting
+    /// evidence. What it costs is that a third of a DN2's library cannot be
+    /// auditioned from this app, and what the browser owes in return is saying
+    /// so before anybody clicks — `preset_index::IndexEntry::format` is how,
+    /// and `ui::presets::foreign_format` is where.
     ///
     /// Carries the magic so the refusal can name the format rather than saying
     /// "unsupported", and so the next box's is diagnosed from this number the
@@ -1277,11 +1291,12 @@ pub fn decode_drive_preset(file: &[u8]) -> Result<Sound, DriveError> {
 ///
 /// * **A container that is not [`SOUND_MAGIC_HEAD`]** —
 ///   [`DriveError::NotTheBoxsOwnFormat`]. A DN2 holds 388 Digitone mk1 presets
-///   that browse and tag perfectly; loading one would be the first time any
-///   box has been handed a foreign struct under a store opcode, and the active
-///   kit is a working buffer with no `0x50` to put it back. The A4 reaches this
-///   too, though a caller should have refused it earlier and for the better
-///   reason: it answers no `0x6b`, so it has no `0x5b` to send this under.
+///   that browse and tag perfectly, and it **ignores one sent under `0x5b`** —
+///   probed 2026-08-29, see that variant. So this refuses something the box
+///   would have refused anyway, which is the cheaper place to do it: no round
+///   trip, and a reason a browser can put on the row. The A4 reaches this too,
+///   though a caller should have refused it earlier and for the better reason:
+///   it answers no `0x6b`, so it has no `0x5b` to send this under.
 /// * **A file whose declared payload does not fit the layout every capture
 ///   has** — [`DriveError::UnsizedPayload`]. The cut is arithmetic on the
 ///   header; when the header is not what it should be, the arithmetic is not
@@ -1299,6 +1314,17 @@ pub fn decode_drive_preset(file: &[u8]) -> Result<Sound, DriveError> {
 /// and the witness that settles it is the box's own `0x6b` reply — which this
 /// function has no access to and is the caller's to compare. `midi::preset_load`
 /// is the caller, and it does.
+/// The container magic this preset file carries, or `None` if it has none.
+///
+/// The one fact a browser needs to record about a preset beyond its name and
+/// tags: it is what says whether the box's own kit will take it (see
+/// [`preset_load_payload`]), and it is stable in a way a verdict is not.
+/// `preset_index::IndexEntry::format` stores exactly this.
+pub fn container_magic(file: &[u8]) -> Option<u32> {
+    let at = container_offset(file)?;
+    Some(u32::from_be_bytes([file[at], file[at + 1], file[at + 2], file[at + 3]]))
+}
+
 pub fn preset_load_payload(file: &[u8]) -> Result<&[u8], DriveError> {
     let at = container_offset(file)
         .ok_or_else(|| DriveError::NoContainer { len: file.len(), head: head_hex(file) })?;

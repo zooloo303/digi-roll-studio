@@ -46,7 +46,9 @@
 
 use std::sync::atomic::{AtomicBool, Ordering};
 
-use digi_protocol::drive::{decode_drive_preset, parse_list_entries, DriveError};
+use digi_protocol::drive::{
+    container_magic, decode_drive_preset, parse_list_entries, DriveError,
+};
 use digi_protocol::preset_index::{BankIndex, IndexEntry};
 
 use crate::{ElektronDevice, MidiError};
@@ -207,6 +209,11 @@ pub fn scan_bank(
                             name: name.clone(),
                             tag_mask: sound.tag_mask,
                             size: sound.bytes.len() as u32,
+                            // Recorded from the same read the tags came out of,
+                            // so a row can say whether the box's kit will take
+                            // this preset before anyone double-clicks it. See
+                            // `IndexEntry::format`.
+                            format: container_magic(&bytes),
                         },
                     );
                     report.indexed += 1;
@@ -246,6 +253,12 @@ mod tests {
     use super::*;
     use std::path::PathBuf;
 
+    /// The container magic a native digi preset carries, for entries a test is
+    /// standing up as though a modern scan had written them.
+    fn native() -> Option<u32> {
+        Some(digi_protocol::sound::SOUND_MAGIC_HEAD)
+    }
+
     /// A box made of the real captures. The preset bytes are the ones committed
     /// under `digi_protocol`'s `tests/fixtures/drive/`, so what this scan
     /// decodes is what three boxes actually sent on 2026-08-29 — a fake source
@@ -273,6 +286,16 @@ mod tests {
                 (6, capture("digitone2-soundbanks-A-6-7THPAD-2026-08-29.bin")),
             ];
             Self { slots: vec![1, 2, 6], files, dead: vec![], reads: vec![] }
+        }
+
+        /// The other half of a DN2's library: bank C, where the Digitone mk1
+        /// files live. 388 of that box's 1,189 presets are these.
+        fn dn2_bank_c() -> Self {
+            let files = vec![
+                (1, capture("digitone2-soundbanks-C-1-ORGANIC-2026-08-29.bin")),
+                (2, capture("digitone2-soundbanks-C-2-PHASEY-DUB-2026-08-29.bin")),
+            ];
+            Self { slots: vec![1, 2], files, dead: vec![], reads: vec![] }
         }
 
         fn a4() -> Self {
@@ -366,13 +389,105 @@ mod tests {
 
     /// Progress counts the work this scan is doing, not the bank's size — so a
     /// resumed scan's bar does not restart at zero of everything.
+    /// An index written before `IndexEntry::format` existed is re-read rather
+    /// than skipped, so the next READ TAGS backfills it. Without this a library
+    /// scanned before 2026-08-29 could only be brought up to date by deleting
+    /// its files by hand — and a browser with no formats cannot say which of a
+    /// DN2's 388 mk1 presets will refuse to load.
+    #[test]
+    fn an_entry_with_no_recorded_format_is_read_again() {
+        let mut boxx = FakeBox::dn2();
+        let mut old = BankIndex::new("digitone2", "/soundbanks/A", "0050", 3);
+        old.insert(
+            1,
+            IndexEntry { name: "HIDDEN TEARS".into(), tag_mask: 0, size: 319, format: None },
+        );
+
+        let (fresh, report) = scan_bank(
+            &mut boxx,
+            "digitone2",
+            "0050",
+            "/soundbanks/A",
+            Some(old),
+            &AtomicBool::new(false),
+            |_| {},
+        )
+        .expect("the scan should run");
+
+        assert_eq!(report.indexed, 3, "all three, including the one with no format");
+        assert_eq!(
+            fresh.entries[&1].format,
+            Some(digi_protocol::sound::SOUND_MAGIC_HEAD),
+            "and it now knows what container that preset carries"
+        );
+        assert_eq!(fresh.unread_formats(), 0);
+    }
+
+    /// And once every entry has one, the same scan is a no-op — the backfill
+    /// costs exactly the entries that need it and nothing afterwards.
+    #[test]
+    fn a_backfilled_index_is_not_read_a_third_time() {
+        let mut boxx = FakeBox::dn2();
+        let (once, _) = scan_bank(
+            &mut boxx,
+            "digitone2",
+            "0050",
+            "/soundbanks/A",
+            None,
+            &AtomicBool::new(false),
+            |_| {},
+        )
+        .unwrap();
+
+        let (_, again) = scan_bank(
+            &mut boxx,
+            "digitone2",
+            "0050",
+            "/soundbanks/A",
+            Some(once),
+            &AtomicBool::new(false),
+            |_| {},
+        )
+        .unwrap();
+
+        assert_eq!(again.indexed, 0);
+        assert_eq!(again.skipped, 0);
+    }
+
+    /// The mk1 presets a DN2 carries are recorded as mk1, which is the whole
+    /// point of storing the magic: the browser marks them and the load path
+    /// refuses them without a round trip.
+    #[test]
+    fn an_mk1_preset_is_indexed_with_its_own_container_magic() {
+        let mut boxx = FakeBox::dn2_bank_c();
+        let (index, report) = scan_bank(
+            &mut boxx,
+            "digitone2",
+            "0050",
+            "/soundbanks/C",
+            None,
+            &AtomicBool::new(false),
+            |_| {},
+        )
+        .expect("mk1 presets index like any other");
+
+        assert!(report.indexed > 0, "they browse and tag");
+        for (slot, entry) in &index.entries {
+            assert_eq!(
+                entry.format,
+                Some(digi_protocol::sound::DN1_SOUND_MAGIC_HEAD),
+                "slot {slot} is a mk1 file"
+            );
+        }
+    }
+
     #[test]
     fn progress_totals_the_work_left_not_the_whole_bank() {
         let mut boxx = FakeBox::dn2();
         let mut partial = BankIndex::new("digitone2", "/soundbanks/A", "0050", 3);
         partial.insert(
             1,
-            IndexEntry { name: "HIDDEN TEARS".into(), tag_mask: 0, size: 319 },
+            IndexEntry { name: "HIDDEN TEARS".into(), tag_mask: 0, size: 319, format: native() },
         );
 
         let mut seen = Vec::new();
@@ -471,8 +586,14 @@ mod tests {
     fn a_bank_that_grew_since_the_last_scan_is_rescanned_for_the_new_slot() {
         let mut boxx = FakeBox::dn2();
         let mut stale = BankIndex::new("digitone2", "/soundbanks/A", "0050", 2);
-        stale.insert(1, IndexEntry { name: "HIDDEN TEARS".into(), tag_mask: 0, size: 319 });
-        stale.insert(2, IndexEntry { name: "MONOLOW".into(), tag_mask: 0, size: 319 });
+        stale.insert(
+            1,
+            IndexEntry { name: "HIDDEN TEARS".into(), tag_mask: 0, size: 319, format: native() },
+        );
+        stale.insert(
+            2,
+            IndexEntry { name: "MONOLOW".into(), tag_mask: 0, size: 319, format: native() },
+        );
         assert!(stale.is_complete(), "complete as far as it knew");
 
         let (fresh, report) = scan_bank(

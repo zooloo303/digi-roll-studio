@@ -1183,6 +1183,40 @@ constant — is what made a third format a two-line change. And
 `decode_drive_preset`'s `_ =>` arm, written as "unreachable today, deliberately
 kept", is where `DN1S` was diagnosed: it carried the magic that named it.
 
+### A DN2 ignores an mk1 sound under `0x5b` — 2026-08-29, DN2 0050
+
+**The probe:** `examples/probe_mk1_store`, written for one question. §10.6 step 6
+refused Digitone mk1 presets on the reasoning that nobody had ever handed one to
+a box under a store opcode — which is a good reason to refuse and a bad reason
+to *keep* refusing, because 388 of a DN2's 1,189 presets are mk1 and the refusal
+is a third of a library.
+
+**What made it worth asking rather than assuming.** An mk1 payload is 364 bytes
+and a native DN2 payload is 364 bytes, so the length check in `midi::preset_load`
+— the one that asks the box's own `0x6b` reply how long a payload should be —
+*passes* for an mk1 preset. Nothing about the size refuses it. And the DN2
+clearly uses these sounds: it lists them, loads them from its own browser, and
+re-maps their mk1 tag bits into its own vocabulary. A conversion path exists
+inside the box; the question was whether `0x5b` is on the near side of it.
+
+**Answer: no change.** A real mk1 payload (`/soundbanks/B/205` — the same preset
+whose failure to decode produced the 388-skip diagnostic) went out under `0x5b`
+and the track kept the native preset that had been put there as a
+before-picture. **The control is what makes this a refusal rather than a dead
+box:** the very next store on the same track in the same session — the restore —
+was accepted and verified. So the box parses the head magic and declines.
+
+**Two gates were refusing, and only one of them should have been.** The first
+attempt never reached the wire: `plan_track_sound_store` rejected the payload
+because `decode_sound_dump` knows one head magic, so the guard that asks *are
+these bytes a sound* was silently also answering *is this a format this box
+takes*. An mk1 payload validates exactly as strongly as a native one — `DN1S` at
++0, `BACEF00C` at its measured end, both checked by `decode_dn1_sound`. The two
+questions are now separated: the store guard validates bytes, and
+`drive::preset_load_payload` owns the format policy where a caller can see it.
+Nothing in the app can reach the store with an mk1 payload; the probe can, which
+is the point.
+
 ### The load runs on both digis — 2026-08-29, DT2 0071 / DN2 0050
 
 **Neil's words: "dbl-click loads the selected patch to DT2 and DN2."** So the
@@ -1192,22 +1226,35 @@ file, the length check against the box's own `0x6b` reply, the store, and the
 read-back. This is what §10.6 step 6 was waiting for and it landed the same day
 it was built.
 
-**The A4 does not load, which is the designed answer and not a result.** It
-answers no `0x6x` request, so there is no `0x5b` to send. What is *not* confirmed
-is whether its refusal is **legible** — whether a person double-clicking an A4
-preset sees the LOAD section saying the box has no such message, or sees nothing
-happen. That distinction is decision 4's whole lesson, got wrong once already on
-this exact box, and it is one screen away from being settled.
+**The A4 does not load, and its refusal is legible** — confirmed by Neil the
+same day: double-clicking an A4 preset shows the LOAD section explaining that the
+box has no such message. That is decision 4's lesson holding on the exact box
+that taught it, and it was the item on this list with a precedent for going
+wrong.
 
 What one more session should close, in the order that a wrong answer would
 matter — **none of it touched by the run above**, which exercised the happy path
 on two boxes and nothing else:
 
-- **The A4's refusal reads as a fact rather than a fault**, per the paragraph
-  above. The first item on the list, because it is the one with a precedent.
-- **A `DN1S` preset is refused by name.** A DN2's bank C is full of them, so this
-  is one double-click away and is the most likely thing a user meets first.
-  It must say *Digitone mk1*, not "unsupported".
+- **The mk1 marks, which have never been drawn at all.** Not merely unverified
+  on hardware — *unverified on a screen*, which by §9's own standard is the
+  weaker position of the two. The shot was attempted on 2026-08-29 and the app
+  came up windowless after too many relaunch cycles, which
+  `screenshot-a-panel-without-clicking` records as a known limit and which no
+  amount of green tests answers. What is unseen: a dim `mk1` beside a row's
+  name, the row's own text dimmed with it, and the LOAD section's standing
+  refusal when such a row is picked.
+
+  The marks come from `IndexEntry::format`, which **no index on this desk has
+  yet** — the field is hours old. `BankIndex::missing` counts a format-less
+  entry as missing, so the next READ TAGS backfills exactly those and is a no-op
+  afterwards; until it runs, a library shows no marks and behaves as it did
+  before. **So the first thing to do with a DN2 connected is press READ TAGS and
+  watch 388 rows go dim** — which is the check and the fix in one gesture.
+- **The mk1 refusal in the panel**, which Neil met on 2026-08-29 before any of
+  the above existed: it names *Digitone mk1* and it is correct. What changed
+  since is where it appears — the LOAD section rather than the top of the panel
+  — and that it now fires with no round trip when the format is known.
 - **REVERT after several auditions.** Load three different presets onto one
   track, press REVERT, and the track holds what it did before the first one —
   not the second-to-last. The backup is real bytes off the box, so this is the
@@ -1656,7 +1703,7 @@ both do. That is the trap §9's level bug already sprang once.
 | step | protocol | what is missing |
 |---|---|---|
 | browse | List, read, the container layer, the tag index and the panel all ship | nothing — done, and on three boxes |
-| load | ships and is hardware-verified end to end on both digis — double-click, payload, length check, store, read-back | REVERT and the four refusals are untested on a box; mk1 presets browse and do not load; the A4 has no path at all |
+| load | ships and is hardware-verified end to end on both digis — double-click, payload, length check, store, read-back; the A4's refusal and the mk1 refusal both met a user | REVERT and the OS-build gate untested on a box; the mk1 row marks need one READ TAGS to appear; mk1 presets browse and do not load (the box was asked); the A4 has no path at all |
 | save | nothing | everything, plus a widened write guard |
 
 ### 10.2 Reading a preset — the real v1 work
@@ -2022,11 +2069,13 @@ Recorded now so v2 starts from evidence:
      there. Copying the payload whole cannot make that mistake, and there is no
      version of the assembly that is safer than not doing it.
 
-   - **A DN2's mk1 presets browse and do not load, and that is a third state
-     the panel had no name for.** 388 of 1,189 are `DN1S` files. They read, they
-     tag, the box lists them in its own browser — and handing an mk1 struct to a
-     DN2 under a store opcode is something nobody has ever done. `0x5b` is
-     refused for them by container magic, not by bank or by guess.
+   - **A DN2's mk1 presets browse and do not load, and the box confirmed it.**
+     388 of 1,189 are `DN1S` files — spread across banks **B, C and D**, not
+     confined to one, so browsing the whole library hits one about a third of
+     the time. They read, they tag, the box lists them in its own browser.
+     `0x5b` is refused for them by container magic, not by bank or by guess, and
+     since 2026-08-29 that refusal is a measurement rather than a caution: see
+     §9's probe. The browser marks them, and the mark is permanent.
 
    - **The load path's own witness is the box, and it is free.** No function
      over a file can say whether *this box* wants a payload of that length.
@@ -2062,6 +2111,16 @@ Steps 1–3 are hardware work and cannot be done from a desk without a box, and
 all three are now done. Steps 4–6 are built; step 7 is not. All four can be
 built against fixtures and only need a box to be believed — which is §9's
 standard, and the one this project keeps.
+
+**And what the browser owes for the refusal, added the same day after Neil met
+it:** a preset the box will not take now says so on its own row — a dim `mk1`,
+a tooltip that does not promise a double-click will work, and a LOAD section
+that refuses with no port opened. The mark comes from `IndexEntry::format`,
+which records the container magic rather than a verdict, so a policy change
+cannot make an old index wrong. An index written before the field reads as
+*unknown* and draws nothing; `BankIndex::missing` counts those entries as
+missing so the next READ TAGS backfills exactly them, resumable and cancellable
+like any other scan and a no-op once done.
 
 **What v1 does not do, recorded so it is a decision rather than an oversight:**
 a load changes the box and leaves no mark in the session. `Track::patch` is the

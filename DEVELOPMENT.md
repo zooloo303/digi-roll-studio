@@ -516,6 +516,24 @@ the message would have looked like the guard working. **A guard is only as
 honest as its parser**, and a refusal is a claim that deserves the same
 suspicion as an acceptance.
 
+**And the same guard, later the same day, was found to be answering a second
+question nobody had asked it.** A probe went out to settle whether a DN2 accepts
+a Digitone mk1 sound under `0x5b`, and never reached the wire: the guard turned
+it away, because its decoder knew one head magic. Its job is *are these bytes a
+sound* — and an mk1 payload is emphatically a sound, with a head magic and a
+foot magic and a decoder of its own that has been in `sound.rs` for days. What
+it was actually enforcing was *is this a format this box's kit takes*, which is
+policy, and policy that lives inside a validator is policy nobody can find, read
+or change on purpose.
+
+Untangling them was two lines and one comment, and it is what let the box be
+asked at all. The answer, for the record, was that the DN2 ignores an mk1 store
+— so the policy stands. But it now stands somewhere a caller can see it
+(`drive::preset_load_payload`), with a reason attached, and the browser can put
+that reason on a row instead of spending five round trips discovering it.
+**A validator that recognises one case has quietly become a policy**, and the
+tell is that widening it feels dangerous for reasons nobody can state.
+
 ---
 
 ### 11. A count of failures is not a diagnosis, and one will be guessed at

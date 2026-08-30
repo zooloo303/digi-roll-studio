@@ -87,6 +87,29 @@ pub struct IndexEntry {
     /// one DN2 bank holds both 319 and 359 — so it is per-preset data rather
     /// than a per-box constant somebody could recompute later.
     pub size: u32,
+    /// The container magic this preset carries — `BEEFBACE`, `DN1S`,
+    /// `BEEFBABA`. `None` for an entry written before 2026-08-29, which is
+    /// *unknown* rather than native.
+    ///
+    /// **Why a browser needs this on disk, and why it is the magic rather than
+    /// a verdict.** A DN2's library is two formats: 388 of 1,189 presets are
+    /// Digitone mk1 files, spread across banks B, C and D, and the box will not
+    /// take one onto a kit track — probed 2026-08-29, it ignores the store
+    /// outright. They browse, they search, they tag, and they cannot load. A
+    /// browser that cannot tell them apart makes a third of the library refuse
+    /// after a round trip with no warning, which is what shipping without this
+    /// field did for a day.
+    ///
+    /// It is recorded as the **magic** and not as a `loadable: bool` for the
+    /// same reason [`IndexEntry::tag_mask`] is a mask and not a list of words:
+    /// a verdict is policy, policy is `drive::preset_load_payload`'s and it may
+    /// change, and every index written before the change would then be wrong.
+    /// A magic is a fact about the file.
+    ///
+    /// `#[serde(default)]` so an index from before this field reads as `None`
+    /// and is backfilled by [`BankIndex::missing`] on the next READ TAGS.
+    #[serde(default)]
+    pub format: Option<u32>,
 }
 
 /// One bank's worth of index, complete or not.
@@ -139,8 +162,29 @@ impl BankIndex {
     /// Takes the slots rather than computing a range, because occupancy is
     /// sparse: a bank of 256 with 12 presets in it should cost 12 reads on a
     /// resume, not 256.
+    /// **An entry with no recorded format counts as missing**, so an index
+    /// written before that field existed is backfilled by the next scan rather
+    /// than needing its file deleted by hand. It costs exactly the entries that
+    /// lack it, resumes and cancels like any other scan, and is a no-op once
+    /// done — which is the whole reason a resume is keyed on slots rather than
+    /// on a version number.
     pub fn missing(&self, slots: &[u32]) -> Vec<u32> {
-        slots.iter().copied().filter(|s| !self.entries.contains_key(s)).collect()
+        slots
+            .iter()
+            .copied()
+            .filter(|s| self.entries.get(s).is_none_or(|e| e.format.is_none()))
+            .collect()
+    }
+
+    /// How many entries predate [`IndexEntry::format`] and so cannot say
+    /// whether their preset is loadable.
+    ///
+    /// The panel asks so it can keep offering READ TAGS on a library that is
+    /// fully *tagged* — the tags are real and complete, and a second fact about
+    /// the same files is not. Reporting it as untagged would be a lie about the
+    /// thing this index is named for.
+    pub fn unread_formats(&self) -> usize {
+        self.entries.values().filter(|e| e.format.is_none()).count()
     }
 
     /// Record one preset. Re-scanning a slot overwrites it, which is what makes
@@ -299,7 +343,12 @@ mod tests {
     }
 
     fn entry(name: &str, mask: u32) -> IndexEntry {
-        IndexEntry { name: name.to_string(), tag_mask: mask, size: 319 }
+        IndexEntry {
+            name: name.to_string(),
+            tag_mask: mask,
+            size: 319,
+            format: Some(crate::sound::SOUND_MAGIC_HEAD),
+        }
     }
 
     #[test]
