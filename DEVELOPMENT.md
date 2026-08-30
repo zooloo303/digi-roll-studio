@@ -97,6 +97,60 @@ you deliberately want one, and they are ordered by what they can do to it.
 - `cargo run -p digi_roll_studio --example safe_write_track -- --write` — **stores
   bytes in a slot.** Asks for the typed word `overwrite` per box and backs the
   whole destination pattern up first.
+- `cargo run -p digi_roll_studio --example browse_drive_dn` — **read-only.** Lists
+  the +Drive through the `0x53` file API. Every call goes through
+  `assert_read_only_file_op`, the allowlist admitting List, Open, Read and Close
+  and nothing else.
+- `cargo run -p digi_roll_studio --example capture_drive_file` /
+  `capture_drive_project` — **read-only**, same allowlist. The project one takes
+  `--port` and reads megabytes, so it does not fan out across the desk.
+- `cargo run -p digi_roll_studio --example recover_drive_write -- --port "<box>"` —
+  **read-only as shown.** Diagnoses a box left deaf by an interrupted write:
+  asks `0x53` and `0x01` and reports which answers. Adding `--close` sends
+  `0x59` WriteClose against candidate handles, which **can commit a short file**
+  in whatever slot the abandoned WriteOpen named.
+- `cargo run -p digi_roll_studio --example probe_drive_write -- --port "<box>"
+  --into <path> --from <path>` — **writes a file to the +Drive.** The only thing
+  outside the app that does. It refuses a target the listing reports occupied,
+  so it cannot overwrite; `0x59` is the commit and every failure path returns
+  before it; and it verifies by reading back. Guarded by `assert_write_file_op`,
+  a **second and disjoint** allowlist admitting WriteOpen, Write and WriteClose
+  — `0x5A` Move, `0x5B` Copy and `0x5C` **Delete** are not implemented anywhere
+  in this workspace and nothing here can reach them.
+
+  **A malformed write can take a box's whole SysEx API down** until it is
+  power-cycled — see lesson 13. That is a property of the box, not of this
+  example, but this is the file that can provoke it.
+- `python3 local/decode_mmon.py <capture.mmon>` — **reads a file, touches no
+  port.** Decodes a MIDI Monitor capture into raw SysEx messages and reports
+  framing rather than assuming it. `decode7(data, msb_first=)` takes the bit
+  order as a parameter because the two Elektron generations disagree on it —
+  lesson 14, and the reason that argument is not defaulted silently.
+
+  Capturing what a *box sends us* needs no spy driver; the spy exists for
+  watching what another **app** sends to a destination. Ticking only the spy
+  source when the box is the sender captures nothing and looks like a box that
+  did not answer.
+- `python3 local/a4_pattern.py show|diff|build|verify` — **`show`, `diff` and
+  `verify` read files and touch no port.** Reads an A4 gen-1 pattern dump into
+  its trig and note lanes, diffs two of them with every changed byte named, and
+  `build` edits one and emits a sendable `.syx`; `pool` prints the 128-lane
+  p-lock pool. `build` proves its encoder on
+  the source file first — the source must survive decode → encode unchanged —
+  rather than trusting a round-trip test written against other fixtures.
+- `cargo run -p digi_midi --example sysex_loopback` — **touches no hardware.**
+  Creates a virtual MIDI destination, sends to it and reassembles what arrives,
+  so both ends are this process. Sweeps sizes, or carries a named `.syx`, and
+  takes `--chunk` to exercise the paced delivery path. Separates "the bytes
+  never left intact" from "the box declined them" without a capture, a click or
+  a power cycle — see lesson 15.
+- `cargo run -p digi_roll_studio --example a4_pattern_send -- <file.syx>` —
+  **rehearses; opens no port.** Re-validates the file's framing, checksum,
+  length and payload from the bytes on disk and prints the trigs it would
+  write. `--send` **transmits**, after typed consent, and overwrites a pattern
+  slot on the box. The validation deliberately repeats what the Python builder
+  already did: the thing that must hold is not "the builder was correct" but
+  "these bytes are well-formed", and a file can change between the two.
 - `cargo run -p digi_engine --example jitter --release -- "<DT2>" "<DN2>"` —
   **sends** clock and notes for ten seconds, so a box on external clock will start
   playing. `--release` matters: a debug build measures the debug build.
@@ -600,6 +654,151 @@ the reading of where it sat was not. `examples/capture_drive_file.rs` exists so
 that never has to be repeated: it takes exact paths and writes the bytes out. A
 96-character hex string read by eye is not evidence, and reading it more
 carefully is not the fix.
+
+### 12. Witnesses that agree unanimously can be blind in the same place
+
+`file_declared_size` read a +Drive file's payload length as a `u16be` at `+27`.
+It is a `u32be` at `+25`. The doc comment on the constant said "confirmed on
+three boxes against three different sizes — 1114, 364 and 366", and that was
+true: all three agree, on real hardware, across three products.
+
+They agree because **all three fit in sixteen bits**. The low half of a `u32be`
+at 25 and a `u16be` at 27 are the same two bytes, so every preset any of these
+boxes stores reads identically under both. Thirty-two committed captures could
+not fail the test that pinned it, and the test looked thorough — it walked the
+whole fixture directory and asserted a count.
+
+The first file that could tell them apart was an **A4 project**: 2,061,057 bytes
+declaring 2,061,014, where the old reading returns 29,398 — the bottom sixteen
+bits, which is not a number that announces itself as wrong. It is a plausible
+size for a file.
+
+- **A fixture set is a sample, and a sample has a shape.** Every one of those 32
+  was a preset, because presets were what the work needed at the time. Unanimity
+  across a homogeneous sample measures the sample, not the claim. Ask what
+  *dimension* the fixtures vary along — these varied by box and by struct
+  version and not once by **order of magnitude**, which was the only axis that
+  mattered.
+- **The corroboration that finally settled it was structural, not empirical.**
+  Under the new reading the header closes exactly: payload `u32be` at 25,
+  trailer length `u16be` at 29, header ends at 31, nothing spare. Under the old
+  one, bytes 25 and 26 were unexplained and nobody had noticed. A layout with
+  unaccounted bytes in it is a standing invitation to this bug.
+- **The regression test names the evidence it cannot contain.** The project is
+  two megabytes of someone's music and is not committed, so the test transcribes
+  its 31-byte header and says in its own body that the fixtures cannot fail it.
+  A test whose weakness is documented inside it is worth more than one that
+  quietly passes for the wrong reason.
+
+### 13. When a wrong guess costs hardware state, stop guessing and go and look
+
+Two days went into deriving the `0x58` +Drive Write body by putting candidate
+layouts to an Analog Four. Six candidates: three earned a clean refusal
+(`Invalid sequence number`) and three earned silence — and on this box **a body
+it cannot parse takes down the whole SysEx API**, not just the file layer. It
+stops answering `0x01` Device, while a DT2 and a DN2 on the same bus answer
+normally throughout, and it comes back only on a power cycle. Four power cycles,
+each one a person walking to the desk.
+
+The yield was three true facts and no working write. What settled it was
+installing a CoreMIDI spy driver and capturing **Elektron's own Transfer**
+uploading one sound to the same box — minutes of work, and the answer complete
+and exact.
+
+The three details that made guessing hopeless are worth naming, because they
+are what a sweep cannot reach: the body carries **four** `u32` fields in an
+order no earlier opcode uses; `0x59` WriteClose's second field is a literal `1`
+where symmetry with `0x56` Close says total length; and the checksum is a
+zero-seeded CRC32 **that is then inverted**. Any one of those alone defeats a
+search over the other two.
+
+- **Price the probe, not just the answer.** A sweep is the right tool when a
+  wrong guess costs a round trip. It is the wrong tool when a wrong guess costs
+  a power cycle, because the budget is now someone's patience and it runs out
+  long before the search space does.
+- **"No reply" is not a data point of the same kind as "refused".** A refusal is
+  the box parsing your bytes and disagreeing; silence is it failing to parse
+  them at all. The sweep treated them as one and drew a rule from the mix —
+  "three `u32` fields get answered" — that the very next run falsified. Sort
+  outcomes by *what the box did*, not by pass and fail.
+- **A reference implementation is evidence, and it is usually installed
+  already.** `Transfer.app` had been on this machine the whole time. The
+  question "who else already speaks this protocol, and can I watch them?" is
+  worth asking on day one, not after the fourth power cycle.
+- **Retrying is not free once you are writing.** The generic request path
+  re-sent every unanswered message three times, which is correct for a read and
+  wrong for a write chunk: a chunk the box took and answered slowly gets
+  delivered twice more to a transfer that has moved past it. Every wedge had
+  three identical writes behind it.
+
+### 14. A decode that produces structure is not a decode that is correct
+
+The A4's gen-1 SysEx packs seven-bit data **MSB-first** — the MSB byte's bit 6
+carries the first payload byte. `sevenbit.rs`, ported from elk-herd for the
+gen-2 boxes, runs bit 0 to byte 0. The A4 captures were decoded with the gen-2
+order for four rounds of analysis on 2026-08-30.
+
+**It never once looked wrong.** Region boundaries appeared, strides came out as
+round numbers, single-trig edits produced small localised diffs, and a track
+stride of 735 bytes was measured twice and agreed with itself. All of it was an
+artifact. The real stride is 751 and every offset derived in those rounds was
+wrong.
+
+- **Plausibility is not a witness, because a near-miss decode is still mostly
+  right.** Flipping one bit in eight leaves byte boundaries, zero runs and
+  repeat periods largely intact — which is exactly the evidence a structural
+  analysis feeds on. The error hides in the place you are looking.
+- **A constant is the arbiter.** `BEEFBABA` reads at offset 0 of an A4 sound
+  dump under one order and appears **nowhere in the file** under the other.
+  That is a yes/no question with no room to interpret, and it settled in one
+  command what four rounds of structure could not. Find the magic, the name,
+  the known-size field — anything the format *declares* — and check it before
+  measuring anything.
+- **The check was available from the first minute and was not run**, because
+  the decode was producing results and results feel like progress. The habit
+  worth building is to spend the first command on something falsifiable rather
+  than on the first interesting-looking histogram.
+- **Two generations of one manufacturer do not share a primitive.** The port
+  was correct for the boxes it was written for. Assuming it generalised to a
+  third box is §9's recurring shape again: the third box splits a rule that
+  read as one.
+
+### 15. A format is not a protocol — the rate is part of the contract
+
+The A4's first written pattern was refused in silence. The bytes were provably
+right: the message was byte-identical to one the box had itself emitted, checked
+by reconstructing it from a *different* dump. The port was right. A CoreMIDI
+loopback carried the same 14,843 bytes byte-exact. Everything checkable was
+checked, and the box did nothing.
+
+**It was delivered too fast.** DIN MIDI is 3,125 bytes a second, so this dump
+takes 4.75 seconds on a cable — the rate a 2013 box was built to receive at.
+USB delivers it in microseconds. Pacing the same frame at DIN rate worked
+first time.
+
+- **"Correct bytes" and "a message the device will accept" are different
+  claims**, and the first one is the one that is easy to prove. Every check
+  available was a check on *content*. None of them could see timing, so none of
+  them was ever going to fail.
+- **The oldest box tells you its rate.** A format reverse-engineered from a
+  device of a given era carries that era's assumptions about how fast data
+  arrives. That is not in the byte layout and no amount of staring at a dump
+  will reveal it.
+- **Do the arithmetic before the first attempt.** Baud rate over message size is
+  one division, and it would have predicted this before a byte was sent. It was
+  done afterwards, as a hypothesis, to explain a failure it should have
+  prevented.
+
+**And the process lesson, which is lesson 13 arriving again from the side.**
+When the send failed, the response was to reason about causes and build a fix
+for the most plausible one. That fix happened to be right, which is the least
+useful way to be right. Neil's question — "can't I just spy the Transfer app?" —
+was the better instinct, and it was the instinct this document already records
+as the thing that ended two days of guessing in 2026-08-30's earlier session.
+**Having written the lesson down is not the same as reaching for it.** The
+capture also paid immediately in a way the reasoning did not: it proved Transfer
+relays a raw `.syx` unchanged, which turned a debugging step into a second
+sender.
 
 ---
 

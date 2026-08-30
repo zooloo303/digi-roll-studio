@@ -47,11 +47,29 @@
 //      and is then never shown may as well have been dropped at the wire. It is
 //      a button, so adopting it is something a person did.
 //
-// **What has not been verified:** no fetch has been started from this panel with
-// a box on the other end, and in particular nothing here has been run while the
-// transport is playing. Opening a second connection to a port the engine is
+// **What has not been verified: a Fetch while the transport is playing.** That
+// is the whole of it. Opening a second connection to a port the engine is
 // already streaming clock on is expected to be fine on CoreMIDI, but "expected"
-// is the honest word — this file has never met hardware.
+// is the honest word.
+//
+// **This paragraph used to open "no fetch has been started from this panel with
+// a box on the other end", and that stopped being true on 2026-08-18** — Neil
+// pressed Fetch with a box on the far side and a pattern landed in the slot he
+// chose, closing the worker thread, the poll and the import landing somewhere a
+// person picked (PLAN.md §9, "Fetch"). The commit that recorded it says it
+// struck the claim "everywhere either file still claimed the fetch button or
+// the import path had never met a box". It missed this one, and the stale
+// sentence outlived the thing it described by twelve days.
+//
+// Worth a note beyond the correction, because the failure mode is general: a
+// caveat is written once, at the moment it is true, and is then never read again
+// by anyone who could falsify it. The person who runs the hardware check is
+// looking at a box, not at a header comment three files away. `DEVELOPMENT.md`
+// lesson 3 is the same shape from the user's side — a panel that lies about what
+// is built — and this is its comment-level twin: **an out-of-date caveat does
+// not read as out of date, it reads as a gap**, and the next person either
+// re-runs work that is already done or, worse, believes the feature is unproven
+// and routes around it.
 
 use std::collections::HashMap;
 use std::sync::mpsc::{channel, Receiver};

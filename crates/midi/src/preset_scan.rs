@@ -34,8 +34,9 @@
 //!
 //! **This used to be the A4, and as of 2026-08-29 it is no longer any box we
 //! own.** The A4 indexes. Two separate mis-framings had it refused, and both are
-//! written up on `drive::decode_drive_preset`: the missing foot magic, which
-//! turned out not to matter because the file header declares the extent; and the
+//! written up on `drive::decode_drive_preset`: the foot magic believed missing —
+//! it is `BABEFACE`, not the digis' `BACEF00C`, and either way it does not
+//! matter because the file header declares the extent; and the
 //! uncalibrated tag mask at `+8`, which was the real blocker and is now
 //! calibrated against the A4's own filter grid — `sound::TAG_NAMES_A4`, checked
 //! by `protocol/tests/drive_preset.rs` on eight captures.
@@ -551,7 +552,10 @@ mod tests {
         let saw = index.entries.get(&1).expect("slot 1");
         assert_eq!(saw.name, "THE SAW");
         assert_eq!(saw.tag_mask, 0x0584_0003);
-        assert_eq!(saw.size, 366, "sized by the header, since the A4 has no foot");
+        // Sized by the header's declared length, which is stated rather than
+        // searched for. The A4 does carry a foot (`BABEFACE`); it is simply not
+        // what the size comes from.
+        assert_eq!(saw.size, 366, "sized by the header, not by a foot");
     }
 
     /// A box whose files cannot be sized stops at the **first** preset rather

@@ -24,12 +24,14 @@
 //!   * **Names are Windows-1252.** `BLÅ VIND` and `SYNTHVÅG` are the cases that
 //!     fail under `from_utf8_lossy`, and they are here as literals so a
 //!     regression reads as a mangled name rather than as a byte count.
-//!   * **The A4 is sized by its header, not by a foot.** It has no foot magic
-//!     anywhere, and until 2026-08-29 that had it refused outright. Its extent
-//!     is nonetheless stated — by the file header's declared payload length,
-//!     with the container flush against it — so it decodes, and the tests pin
-//!     both halves: that it comes out with the right length and name, and that
-//!     the layout the length rests on is the layout every capture has.
+//!   * **The A4 is sized by its header, not by a foot.** Until 2026-08-29 that
+//!     had it refused outright, on the belief that it carried no foot magic at
+//!     all — which was a statement about `BACEF00C`, the *digis'* constant. It
+//!     has one of its own, `BABEFACE` at 377. Either way the header's declared
+//!     payload length is the better witness, because it is stated rather than
+//!     searched for, and the tests pin both halves: that it comes out with the
+//!     right length and name, and that the layout the length rests on is the
+//!     layout every capture has.
 //!
 //! A fourth was added once the layout was measured rather than assumed: every
 //! file is a **31-byte header, a payload, and a 12-byte trailer**, on all three
@@ -197,13 +199,25 @@ fn the_head_bytes_reach_past_the_container_magic() {
     assert_eq!(&head[72..80], "deadbeef", "byte 36 must be in frame, at its own offset: {head}");
 }
 
-/// The A4 really has no foot, which is *why* it is sized from its header rather
-/// than a preference for doing so. Asserted directly, so that if a future OS
-/// starts emitting one this test fails and tells somebody the situation changed
-/// — at which point the cheaper `decode_sound` path becomes available to it.
+/// The A4 carries **no `BACEF00C`** — and it does have a foot magic of its own.
+///
+/// This test used to be called `no_a4_capture_contains_a_foot_magic_anywhere`
+/// and it passed, because it only ever looked for `BACEF00C`. That is the
+/// *digis'* constant. The A4's is **`BABEFACE`**, it sits at 377 in all eight
+/// captures, and it appears in no digi file at all — so the two products have a
+/// magic **pair** each, `BEEFBABA`/`BABEFACE` against `BEEFBACE`/`BACEF00C`,
+/// and only the head halves had ever been compared (corrected 2026-08-30).
+///
+/// Both directions are asserted now, because a test that only checks for the
+/// other box's constant can only ever confirm what it already assumed. The
+/// conclusion that rested on it — that the A4 is sized from its header — is
+/// unaffected and is pinned separately: the header *declares* the length, which
+/// is a better witness than a magic you have to search for, whether or not one
+/// exists to search for.
 #[test]
-fn no_a4_capture_contains_a_foot_magic_anywhere() {
-    let foot = 0xBACE_F00Cu32.to_be_bytes();
+fn the_a4_has_its_own_foot_magic_and_not_the_digis() {
+    let digi_foot = 0xBACE_F00Cu32.to_be_bytes();
+    let a4_foot = 0xBABE_FACEu32.to_be_bytes();
     for name in [
         "analogfour-soundbanks-A-1-THE-SAW-2026-08-29.bin",
         "analogfour-soundbanks-A-4-SNAKECHARMER-2026-08-29.bin",
@@ -211,8 +225,24 @@ fn no_a4_capture_contains_a_foot_magic_anywhere() {
     ] {
         let file = fixture(name);
         assert!(
-            !file.windows(4).any(|w| w == foot),
-            "{name} contains a foot magic — the A4 may now be decodable, see PLAN.md §10.2"
+            !file.windows(4).any(|w| w == digi_foot),
+            "{name} carries BACEF00C, which is the digis' foot and not this box's"
+        );
+        assert_eq!(
+            file.windows(4).position(|w| w == a4_foot),
+            Some(377),
+            "{name} should carry BABEFACE at 377"
+        );
+    }
+    // And the mirror, which is what makes it a pair rather than a coincidence.
+    for name in [
+        "digitakt2-soundbanks-A-1-ACIDD-2026-08-29.bin",
+        "digitone2-soundbanks-A-1-HIDDEN-TEARS-2026-08-29.bin",
+    ] {
+        let file = fixture(name);
+        assert!(
+            !file.windows(4).any(|w| w == a4_foot),
+            "{name} carries BABEFACE, which is the A4's foot and not this box's"
         );
     }
 }
