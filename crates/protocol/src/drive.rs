@@ -93,6 +93,10 @@ pub enum DriveError {
     /// [`assert_read_only_file_op`] — in this namespace 0x57/0x58/0x59 write
     /// and 0x5C deletes.
     NotAReadOnlyFileOp(u8),
+    /// A file-API opcode was offered to the write path that is not one of the
+    /// three write opcodes. `0x5A` Move, `0x5B` Copy and `0x5C` Delete land
+    /// here, which is the point.
+    NotAWriteFileOp(u8),
     /// An entry's form byte was neither 1 (short) nor 2 (long). The layout is
     /// not what [`parse_list_entries`] derived, so the listing is not readable.
     UnknownEntryForm { at: usize, found: u8 },
@@ -150,7 +154,7 @@ pub enum DriveError {
     /// witness is gone and there is nothing left to fall back on — so this
     /// refuses rather than computing an offset from one box's worth of
     /// evidence.
-    UnsizedContainer { at: usize, declared: Option<u16> },
+    UnsizedContainer { at: usize, declared: Option<u32> },
     /// A digi container with no foot magic after its head. The struct's length
     /// is measured by finding the foot, so without one there is no size to
     /// decode at — and guessing is what the foot check exists to prevent.
@@ -195,7 +199,7 @@ pub enum DriveError {
     /// the one the box's kit speaks, and the layout the cut depends on — a
     /// [`FILE_HEADER_LEN`]-byte header, a declared payload, the container
     /// [`SOUND_WRAPPER`] bytes into it — did not hold.
-    UnsizedPayload { at: usize, declared: Option<u16>, len: usize },
+    UnsizedPayload { at: usize, declared: Option<u32>, len: usize },
 }
 
 impl std::fmt::Display for DriveError {
@@ -220,6 +224,11 @@ impl std::fmt::Display for DriveError {
                 f,
                 "API file opcode {id:#04x} is not in the read-only set \
                  (0x53 List, 0x54 Open, 0x55 Read, 0x56 Close) — refusing to send it"
+            ),
+            DriveError::NotAWriteFileOp(id) => write!(
+                f,
+                "API file opcode {id:#04x} is not in the write set \
+                 (0x57 WriteOpen, 0x58 Write, 0x59 WriteClose) — refusing to send it"
             ),
             DriveError::UnknownEntryForm { at, found } => write!(
                 f,
@@ -486,6 +495,36 @@ pub fn assert_read_only_file_op(api_id: u8) -> Result<(), DriveError> {
     match api_id {
         API_FILE_LIST | API_FILE_OPEN | API_FILE_READ | API_FILE_CLOSE => Ok(()),
         _ => Err(DriveError::NotAReadOnlyFileOp(api_id)),
+    }
+}
+
+/// The three opcodes that put a file **onto** a box, added 2026-08-29.
+///
+/// **This does not widen [`assert_read_only_file_op`], and must not.** That
+/// function stays exactly as strict as it was; a caller that wants to write
+/// asks [`assert_write_file_op`] instead, and the two allowlists are disjoint.
+/// Every read path in this crate still goes through the read-only one, so
+/// "could this code have written something?" is still answered by which
+/// assertion it calls rather than by reading it.
+///
+/// **`0x5A` Move, `0x5B` Copy and `0x5C` Delete remain unimplemented**, which
+/// is the substance of PLAN.md §10's rule rather than its letter. Writing a
+/// file into a free slot is additive and verifiable by reading it back;
+/// deleting is neither, and nothing here needs it.
+pub const API_FILE_WRITE_OPEN: u8 = 0x57;
+pub const API_FILE_WRITE: u8 = 0x58;
+/// The commit. Nothing a `0x58` sent lands on the +Drive until this is
+/// acknowledged, which is what makes probing the chunk layout safe: a run that
+/// stops before Close leaves the target slot as it found it.
+pub const API_FILE_WRITE_CLOSE: u8 = 0x59;
+
+/// Refuse any file-API opcode outside the **write** set, before it reaches the
+/// wire. Deliberately narrow: three opcodes, none of which can destroy a file
+/// that is already there.
+pub fn assert_write_file_op(api_id: u8) -> Result<(), DriveError> {
+    match api_id {
+        API_FILE_WRITE_OPEN | API_FILE_WRITE | API_FILE_WRITE_CLOSE => Ok(()),
+        _ => Err(DriveError::NotAWriteFileOp(api_id)),
     }
 }
 
@@ -917,10 +956,28 @@ const READ_DATA_OFFSET: usize = 22;
 /// container: magic, the OS build that wrote it, and the payload size.
 pub const FILE_MAGIC: u32 = 0xAC11_D303;
 
-/// Where the payload size sits in that header, as a `u16be`. Confirmed on three
-/// boxes against three different sizes — 1114, 364 and 366 — each of which is
-/// also what the directory listing declared for the same file.
-pub const FILE_SIZE_OFFSET: usize = 27;
+/// Where the payload size sits in that header, as a **`u32be`**. Confirmed on
+/// three boxes against three different sizes — 1114, 364 and 366 — each of
+/// which is also what the directory listing declared for the same file.
+///
+/// **It was 27 and a `u16be` until 2026-08-29, and every one of those three
+/// witnesses agreed with that reading.** They had to: 1114, 364 and 366 all fit
+/// in sixteen bits, so the low half of a `u32be` at 25 and a `u16be` at 27 are
+/// the same two bytes with the same value, and no preset on any of these boxes
+/// is big enough to separate them. The first file that did was an **A4 project**
+/// — `/projects/1`, 2,061,057 bytes on the wire — where the true payload is
+/// 2,061,014 and the `u16` reading returns **29,398**, the bottom sixteen bits
+/// of it.
+///
+/// The header now reads end to end with nothing spare, which is the real
+/// argument for it: payload `u32be` at 25, trailer length `u16be` at 29,
+/// header ends at 31. The old reading had two unexplained bytes at 25 and a
+/// size field that stopped two short of the trailer length.
+///
+/// Pinned by `every_capture_declares_its_payload_as_a_u32` over all 32 committed
+/// captures plus the project — the fixtures alone cannot fail this test, which
+/// is exactly why the project capture is named in it.
+pub const FILE_SIZE_OFFSET: usize = 25;
 
 /// How long that header is, before the payload starts. Measured across all 24
 /// committed captures on 2026-08-29 and identical on all three boxes — see
@@ -930,7 +987,7 @@ pub const FILE_HEADER_LEN: usize = 31;
 
 /// The trailer after the payload: four checksum-shaped bytes, the payload
 /// length again, then magic `AAA1DAAA`. The header declares this length too, as
-/// a `u16be` at [`FILE_SIZE_OFFSET`]` + 2`, and it reads 12 on every capture.
+/// a `u16be` at [`FILE_SIZE_OFFSET`]` + 4`, and it reads 12 on every capture.
 ///
 /// The four leading bytes are **not** a zlib crc32 of the payload under a zero
 /// seed, which was the obvious guess given the read path's crc32 is
@@ -1081,11 +1138,12 @@ pub fn parse_close_reply(args: &[u8]) -> Result<CloseReply, DriveError> {
 /// Worth checking rather than trusting one of the two: they come from different
 /// places in the box, and a disagreement means this parser is reading a file it
 /// does not understand.
-pub fn file_declared_size(file: &[u8]) -> Option<u16> {
+pub fn file_declared_size(file: &[u8]) -> Option<u32> {
     if need_u32(file, 0).ok()? != FILE_MAGIC {
         return None;
     }
-    file.get(FILE_SIZE_OFFSET..FILE_SIZE_OFFSET + 2).map(|s| u16::from_be_bytes([s[0], s[1]]))
+    file.get(FILE_SIZE_OFFSET..FILE_SIZE_OFFSET + 4)
+        .map(|s| u32::from_be_bytes([s[0], s[1], s[2], s[3]]))
 }
 
 /// Where the sound container starts inside a file, found by its magic rather
@@ -1481,6 +1539,46 @@ mod file_read_tests {
         assert_eq!(file_declared_size(&[0; 36]), None);
     }
 
+    /// **The test the 32 committed captures cannot fail**, and the reason
+    /// [`FILE_SIZE_OFFSET`] moved from 27 to 25.
+    ///
+    /// Every fixture is a preset — 366, 364 or 1114 bytes — and each of those
+    /// fits in sixteen bits, so reading the size as a `u16be` at 27 and as a
+    /// `u32be` at 25 returns the same number for all 32 of them. The reading
+    /// was wrong the whole time and no fixture could say so.
+    ///
+    /// The witness that separated them is an **A4 project**: `/projects/1`
+    /// read off the box on 2026-08-29, 2,061,057 bytes, declaring 2,061,014.
+    /// The header below is that file's, verbatim through byte 31. Under the
+    /// old reading it declares **29,398** — `2_061_014 & 0xFFFF` — which is
+    /// not a truncation that announces itself: it is a plausible size for a
+    /// file.
+    ///
+    /// **The read is not what this would have broken.** `drive_read_file` ends
+    /// on a short chunk and never consults the declared size, which is why the
+    /// capture that exposed this is 2,061,057 correct bytes. It is the *parse*
+    /// layer that trusts the number — [`container_offset`] and
+    /// [`preset_load_payload`] both take their extent from it — so a project
+    /// would have been read whole off the box and then cut to its first 1.4%
+    /// by the first function to look at it.
+    ///
+    /// The capture is not committed as a fixture — it is two megabytes of
+    /// Neil's own project — so the header is transcribed here instead, which
+    /// is all the claim needs.
+    #[test]
+    fn a_payload_larger_than_a_u16_declares_its_whole_size() {
+        let header = hex(
+            "ac 11 d3 03 02 00 01 00 01 30 31 39 35 00 00 00 01 00 00 00              17 00 00 00 00 00 1f 72 d6 00 0c be ef ba ba",
+        );
+        assert_eq!(file_declared_size(&header), Some(2_061_014));
+        // The old reading, spelled out so it cannot come back by accident.
+        assert_ne!(file_declared_size(&header), Some(29_398));
+        // Header + payload + trailer accounts for the file the box sent, which
+        // is the arithmetic that made the disagreement visible in the first
+        // place.
+        assert_eq!(FILE_HEADER_LEN + 2_061_014 + FILE_TRAILER_LEN, 2_061_057);
+    }
+
     #[test]
     fn the_container_is_found_by_its_magic_and_both_magics_count() {
         // 36 on the digis, 31 on the A4 — and the A4's magic is BEEFBABA. A
@@ -1494,5 +1592,271 @@ mod file_read_tests {
         assert_eq!(container_offset(&a4), Some(31));
 
         assert_eq!(container_offset(&[0u8; 64]), None);
+    }
+}
+
+// ---------------------------------------------------------------------------
+// The write path: `0x57` WriteOpen, `0x58` Write, `0x59` WriteClose.
+//
+// **Every layout below was read off the wire, not derived.** On 2026-08-30 a
+// CoreMIDI spy captured Elektron's own Transfer 1.10.4 uploading one sound to
+// an Analog Four's `/soundbanks/P/1`, and these are that capture's bytes. The
+// preceding two days had put six candidate layouts to the box and got three
+// clean refusals and three hangs — the hangs each costing a power cycle — so
+// the argument for capturing rather than guessing is written into the history
+// of this file.
+//
+// What the guessing got right: `0x57` really is elk-herd's order, total length
+// then path. What it could not have got: the `0x58` body has **four** u32
+// fields in an order no gen-1 opcode uses, and its checksum has a final
+// inversion that no amount of sweeping would have found.
+// ---------------------------------------------------------------------------
+
+/// The checksum a `0x58` Write chunk carries.
+///
+/// `crc32` seeded with **zero** — which the source document does record — and
+/// then **inverted**, which it does not. The captured chunk's field reads
+/// `0xdf008194` where the plain zero-seeded value is `0x20ff7e6b`, and those
+/// are one's complements of each other.
+///
+/// That distinction is the whole reason this is not a `zlib::crc32` call:
+/// the standard function seeds with all-ones *and* inverts, so it agrees with
+/// neither. Getting it wrong is not a silent corruption — the box answers
+/// `Invalid package checksum; corrupt transfer` — but it is unguessable, and
+/// it is the single most likely reason a reimplementation of this API stalls.
+pub fn write_chunk_checksum(data: &[u8]) -> u32 {
+    let mut crc: u32 = 0;
+    for b in data {
+        crc ^= *b as u32;
+        for _ in 0..8 {
+            crc = if crc & 1 != 0 { (crc >> 1) ^ 0xEDB8_8320 } else { crc >> 1 };
+        }
+    }
+    !crc
+}
+
+/// Build a `0x57` WriteOpen body: the file's total length, then the path.
+///
+/// The length is declared up front and the box holds it: [`parse_write_close_reply`]
+/// echoes it back at commit time, which is what makes a short transfer
+/// detectable rather than silently committed.
+pub fn write_open_request_args(path: &str, total_len: u32) -> Result<Vec<u8>, DriveError> {
+    if !path.is_ascii() || path.contains('\0') {
+        return Err(DriveError::UnsendablePath(path.to_string()));
+    }
+    let mut args = total_len.to_be_bytes().to_vec();
+    args.extend_from_slice(path.as_bytes());
+    args.push(0);
+    Ok(args)
+}
+
+/// Build a `0x58` Write body: `fd`, the chunk's **byte offset**, its checksum,
+/// its length, then the data.
+///
+/// **The offset field is the one that has cost the most.** Sending anything but
+/// `0` in it for a first chunk earns `Invalid sequence number` — the box's own
+/// wording, which is why two days of probing read it as a sequence counter and
+/// tried `1` there. The capture shows Transfer sending `0`, and the reply
+/// echoes it, so for a single-chunk write it is unambiguously zero.
+///
+/// Whether a second chunk wants `chunk_len` (a byte offset) or `1` (a sequence
+/// number) is **not settled by that capture** — Transfer's upload fitted in one
+/// chunk, so both readings predict the same single value. It is named `offset`
+/// here because that is what elk-herd's gen-1 `0x42` carries in the same slot,
+/// and because the reply calls it back rather than counting it. Anything
+/// multi-chunk must confirm it against a box before it is trusted; see
+/// PLAN.md §10.5.
+pub fn write_chunk_request_args(fd: u32, offset: u32, data: &[u8]) -> Vec<u8> {
+    let mut args = Vec::with_capacity(16 + data.len());
+    args.extend_from_slice(&fd.to_be_bytes());
+    args.extend_from_slice(&offset.to_be_bytes());
+    args.extend_from_slice(&write_chunk_checksum(data).to_be_bytes());
+    args.extend_from_slice(&(data.len() as u32).to_be_bytes());
+    args.extend_from_slice(data);
+    args
+}
+
+/// Build a `0x59` WriteClose body: `fd`, then `1`.
+///
+/// **The second field is not the total length**, which is what symmetry with
+/// `0x56` Close suggested and what this codebase assumed until the capture.
+/// Transfer sends a literal `1` for a one-chunk file and the box replies with
+/// the total length it accepted. Whether the `1` is a commit flag or a chunk
+/// count is exactly the question a multi-chunk capture would answer, and it is
+/// the same unknown as the offset field above — so it is spelled as a named
+/// argument rather than hidden as a constant.
+pub fn write_close_request_args(fd: u32, chunks: u32) -> Vec<u8> {
+    let mut args = fd.to_be_bytes().to_vec();
+    args.extend_from_slice(&chunks.to_be_bytes());
+    args
+}
+
+/// The `fd` a `0x57` WriteOpen hands back.
+pub fn parse_write_open_reply(args: &[u8]) -> Result<u32, DriveError> {
+    check_ok(args, "WriteOpen")?;
+    need_u32(args, 1)
+}
+
+/// What a `0x58` Write reports: the handle, the offset it echoes, and how many
+/// bytes it took.
+///
+/// The byte count is checked by the caller against what was sent — a chunk the
+/// box accepts but shortens is the failure mode a length-declaring protocol
+/// exists to make visible.
+pub fn parse_write_reply(args: &[u8]) -> Result<(u32, u32, u32), DriveError> {
+    check_ok(args, "Write")?;
+    Ok((need_u32(args, 1)?, need_u32(args, 5)?, need_u32(args, 9)?))
+}
+
+/// What a `0x59` WriteClose reports: the handle and the total length committed.
+pub fn parse_write_close_reply(args: &[u8]) -> Result<(u32, u32), DriveError> {
+    check_ok(args, "WriteClose")?;
+    Ok((need_u32(args, 1)?, need_u32(args, 5)?))
+}
+
+#[cfg(test)]
+mod write_tests {
+    use super::*;
+
+    /// The Transfer 1.10.4 capture, byte for byte. Every number here was read
+    /// off the wire on 2026-08-30 and none of it is inferred.
+    ///
+    /// `/soundbanks/P/1` on an Analog Four, one 373-byte file, one chunk.
+    #[test]
+    fn the_captured_write_round_trips_through_these_builders() {
+        const TOTAL: u32 = 373;
+        const FD: u32 = 1;
+
+        // 0x57 — u32be total length, then the NUL-terminated path.
+        assert_eq!(
+            write_open_request_args("/soundbanks/P/1", TOTAL).unwrap(),
+            b"\x00\x00\x01\x75/soundbanks/P/1\x00".to_vec()
+        );
+        // Its reply carried the handle and nothing else.
+        assert_eq!(parse_write_open_reply(&[0x01, 0, 0, 0, 1]).unwrap(), FD);
+
+        // 0x58 — the first sixteen bytes of the captured body.
+        let data = [0xACu8, 0x11, 0xD3, 0x03];
+        let args = write_chunk_request_args(FD, 0, &data);
+        assert_eq!(&args[0..4], &[0, 0, 0, 1], "fd");
+        assert_eq!(&args[4..8], &[0, 0, 0, 0], "offset — zero for a first chunk");
+        assert_eq!(&args[12..16], &[0, 0, 0, 4], "chunk length");
+        assert_eq!(&args[16..], &data, "then the data, unencoded");
+
+        // Its reply: ok, fd, the offset echoed, the byte count taken.
+        let reply = [0x01, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0x01, 0x75];
+        assert_eq!(parse_write_reply(&reply).unwrap(), (FD, 0, TOTAL));
+
+        // 0x59 — fd then 1. NOT fd then total length.
+        assert_eq!(write_close_request_args(FD, 1), vec![0, 0, 0, 1, 0, 0, 0, 1]);
+        let reply = [0x01, 0, 0, 0, 1, 0, 0, 0x01, 0x75];
+        assert_eq!(parse_write_close_reply(&reply).unwrap(), (FD, TOTAL));
+    }
+
+    /// The checksum, against the captured chunk's own field.
+    ///
+    /// The payload is not committed here — it is Neil's sound — so the value
+    /// pinned is the relationship the capture proves: the box's checksum is the
+    /// zero-seeded CRC **inverted**, and neither the plain zero-seeded value
+    /// nor a standard `crc32` matches it.
+    #[test]
+    fn the_chunk_checksum_is_a_zero_seeded_crc_that_is_then_inverted() {
+        // A worked example this file can carry: the same relationship on bytes
+        // anyone can reproduce.
+        let plain = {
+            let mut crc: u32 = 0;
+            for b in b"digi-roll-studio" {
+                crc ^= *b as u32;
+                for _ in 0..8 {
+                    crc = if crc & 1 != 0 { (crc >> 1) ^ 0xEDB8_8320 } else { crc >> 1 };
+                }
+            }
+            crc
+        };
+        assert_eq!(write_chunk_checksum(b"digi-roll-studio"), !plain);
+        assert_ne!(write_chunk_checksum(b"digi-roll-studio"), plain);
+
+        // And the captured pair, which is the actual evidence: the A4's field
+        // read 0xdf008194 where the uninverted CRC of the same chunk was
+        // 0x20ff7e6b.
+        assert_eq!(!0x20ff_7e6bu32, 0xdf00_8194u32);
+    }
+
+    #[test]
+    fn a_non_ascii_path_is_refused_before_it_reaches_a_box() {
+        assert!(matches!(
+            write_open_request_args("/soundbanks/P/påsk", 10),
+            Err(DriveError::UnsendablePath(_))
+        ));
+    }
+}
+
+/// Where a +Drive file records the **bank** it lives in, zero-based.
+///
+/// The box stamps this itself at commit time; it is not something a writer
+/// supplies. See [`differs_only_by_location`].
+pub const FILE_BANK_OFFSET: usize = 23;
+
+/// Where a +Drive file records its **slot**, zero-based. Sits directly after
+/// [`FILE_BANK_OFFSET`].
+pub const FILE_SLOT_OFFSET: usize = 24;
+
+/// The bank and slot a file says it occupies, both zero-based.
+pub fn file_location(file: &[u8]) -> Option<(u8, u8)> {
+    Some((*file.get(FILE_BANK_OFFSET)?, *file.get(FILE_SLOT_OFFSET)?))
+}
+
+/// Whether two files are the same but for the box's own location stamp.
+///
+/// **This is what a correct write looks like, not a tolerance.** Reading a file
+/// out of one slot and writing it to another and then reading it back yields
+/// bytes that differ in exactly two places, because the box rewrites the file's
+/// own idea of where it lives. Verified twice on an Analog Four on 2026-08-30:
+/// `/soundbanks/A/1` written to `/soundbanks/P/2` read back with `(0x0f, 0x01)`
+/// where the source had `(0x00, 0x00)`, and the same source written to
+/// `/soundbanks/P/5` read back `(0x0f, 0x04)` — bank `P` is the sixteenth, and
+/// slots 2 and 5 are 1 and 4 counting from zero.
+///
+/// A round-trip check that demands byte equality will therefore fail on a
+/// perfectly good write, and one that ignores whole-file differences will miss
+/// a real corruption. This splits the two.
+pub fn differs_only_by_location(written: &[u8], read_back: &[u8]) -> bool {
+    if written.len() != read_back.len() || written.len() <= FILE_SLOT_OFFSET {
+        return false;
+    }
+    written.iter().zip(read_back).enumerate().all(|(i, (a, b))| {
+        a == b || i == FILE_BANK_OFFSET || i == FILE_SLOT_OFFSET
+    })
+}
+
+#[cfg(test)]
+mod location_tests {
+    use super::*;
+
+    /// The two hardware round-trips of 2026-08-30, as arithmetic.
+    #[test]
+    fn a_write_to_another_slot_differs_only_where_the_box_stamps_it() {
+        let mut source = vec![0u8; 409];
+        source[FILE_BANK_OFFSET] = 0x00; // /soundbanks/A
+        source[FILE_SLOT_OFFSET] = 0x00; // slot 1
+
+        let mut at_p2 = source.clone();
+        at_p2[FILE_BANK_OFFSET] = 0x0f; // P is the sixteenth bank
+        at_p2[FILE_SLOT_OFFSET] = 0x01; // slot 2, zero-based
+        assert!(differs_only_by_location(&source, &at_p2));
+        assert_eq!(file_location(&at_p2), Some((0x0f, 0x01)));
+
+        let mut at_p5 = source.clone();
+        at_p5[FILE_BANK_OFFSET] = 0x0f;
+        at_p5[FILE_SLOT_OFFSET] = 0x04; // slot 5, zero-based
+        assert!(differs_only_by_location(&source, &at_p5));
+
+        // A real corruption is still caught: one byte anywhere else fails.
+        let mut corrupt = at_p5.clone();
+        corrupt[100] ^= 0xff;
+        assert!(!differs_only_by_location(&source, &corrupt));
+
+        // So is a truncation.
+        assert!(!differs_only_by_location(&source, &at_p5[..408]));
     }
 }

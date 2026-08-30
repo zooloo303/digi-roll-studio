@@ -55,7 +55,12 @@ fn main() {
                     // counted (checked inside `drive_read_file`). Agreement
                     // across all three is the claim being made here.
                     let declared = file_declared_size(&file);
-                    let agree = declared == Some(listed as u16);
+                    // Compared as `u32`, not `u16`. The cast that used to be
+                    // here truncated the *listing's* size to sixteen bits as
+                    // well, so both sides of this comparison lost the same high
+                    // half and agreed no matter what — the check could not have
+                    // failed on any file big enough to need it.
+                    let agree = declared == Some(listed);
                     println!(
                         "  {path:<18} {:>5}b read  header says {:?}  listing said {listed}  {}",
                         file.len(),

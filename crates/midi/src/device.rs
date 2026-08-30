@@ -44,10 +44,14 @@ use digi_protocol::device::{
     parse_version_response, DeviceError, DeviceIdentity,
 };
 use digi_protocol::drive::{
-    assert_read_only_file_op, dir_list_args, list_request_args, parse_dir_list,
+    assert_read_only_file_op, assert_write_file_op, dir_list_args, list_request_args,
+    parse_dir_list,
     close_request_args, open_request_args, parse_close_reply, parse_list_reply,
     parse_open_reply, parse_read_reply, read_request_args, DirEntry, DriveError, ListReply,
-    API_DIR_LIST, API_FILE_CLOSE, API_FILE_LIST, API_FILE_OPEN, API_FILE_READ, READ_CHUNK,
+    parse_write_close_reply, parse_write_open_reply, parse_write_reply,
+    write_chunk_request_args, write_close_request_args, write_open_request_args,
+    API_DIR_LIST, API_FILE_CLOSE, API_FILE_LIST, API_FILE_OPEN, API_FILE_READ,
+    API_FILE_WRITE, API_FILE_WRITE_CLOSE, API_FILE_WRITE_OPEN, READ_CHUNK,
 };
 use digi_protocol::query::{parse_query_reply, query_args, QueryValue, API_QUERY};
 use digi_protocol::protocol::{
@@ -81,6 +85,14 @@ const FIRST_CHUNK_SEQ: u32 = 1;
 /// larger than any +Drive file; it exists so a box that never says stop costs a
 /// bounded error instead of an unbounded loop.
 const MAX_CHUNKS: u32 = 4096;
+
+/// The largest single `0x58` Write chunk this code will send.
+///
+/// Elektron's Transfer was captured sending a whole 373-byte file in one chunk,
+/// and the source document reports a 16,384-byte chunk committing and reading
+/// back byte-exact. 16 KiB is therefore the largest single chunk anyone has
+/// seen work, and this refuses to guess past it.
+const WRITE_CHUNK: u32 = 16_384;
 
 /// **A single `midir` send cannot carry a whole pattern-kit dump, and failing at
 /// it is silent.** Measured on this Mac against a virtual port, 2026-08-18:
@@ -724,6 +736,102 @@ impl ElektronDevice {
     pub fn drive_file_request(&mut self, api_id: u8, args: &[u8]) -> Result<Vec<u8>, MidiError> {
         assert_read_only_file_op(api_id).map_err(|e| MidiError::Send(e.to_string()))?;
         self.request(api_id, args)
+    }
+
+    /// The write counterpart to [`Self::drive_file_request`]: put bytes on the
+    /// wire under `0x57`/`0x58`/`0x59` and hand back what came home.
+    ///
+    /// **This is a probe primitive and it writes.** It exists because the
+    /// source document names WriteOpen/Write/WriteClose and specifies none of
+    /// their bodies, so the layout has to be derived from real replies exactly
+    /// as `probe_drive_read.rs` derived the read side's — and a derivation
+    /// needs a way to send a candidate and read the refusal.
+    ///
+    /// **Guarded by [`assert_write_file_op`], which is a different allowlist
+    /// from the read-only one and not a relaxation of it.** It admits three
+    /// opcodes. It cannot send `0x5A` Move, `0x5B` Copy or `0x5C` **Delete**,
+    /// however it is called, and neither can anything else in this crate.
+    ///
+    /// **What makes probing with this safe is `0x59`.** Nothing a `0x58`
+    /// carries reaches the +Drive until WriteClose is acknowledged, so a run
+    /// that stops short — or one whose chunks are refused — leaves the target
+    /// slot exactly as it found it. Probe against a slot the listing reports
+    /// unoccupied and the worst case is a refusal.
+    /// **Sent once. Writes are not retried, and that is deliberate.**
+    ///
+    /// [`Self::request`] re-sends an unanswered request `REQUEST_RETRIES` more
+    /// times, which is right for every read in this file: asking twice for the
+    /// same chunk of the same file costs a round trip and nothing else. A
+    /// **write chunk is not idempotent.** If the box took `seq = 1`, committed
+    /// it, and its reply was slow or lost, the retry delivers `seq = 1` a
+    /// second and third time to a transfer that has already moved past it.
+    ///
+    /// That is not hypothetical: on 2026-08-29 every `0x58` that went
+    /// unanswered on an A4 had been sent three times by the time the error
+    /// surfaced, and each of those runs left the box unable to answer even
+    /// `0x01` Device until it was power-cycled. One attempt, and a timeout is
+    /// reported as a timeout.
+    pub fn drive_write_request(&mut self, api_id: u8, args: &[u8]) -> Result<Vec<u8>, MidiError> {
+        assert_write_file_op(api_id).map_err(|e| MidiError::Send(e.to_string()))?;
+        self.request_once(api_id, args)
+    }
+
+    /// Write one whole file to the +Drive: `0x57` WriteOpen, `0x58` Write,
+    /// `0x59` WriteClose. Returns the byte count the box says it committed.
+    ///
+    /// **`0x59` is the commit.** Every failure path below returns before it, so
+    /// a refused chunk leaves the target slot exactly as it was rather than
+    /// half-written. That is a property of the protocol, not of this function
+    /// being careful, and it is why the probe that derived these layouts could
+    /// sweep candidates against a real +Drive without damaging it.
+    ///
+    /// **Single-chunk only, deliberately.** The capture these layouts came from
+    /// was a 373-byte file that fitted in one chunk, so a first chunk's offset
+    /// of `0` is the only value any evidence covers. Multi-chunk needs to know
+    /// whether the second chunk's field is a byte offset or a sequence number,
+    /// and the two readings are indistinguishable at one chunk — so rather than
+    /// pick one and ship a silent corruption, anything larger is refused here
+    /// and `probe_drive_write --multi` is the thing that settles it.
+    ///
+    /// The limit is [`WRITE_CHUNK`], which is what a single chunk has been seen
+    /// to carry, not a number this end chose.
+    pub fn drive_write_file(&mut self, path: &str, data: &[u8]) -> Result<u32, MidiError> {
+        let drive_err = |e: DriveError| MidiError::Send(e.to_string());
+        if data.len() > WRITE_CHUNK as usize {
+            return Err(MidiError::Send(format!(
+                "{path}: {} bytes needs a multi-chunk write, and the chunk field's meaning \
+                 past the first chunk is unverified — see drive_write_file's doc",
+                data.len()
+            )));
+        }
+        let total = data.len() as u32;
+
+        let args = write_open_request_args(path, total).map_err(drive_err)?;
+        let fd = parse_write_open_reply(&self.drive_write_request(API_FILE_WRITE_OPEN, &args)?)
+            .map_err(drive_err)?;
+
+        let args = write_chunk_request_args(fd, 0, data);
+        let (_, _, took) =
+            parse_write_reply(&self.drive_write_request(API_FILE_WRITE, &args)?).map_err(drive_err)?;
+        // A box that accepts a chunk but shortens it is exactly what declaring
+        // the length up front exists to catch. Returning before the commit
+        // leaves the slot untouched.
+        if took != total {
+            return Err(MidiError::Send(format!(
+                "{path}: sent {total} bytes but the box took {took} — not committing"
+            )));
+        }
+
+        let args = write_close_request_args(fd, 1);
+        let (_, committed) =
+            parse_write_close_reply(&self.drive_write_request(API_FILE_WRITE_CLOSE, &args)?)
+                .map_err(drive_err)?;
+        if committed != total {
+            return Err(MidiError::Send(format!(
+                "{path}: committed {committed} bytes, expected {total}"
+            )));
+        }
+        Ok(committed)
     }
 
     /// Read one whole file off the +Drive: `0x54` Open, `0x55` Read until the

@@ -1622,6 +1622,17 @@ works on both digis and, again, not on the A4.
 Every file is `declared + 43` bytes on all three boxes, declared being the size
 at +27.
 
+> **`+27` as a `u16` was right for all 24 and still wrong.** Corrected
+> 2026-08-30. The field is a **`u32be` at +25**; the low half of it is the `u16`
+> at +27, and every capture here — 366, 364, 1114 — fits in sixteen bits, so no
+> fixture could tell the two readings apart. An **A4 project** did: `/projects/1`
+> is 2,061,057 bytes declaring 2,061,014, and the old reading returns **29,398**.
+> The header also now reads end to end with nothing spare — payload `u32be` at
+> 25, trailer length `u16be` at 29, header ends at 31 — where the old reading
+> left two unexplained bytes at 25. `a_payload_larger_than_a_u16_declares_its_whole_size`
+> pins it, and names the project capture in its own body precisely because the
+> committed fixtures cannot fail it.
+
 ### The 43 bytes, and a correction — 2026-08-29, same captures
 
 The line above was as far as measuring got the first time, and reading it as
@@ -1910,6 +1921,84 @@ Note also that `write_gate` keys on an OS-build allowlist, so loading is refused
 any build not yet write-verified. That is correct and should stay; the panel needs
 to explain it rather than grey out silently.
 
+### A whole project read off an A4 — 2026-08-30, A4 0195
+
+The first time anything here read a +Drive **project**, and the first real
+exercise of `drive_read_file`'s multi-chunk loop: every one of the fifteen files
+that path was verified on in August was a preset that fitted a **single** 4 KB
+chunk, so the sequence check and the short-chunk terminator had never run at
+length against hardware.
+
+`/projects/1`, **2,061,057 bytes in ~8 s** — about 503 chunks, no stalls, no
+sequence errors. Read **four times**: twice before a power cut, once after it,
+and once after Neil factory-reset the box. All four agree on
+`fnv1a64 = 0x578814f25ffddb84`, which also settles that the slot's `PRESETS`
+project is Elektron's factory one rather than anything of Neil's.
+
+Two structural facts, from `capture_drive_project.rs`:
+
+- **The listing's size is an allocation, not a length.** `/projects` reports
+  2,097,152 for the slot — exactly 2 MiB — where the file is 2,061,057. Presets
+  do not behave this way (their listing size is the file size exactly), so
+  "listing size == file size" is a fact about small files and not about the API.
+- **The container is the same one presets use.** `FILE_MAGIC` at 0, the OS build
+  that wrote it at +9 (`0195`), the project name at payload+8, and 645
+  `BEEFBABA` containers — one at payload+0, then **161 groups of four** from
+  1,673,702 onward at a 2,410-byte group stride, four synth tracks to a group,
+  every one of them named. The first 1.6 MB carries no container at all.
+
+### The +Drive write path, captured and verified — 2026-08-30, A4 0195
+
+**Writing works.** Three files written to an Analog Four's `/soundbanks/P` and
+read back, each identical to its source but for two bytes the box stamps itself.
+The layouts were not derived; they were **read off the wire from Elektron's own
+Transfer 1.10.4**, and the two days before that are the argument for why.
+
+**What guessing bought, and what it cost.** Six candidate `0x58` bodies were put
+to the box on 2026-08-29. Three earned a clean refusal (`Invalid sequence
+number`) and three earned silence — and on this box **a body it cannot parse
+takes down the whole SysEx API**, not just the file layer: it stops answering
+`0x01` Device while a DT2 and a DN2 on the same bus answer normally, and it
+needs a power cycle. Four power cycles produced three true facts (`0x57` is
+elk-herd's order; the body has a length field; a refused chunk tears the
+transfer down) and no working write. That hazard is not in any document and is
+now in `probe_drive_write.rs`'s header, because "the box went offline" is the
+wrong conclusion to draw from it.
+
+**One capture settled all of it.** A CoreMIDI spy on `To Elektron Analog Four`
+while Transfer uploaded one sound — 502 messages, of which exactly one `0x57`,
+one `0x58` and one `0x59`:
+
+```text
+  0x57 WriteOpen   u32be total-len, path\0            -> ok, u32be fd
+  0x58 Write       u32be fd, u32be offset, u32be crc,
+                   u32be chunk-len, data              -> ok, fd, offset, taken
+  0x59 WriteClose  u32be fd, u32be 1                  -> ok, fd, total-len
+```
+
+Three things no sweep would have reached. The body has **four** u32 fields, in
+an order no gen-1 opcode uses. `0x59`'s second field is **not** the total length
+— symmetry with `0x56` Close says it should be, and it is a literal `1`. And the
+checksum is a zero-seeded CRC32 that is **then inverted**: the captured field
+read `0xdf008194` where the plain zero-seeded value is `0x20ff7e6b`. The source
+document records the zero seed and not the inversion, which is the likeliest
+single reason its multi-chunk writes were refused on checksum.
+
+**The two bytes that differ are the box doing its job.** A file carries its own
+bank and slot at `+23` and `+24`, zero-based, and the box rewrites them at
+commit. `/soundbanks/A/1` written to `P/2` read back `(0x0f, 0x01)`; the same
+source to `P/5` read back `(0x0f, 0x04)`; `A/3` to `P/9` read back `(0x0f,
+0x08)`. `drive::differs_only_by_location` is the check that accepts exactly that
+and still catches a corruption or a truncation.
+
+**Still single-chunk only, and deliberately.** Transfer's upload was 373 bytes
+and fitted one chunk, so `offset = 0` is the only value any evidence covers —
+and at one chunk a byte offset and a sequence number are indistinguishable.
+`drive_write_file` refuses anything over 16 KiB rather than pick one and ship a
+silent corruption. Settling it wants a capture of Transfer writing a *large*
+file, which is the same ask as before and now a much cheaper one, because the
+capture rig exists.
+
 ### 10.5 What saving a kit will cost, when it comes
 
 Recorded now so v2 starts from evidence:
@@ -1918,22 +2007,32 @@ Recorded now so v2 starts from evidence:
   both failed with `Invalid package checksum; corrupt transfer`, under every
   checksum variant tried. Chunk *count* is the failing variable, not size. One
   16,384-byte chunk committed and read back byte-exact.
+
+  > **"Every checksum variant tried" did not include the right one.** The 2026-08-30
+  > capture shows the box's checksum is a zero-seeded CRC32 **inverted**, which
+  > is neither the plain zero-seeded value the document names nor a standard
+  > `crc32`. Whether that alone explains the multi-chunk failures is untested —
+  > the offset field's meaning past chunk one is still unknown — but the
+  > checksum can no longer be treated as ruled out.
 - A DN2 kit is **10,795 bytes** and fits that single chunk. A DT2 kit is roughly
   17.8 KB and does not. So DN2 kit saving is reachable on today's knowledge and
   DT2 kit saving is blocked on a reverse-engineering problem with no timeline —
   settling it wants a capture of Transfer writing a multi-chunk file.
-- `assert_read_only_file_op` will have to admit `0x57`/`0x58`/`0x59`. It currently
-  admits List/Open/Read/Close and the module doc justifies that by saying there is
-  no kit-builder reason to mutate a +Drive. **That sentence stops being true in
-  v2**, and the guard should be widened deliberately, opcode by opcode, with
-  `0x5A` Move, `0x5B` Copy and `0x5C` **Delete** still refused. The safety property
-  in this namespace is the allowlist and nothing else.
+- ~~`assert_read_only_file_op` will have to admit `0x57`/`0x58`/`0x59`.~~ **Done
+  differently, 2026-08-29:** it was not widened. `assert_write_file_op` is a
+  **second, disjoint** allowlist admitting exactly WriteOpen, Write and
+  WriteClose, and `drive_write_request` is the only path to it. `0x5A` Move,
+  `0x5B` Copy and `0x5C` **Delete** are unreachable from anywhere in the
+  workspace. Two allowlists rather than one wider one means a read path cannot
+  acquire a write by editing one line.
 - `0x59` WriteClose is the commit. Nothing lands without it, which makes an
   abandoned write harmless and is worth relying on.
 - Verify-after-write earns its keep here more than anywhere: a chunking bug that
-  silently truncates is exactly this API's failure mode. A stored kit stamps its
-  own slot index at container byte `+24`, so a correct copy into a different slot
-  legitimately differs in that one byte and a naive comparison will cry wolf.
+  silently truncates is exactly this API's failure mode. A stored file stamps its
+  own **bank and slot** at file bytes `+23` and `+24`, so a correct copy into a
+  different slot legitimately differs in those two bytes and a naive comparison
+  will cry wolf — measured three times on 2026-08-30, and
+  `drive::differs_only_by_location` is the check that reads it right.
 
 ### 10.6 Order of work
 
