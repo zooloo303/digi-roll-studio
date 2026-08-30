@@ -96,6 +96,52 @@ pub fn open_output_by_name(name: &str) -> Result<midir::MidiOutputConnection, Mi
         .map_err(|e| MidiError::Connect(e.to_string()))
 }
 
+/// Listen on one input port and collect whole SysEx frames for a fixed window.
+///
+/// Exists so an example can hear a box's *reply* without learning what `midir`
+/// is — this crate stays the only one that does, which is the rule the rest of
+/// this file is built on. Reassembly goes through `SysExReassembler` because a
+/// long dump does not arrive in one callback.
+///
+/// Returns whatever completed inside the window, including nothing. Silence is
+/// a real answer here: a box that declines a message often declines it quietly.
+pub fn capture_sysex(
+    name: &str,
+    window: std::time::Duration,
+) -> Result<Vec<Vec<u8>>, MidiError> {
+    use std::sync::{Arc, Mutex};
+
+    let mut midi_in = MidiInput::new(CLIENT_NAME)?;
+    // Default settings filter SysEx out, which would report every box as silent.
+    midi_in.ignore(midir::Ignore::None);
+    let port = midi_in
+        .ports()
+        .into_iter()
+        .find(|p| midi_in.port_name(p).as_deref() == Ok(name))
+        .ok_or_else(|| MidiError::PortNotFound(name.to_string()))?;
+
+    let frames: Arc<Mutex<Vec<Vec<u8>>>> = Arc::new(Mutex::new(Vec::new()));
+    let sink = Arc::clone(&frames);
+    let mut reasm = crate::sysex_stream::SysExReassembler::new();
+    let _conn = midi_in
+        .connect(
+            &port,
+            name,
+            move |_ts, bytes, _| {
+                let done = reasm.push(bytes);
+                if !done.is_empty() {
+                    sink.lock().unwrap().extend(done);
+                }
+            },
+            (),
+        )
+        .map_err(|e| MidiError::Connect(e.to_string()))?;
+
+    std::thread::sleep(window);
+    let out = frames.lock().unwrap().clone();
+    Ok(out)
+}
+
 /// Resolve a remembered binding against the ports present now: id first, then
 /// name. Returns `None` when the device is not plugged in.
 pub(crate) fn resolve_input(

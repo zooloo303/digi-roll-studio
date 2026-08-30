@@ -121,6 +121,36 @@ you deliberately want one, and they are ordered by what they can do to it.
   **A malformed write can take a box's whole SysEx API down** until it is
   power-cycled — see lesson 13. That is a property of the box, not of this
   example, but this is the file that can provoke it.
+- `python3 local/decode_mmon.py <capture.mmon>` — **reads a file, touches no
+  port.** Decodes a MIDI Monitor capture into raw SysEx messages and reports
+  framing rather than assuming it. `decode7(data, msb_first=)` takes the bit
+  order as a parameter because the two Elektron generations disagree on it —
+  lesson 14, and the reason that argument is not defaulted silently.
+
+  Capturing what a *box sends us* needs no spy driver; the spy exists for
+  watching what another **app** sends to a destination. Ticking only the spy
+  source when the box is the sender captures nothing and looks like a box that
+  did not answer.
+- `python3 local/a4_pattern.py show|diff|build|verify` — **`show`, `diff` and
+  `verify` read files and touch no port.** Reads an A4 gen-1 pattern dump into
+  its trig and note lanes, diffs two of them with every changed byte named, and
+  `build` edits one and emits a sendable `.syx`; `pool` prints the 128-lane
+  p-lock pool. `build` proves its encoder on
+  the source file first — the source must survive decode → encode unchanged —
+  rather than trusting a round-trip test written against other fixtures.
+- `cargo run -p digi_midi --example sysex_loopback` — **touches no hardware.**
+  Creates a virtual MIDI destination, sends to it and reassembles what arrives,
+  so both ends are this process. Sweeps sizes, or carries a named `.syx`, and
+  takes `--chunk` to exercise the paced delivery path. Separates "the bytes
+  never left intact" from "the box declined them" without a capture, a click or
+  a power cycle — see lesson 15.
+- `cargo run -p digi_roll_studio --example a4_pattern_send -- <file.syx>` —
+  **rehearses; opens no port.** Re-validates the file's framing, checksum,
+  length and payload from the bytes on disk and prints the trigs it would
+  write. `--send` **transmits**, after typed consent, and overwrites a pattern
+  slot on the box. The validation deliberately repeats what the Python builder
+  already did: the thing that must hold is not "the builder was correct" but
+  "these bytes are well-formed", and a file can change between the two.
 - `cargo run -p digi_engine --example jitter --release -- "<DT2>" "<DN2>"` —
   **sends** clock and notes for ten seconds, so a box on external clock will start
   playing. `--release` matters: a debug build measures the debug build.
@@ -700,6 +730,75 @@ search over the other two.
   wrong for a write chunk: a chunk the box took and answered slowly gets
   delivered twice more to a transfer that has moved past it. Every wedge had
   three identical writes behind it.
+
+### 14. A decode that produces structure is not a decode that is correct
+
+The A4's gen-1 SysEx packs seven-bit data **MSB-first** — the MSB byte's bit 6
+carries the first payload byte. `sevenbit.rs`, ported from elk-herd for the
+gen-2 boxes, runs bit 0 to byte 0. The A4 captures were decoded with the gen-2
+order for four rounds of analysis on 2026-08-30.
+
+**It never once looked wrong.** Region boundaries appeared, strides came out as
+round numbers, single-trig edits produced small localised diffs, and a track
+stride of 735 bytes was measured twice and agreed with itself. All of it was an
+artifact. The real stride is 751 and every offset derived in those rounds was
+wrong.
+
+- **Plausibility is not a witness, because a near-miss decode is still mostly
+  right.** Flipping one bit in eight leaves byte boundaries, zero runs and
+  repeat periods largely intact — which is exactly the evidence a structural
+  analysis feeds on. The error hides in the place you are looking.
+- **A constant is the arbiter.** `BEEFBABA` reads at offset 0 of an A4 sound
+  dump under one order and appears **nowhere in the file** under the other.
+  That is a yes/no question with no room to interpret, and it settled in one
+  command what four rounds of structure could not. Find the magic, the name,
+  the known-size field — anything the format *declares* — and check it before
+  measuring anything.
+- **The check was available from the first minute and was not run**, because
+  the decode was producing results and results feel like progress. The habit
+  worth building is to spend the first command on something falsifiable rather
+  than on the first interesting-looking histogram.
+- **Two generations of one manufacturer do not share a primitive.** The port
+  was correct for the boxes it was written for. Assuming it generalised to a
+  third box is §9's recurring shape again: the third box splits a rule that
+  read as one.
+
+### 15. A format is not a protocol — the rate is part of the contract
+
+The A4's first written pattern was refused in silence. The bytes were provably
+right: the message was byte-identical to one the box had itself emitted, checked
+by reconstructing it from a *different* dump. The port was right. A CoreMIDI
+loopback carried the same 14,843 bytes byte-exact. Everything checkable was
+checked, and the box did nothing.
+
+**It was delivered too fast.** DIN MIDI is 3,125 bytes a second, so this dump
+takes 4.75 seconds on a cable — the rate a 2013 box was built to receive at.
+USB delivers it in microseconds. Pacing the same frame at DIN rate worked
+first time.
+
+- **"Correct bytes" and "a message the device will accept" are different
+  claims**, and the first one is the one that is easy to prove. Every check
+  available was a check on *content*. None of them could see timing, so none of
+  them was ever going to fail.
+- **The oldest box tells you its rate.** A format reverse-engineered from a
+  device of a given era carries that era's assumptions about how fast data
+  arrives. That is not in the byte layout and no amount of staring at a dump
+  will reveal it.
+- **Do the arithmetic before the first attempt.** Baud rate over message size is
+  one division, and it would have predicted this before a byte was sent. It was
+  done afterwards, as a hypothesis, to explain a failure it should have
+  prevented.
+
+**And the process lesson, which is lesson 13 arriving again from the side.**
+When the send failed, the response was to reason about causes and build a fix
+for the most plausible one. That fix happened to be right, which is the least
+useful way to be right. Neil's question — "can't I just spy the Transfer app?" —
+was the better instinct, and it was the instinct this document already records
+as the thing that ended two days of guessing in 2026-08-30's earlier session.
+**Having written the lesson down is not the same as reaching for it.** The
+capture also paid immediately in a way the reasoning did not: it proved Transfer
+relays a raw `.syx` unchanged, which turned a debugging step into a second
+sender.
 
 ---
 

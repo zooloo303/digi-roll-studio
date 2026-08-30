@@ -7,7 +7,9 @@ pub mod preset_scan;
 pub mod sysex_stream;
 
 pub use device::{DumpResponse, ElektronDevice, KIT_TRACKS};
-pub use ports::{list_inputs, list_outputs, open_output_by_name, PortBinding, PortInfo};
+pub use ports::{
+    capture_sysex, list_inputs, list_outputs, open_output_by_name, PortBinding, PortInfo,
+};
 
 /// Re-exported so `engine` can hold an open output without depending on `midir`
 /// itself: this crate stays the only one that knows what the backend is.

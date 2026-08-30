@@ -775,6 +775,12 @@ re-run on them.
   read back identical but for the box's own location stamp. The write layouts
   came off a spy capture of Elektron's Transfer rather than out of a probe; see
   the two sections above for what the probing cost.
+- **The A4's pattern format, read rather than probed** — 2026-08-30, A4 0195.
+  Eight dumps off the box's own front-panel SysEx menu gave the gen-1 framing,
+  the checksum, the seven-bit order (**MSB-first**, opposite to the digis) and
+  the trig and note lanes, validated by decoding a pattern back into the
+  arpeggio a musician had played into it. The box had a pattern path the whole
+  time; this project had been reading its silence in the wrong namespace.
 - **v0.1.2 in real use** — 2026-08-22. The registers, the longer basslines and ↻
   were all reported from a stretch of playing rather than from a test, which is
   how the three of them came to be the release.
@@ -866,8 +872,17 @@ the failing variable regardless of size, and the checksum is crc32 seeded with
 - **A multi-chunk +Drive write.** Single-chunk is verified; everything above
   16 KiB is refused rather than guessed, so no project has ever been written
   back to a box. This is what stands between the A4 and whole-project backup
-  and restore — and, because the A4 exposes no pattern path and answers no
-  `0x6x`, between it and writing a pattern by any route at all.
+  and restore, and between the DT2 and kit saving.
+
+  > It is **not** what stands between the A4 and a pattern write, which this
+  > bullet used to claim on the grounds that the box answers no `0x6x`. It has
+  > a gen-1 SysEx dump path off its own front panel, captured and decoded
+  > 2026-08-30 — see §10's entry. The `0x6x` absence is real and means only
+  > that the A4 is not on the gen-2 dump protocol.
+- **Sending anything to an A4 over gen-1 SysEx.** The pattern and sound dump
+  formats are decoded from eight captures and the checksum can be recomputed,
+  so a valid message can be *built*. None has been *sent*, and this is the box
+  that needs a power cycle after a body it cannot parse.
 - **"Read patch names" on the *second* box.** One box answered on 2026-08-22 and
   the other has not been tried, so `NotThisBox` and the DT2/DN2 difference in kit
   layout are still fake-only.
@@ -2032,6 +2047,263 @@ and at one chunk a byte offset and a sequence number are indistinguishable.
 silent corruption. Settling it wants a capture of Transfer writing a *large*
 file, which is the same ask as before and now a much cheaper one, because the
 capture rig exists.
+
+### The A4 has a pattern path after all — 2026-08-30, A4 0195
+
+**"The A4 exposes no pattern path and answers no `0x6x`" was a true sentence
+about the wrong namespace.** The box's supported-opcode reply lists `50`–`5e`
+and no `0x6x`, and this document read that as *the A4 cannot transfer a
+pattern*. What it actually establishes is that the A4 is not on the **gen-2
+dump protocol** — which is the only one elk-herd documents, and the only one
+this codebase could speak. The A4 is a 2013 box and has a **SysEx Dump menu on
+its own front panel**: send and receive for pattern, kit, sound, pattern+kit.
+Neil confirmed it in about a minute, after two sections of this plan had been
+written on the assumption it did not exist.
+
+That is lesson 11 for the fourth time, and the most expensive shape of it yet:
+absence of the *other* generation's opcode read as absence of the capability.
+The `0x10` DirList sweep, the `0x6x` dump sweep and the `BACEF00C` foot magic
+are the other three.
+
+**Nothing was probed. Eight dumps were captured and read.** The rig is the one
+lesson 13 built, minus a step: the spy driver exists to watch what another app
+*sends*, and here the box is the sender, so an ordinary MIDI Monitor source is
+enough. `local/decode_mmon.py` decodes the `.mmon` and the captures are in
+`local/a4-check/`.
+
+#### The framing, verified on all eight captures
+
+```text
+00 20 3C   Elektron manufacturer id
+06         product byte for the A4      — the identity API calls this box 4
+00         device id
+54 / 53    message type: 0x54 pattern, 0x53 sound
+01 01      constant across every capture, unidentified
+NN         slot index, zero-based       — A01 -> 0, A16 -> 15, Sound 01 -> 0
+...        payload, seven-bit packed
+CC CC      checksum: 14-bit sum from offset 9, two 7-bit bytes
+LL LL      length: total - 8
+```
+
+Checksum and length verify on all eight, across both message types and sizes
+two orders of magnitude apart (413 bytes and 14,841). **We can therefore emit a
+message the box's own checksum will accept**, which is what makes this a write
+path rather than a read format.
+
+**The slot byte is why the checksum's start was nearly recorded wrong.** A01 has
+`b[8] = 0`, so summing from 8 and from 9 give the same answer and one capture
+cannot separate them. A16 has `b[8] = 15` and separates them immediately. The
+length field has the mirror problem — every pattern is the same size, so only
+the 413-byte *sound* dump could settle that it counts `total - 8`. Two of the
+five facts above exist because the capture set varied along an axis the
+question did not obviously need, which is §12's finding restated.
+
+#### The seven-bit packing runs the other way
+
+**The A4's gen-1 packing is MSB-first** — the MSB byte's bit 6 carries the
+*first* payload byte. `sevenbit.rs`, ported from elk-herd for the gen-2 boxes,
+runs bit 0 to byte 0. A decoder must take the order as a parameter; the two
+generations do not share it.
+
+The wrong order survived four rounds of analysis here, because it produces bytes
+that look entirely plausible — offsets, strides and diffs all read as structure.
+What caught it was a **constant**: `BEEFBABA` sits at offset 0 of the sound dump
+under MSB-first and appears nowhere at all under the other reading. Every byte
+offset derived before that check was wrong, and none of them looked it.
+
+#### The pattern layout
+
+A pattern payload unpacks to **12,974 bytes**, and that number arrives twice
+from unrelated directions: it is the decoded length of a SysEx pattern dump, and
+it is the measured stride of `/projects/1`'s leading 1.67 MB (best lag 12,974,
+correlation 0.83 — see the project-read entry above, whose 13,076 estimate was
+arithmetic and is superseded). **The SysEx dump and the project file's pattern
+record are the same object.** The first 1.6 MB of an A4 project is its pattern
+array; the `BEEFBABA` containers from 1,673,702 onward are the sound pool.
+
+- **Six tracks of 751 bytes, from offset 4** — 4,506 bytes, then the payload
+  goes sparse. Four synth tracks, FX and CV. Confirmed three ways: the non-zero
+  density falls off a cliff at that boundary; a trig added to track 2 landed at
+  `4 + 751`; and A01 shows content in blocks 0 and 3 alone.
+- **Trigs: two bytes per step, 64 steps, at track base + 0.** Step 1 at +0,
+  step 2 at +2, step 17 at +32 — measured, one capture each, all three from a
+  cleared pattern. **Bit 0 of the first byte is the trig.** The second byte
+  reads `0xc1` on a trigged step.
+- **Notes: one byte per step, 64 steps, at track base + 128.** Step 1 at +128,
+  step 2 at +129, step 17 at +144. `0xff` is no note; a fresh trig gets `0x30`.
+
+> **The note names in this section are one octave low.** The A4 displays `0x30`
+> as **C4**; this document was written under the `60 = C4` convention, which is
+> not this box's. Confirmed 2026-08-30 by writing `0x30` and reading the box's
+> own screen — so the correction comes from the hardware, not from a second
+> opinion about conventions. `note_name` in `local/a4_pattern.py` is fixed.
+> Intervals are unaffected, so the validation argument below still holds; only
+> the labels were wrong.
+
+**Validated end to end against A01 rather than against the fixtures that
+produced it.** Decoding A01's track 1 under this layout gives 32 trigs on every
+odd step carrying `A3 A4 A5 / A3 A4 A5 / A3 A4 G5 / G3 G4 G5 …` — an arpeggio
+with a chord change, which is a musician's pattern and not a plausible-looking
+byte run. Track 4 gives 19 trigs whose note lane is `0xff` except at steps 1,
+17, 33 and 49, where it reads `A3 G3 D3 F3`: the roots, on the bar lines, of the
+progression track 1 is playing. A layout that reproduces musical sense it was
+not fitted to is being believed for the right reason.
+
+#### What the captures already settle — 2026-08-30, second pass
+
+Four of the five open items below moved without a new capture, by asking the
+existing eight the right question. `local/a4_pattern.py` is the tool; PLAN's
+own §12 finding again, that a capture set varying along an unasked axis answers
+questions later.
+
+- **The second trig byte's bit 0 marks a note trig.** Across all 51 trigs in
+  A01, `byte1 & 1` is set on exactly the steps whose note lane is not `0xff` —
+  51 of 51, no exceptions, on two tracks. `0xc0` is a trigless trig and `0xc1`
+  carries a note. **Still worth the deliberate capture**, because A01 cannot
+  separate "bit 0 means note" from "bit 0 is derived from the note lane", and
+  those differ the moment we write one.
+- **The first byte's `0x08` is positional, not state.** In an empty pattern the
+  trig lane's first byte reads `00 08 00 08 …` for all 64 steps: bit 3 is set on
+  even steps and clear on odd ones, in a pattern with nothing in it. So it
+  carries no per-step information and a write must preserve it — `|= 0x01`, not
+  `= 0x01`.
+- **Track base + 448 is the per-track default note.** One byte per track, not
+  four bytes once. In the two captures where a fresh trig's note came out `0x3c`
+  and `0x3e`, those are exactly what tracks 1 and 2 already held at +448; in the
+  three where +448 had been set to `0x30`, the fresh trig came out `0x30`. A
+  fresh trig takes its note from this byte.
+- **Byte 12,962 tracks the slot index.** `0xff` in the never-saved A16 dump and
+  `0x0f` — which is A16 — in every dump taken after the pattern was saved.
+- **The receive direction.** Closed the same day — see "The A4 takes a written
+  pattern" below.
+
+#### The emit path is byte-exact against the box's own message
+
+**`local/a4_pattern.py build` reconstructed a 14,841-byte message the A4 itself
+emitted, byte for byte, starting from a different dump.** Take the empty A16
+capture, apply the eight bytes that separate it from the box's own
+trig-on-step-1 capture, re-pack seven-bit MSB-first, recompute checksum and
+length: the result is `cmp`-identical to the captured message.
+
+That is the strongest pre-send evidence available without sending, and it is
+worth more than each half separately. The decode was already validated by A01's
+musical sense; this validates the **encode**, the checksum, the length field and
+the ragged final group together, against a witness that cannot be argued with.
+The remaining risk in a first send is not "are the bytes right" — it is whether
+the box accepts a dump on its receive path at all.
+
+**The ragged group is still a guess, and is fenced rather than resolved.**
+12,974 is 1853×7+3, so the last group carries three bytes, and no capture has a
+high bit set in it — which means both candidate bit orders encode it
+identically and no capture can tell them apart. `encode7` refuses to emit when
+that tail is not seven-bit clean, rather than pick one.
+
+#### The A4 takes a written pattern — 2026-08-30, and pacing was the whole of it
+
+**The first send did nothing at all, and the message was not the problem.** The
+same bytes that later worked were sent, unpaced, to a box that was in SysEx
+receive and demonstrably listening. Nothing happened, twice, either side of a
+power cycle.
+
+**The fix is arithmetic that should have been done before the first attempt.**
+DIN MIDI is 31,250 baud — ten bits a byte, so 3,125 bytes a second. A
+14,843-byte dump takes **4.75 seconds** to arrive over a cable, and that is the
+rate a 2013 box was designed against. `MidiOutputConnection::send` hands
+CoreMIDI the whole frame at once and it lands in microseconds. Delivering the
+same frame in 256-byte pieces, 82 ms apart — 4.8 seconds, DIN rate to within a
+tenth of a second — works. `a4_pattern_send` paces by default and `--single`
+restores the burst, so the difference stays measurable rather than remembered.
+
+**Three things were ruled out first, and only one of them cheaply.** The port
+was unambiguous, and a CoreMIDI virtual-port loopback carried 32 KB byte-exact
+— including the real file, chunked and unchunked — which put the fault past our
+own framing. That loopback is `digi_midi`'s `sysex_loopback` example and is
+worth keeping: "the bytes never left intact" and "the box declined them" are
+different problems with no overlap in what you do next.
+
+**What the box does not need is a receive mode.** It took the dump sitting at
+its ordinary menu, with `SYSEX RECEIVE` never entered. There is no arming step
+between a stray 14 KB SysEx and an overwritten pattern slot, which is worth
+knowing before pointing anything else at this box.
+
+**Transfer will relay a raw `.syx` unchanged.** The 2026-08-30 capture of
+Transfer sending `send-01` is byte-identical to the file, so it is a second,
+independent sender and a useful control — but it is not a witness for this
+protocol. Transfer's largest outbound SysEx to this box in the whole capture is
+**456 bytes**, because the file API chunks at the protocol level. It never had
+to solve the problem this section is about.
+
+**The write is confirmed from the box's own screen**, which is the only verifier
+available: the A4 answers no dump request, so nothing here can read back what it
+wrote. `0x30` was written to track 1 step 1 and the box displays C4 on that
+step. That is also where the octave correction above came from.
+
+#### The pattern payload is now completely mapped
+
+The p-lock pool was the missing region, and finding it accounts for every one of
+the 12,974 bytes:
+
+| Offset | Size | What |
+|---|---|---|
+| 0 | 4 | header |
+| 4 | 6 × 751 | tracks — 4 synth, FX, CV |
+| 4,510 | **128 × 66** | **lane pool: 2-byte parameter id, then one value per step** |
+| 12,958 | 16 | tail; the slot marker sits at +4 (byte 12,962) |
+
+Inside a 751-byte track: trigs at 0 (2 × 64), notes at 128, three `0xff`-filled
+per-step lanes at 192, 256 and 320, a zero lane at 384, and a per-track block
+from 448 that opens `30 64 0e 00 00 00 40` — default note C4, velocity 100,
+length 14, centre 64. **`0xff` in a per-step lane means "unset, use the track
+default"**, which is exactly why a fresh trig inherits its note from +448.
+
+**All 128 lanes are empty in both A16 and A01**, and every per-step lane in
+those captures is `0xff`. So neither pattern carries a p-lock, and the locks
+seen on the box after the write — PAN, both ENVs, both LFOs — **cannot have come
+from the message**, whose lanes were all `ff ff`. They are pre-existing box or
+kit state the write did not touch. That the first write into a slot did not
+disturb them is the more useful half of the finding.
+
+**The pool being the p-lock store is a hypothesis with a sharp test**, which is
+the point of writing it down before the capture rather than after: lock one knob
+on one step and exactly one lane should change its header from `ff ff` to a
+parameter id, with the value at that step's index. Nothing changing refutes it,
+and is worth as much. `a4_pattern.py pool` is the one command.
+
+#### What the A4 pattern path still owes
+
+Ordered by what unblocks the most, and every one of them is now a small
+question rather than an open-ended one:
+
+1. **The p-lock capture**, with the predicted result above. One knob, one step,
+   one dump, then `a4_pattern.py pool`.
+2. **The trigless capture** — bit 0 of the second trig byte, predicted `0xc0`
+   with a `0xff` note lane. Then the experiment only a *write* can run: author
+   `byte1 = 0xc1` with the note lane `0xff` and see what the box displays. That
+   separates "bit 0 means note" from "bit 0 is derived from the note lane",
+   which no capture can do, and it is the first question this project has been
+   able to ask the hardware rather than a dump of it.
+3. **Bring the gen-1 format into `protocol`.** It lives in `local/a4_pattern.py`
+   and an example, which is right while captures are still moving it and wrong
+   the moment the app should be able to write an A4 pattern. `sevenbit.rs` needs
+   the bit order as a parameter before that can happen.
+4. **The ragged final group.** 12,974 is 1853×7+3 and no capture has a high bit
+   in the last three bytes, so both bit orders encode it identically and no
+   capture can settle it. `encode7` refuses rather than guess. A payload that
+   ends high-bit-set would settle it in one dump.
+5. **A backup before a write.** `safe_write_track` stashes what it is about to
+   overwrite; `a4_pattern_send` does not, because the A4 answers no dump request
+   and so cannot be read first. The backup has to be a front-panel dump, and
+   nothing enforces that it happened.
+
+#### What this does to §10.5
+
+Writing a pattern to an A4 no longer depends on the multi-chunk +Drive write.
+The route is a ~15 KB SysEx message to a box in SysEx receive, not a 2 MB
+read-modify-write of a whole project — which would have rewritten all 128
+patterns, every kit and the sound pool to change 64 steps, and clobbered
+anything touched on the box in between. Multi-chunk is still wanted for project
+backup and restore and for DT2 kit saving. It is no longer what stands between
+this project and an A4 pattern.
 
 ### 10.5 What saving a kit will cost, when it comes
 
