@@ -777,9 +777,9 @@ re-run on them.
   the two sections above for what the probing cost.
 - **The A4's pattern format, read rather than probed** — 2026-08-30, A4 0195.
   Eight dumps off the box's own front-panel SysEx menu gave the gen-1 framing,
-  the checksum, the seven-bit order (**MSB-first**, opposite to the digis) and
-  the trig and note lanes, validated by decoding a pattern back into the
-  arpeggio a musician had played into it. The box had a pattern path the whole
+  the checksum, the seven-bit order (**MSB-first**, which the digis turn out to
+  share — see the correction in §10) and the trig and note lanes, validated by
+  decoding a pattern back into the arpeggio a musician had played into it. The box had a pattern path the whole
   time; this project had been reading its silence in the wrong namespace.
 - **v0.1.2 in real use** — 2026-08-22. The registers, the longer basslines and ↻
   were all reported from a stretch of playing rather than from a test, which is
@@ -2085,6 +2085,20 @@ CC CC      checksum: 14-bit sum from offset 9, two 7-bit bytes
 LL LL      length: total - 8
 ```
 
+> **This is the gen-2 dump header, field for field — 2026-08-31.** Written up as
+> a gen-1 discovery, and it is `protocol::build_dump_message`'s output with
+> different values in it: `product` is gen-2's `family`, and the `01 01`
+> "constant across every capture, unidentified" is the `version` field this
+> codebase has always emitted. The checksum starts in the same place and the
+> length is the same `encoded + 5`. `parse_sysex` reads an A4 pattern dump with
+> its checksum and count verified and **nothing added**, which was found by
+> handing it a capture — a check available from the first minute of this section
+> and not run for two days. DEVELOPMENT.md lesson 17.
+>
+> What actually differs is the *meaning* of the opcode: `0x54` is
+> `DUMP_PROJECT_SETTINGS` on the digis and a pattern here, so a `dump_type` is
+> only meaningful alongside its `family`.
+
 Checksum and length verify on all eight, across both message types and sizes
 two orders of magnitude apart (413 bytes and 14,841). **We can therefore emit a
 message the box's own checksum will accept**, which is what makes this a write
@@ -2101,9 +2115,21 @@ question did not obviously need, which is §12's finding restated.
 #### The seven-bit packing runs the other way
 
 **The A4's gen-1 packing is MSB-first** — the MSB byte's bit 6 carries the
-*first* payload byte. `sevenbit.rs`, ported from elk-herd for the gen-2 boxes,
+*first* payload byte. ~~`sevenbit.rs`, ported from elk-herd for the gen-2 boxes,
 runs bit 0 to byte 0. A decoder must take the order as a parameter; the two
-generations do not share it.
+generations do not share it.~~
+
+> **The struck sentence was never true — corrected 2026-08-31.** `sevenbit.rs`
+> is `head |= 1 << (6 - i)`: the first data byte's high bit goes to header bit 6,
+> which is the gen-1 order. It and the A4 decoder are **the same function on
+> every input**, ragged tails included, and `sevenbit.rs` passes this section's
+> own `BEEFBABA` arbiter on the sound dump. So it takes no bit-order parameter
+> and the two generations *do* share this primitive.
+>
+> The order that produced the four wrong rounds below was a hand-written
+> `msb_first=False` — believed to be what `sevenbit.rs` did, and never compared
+> against it. Everything else in this subsection stands. DEVELOPMENT.md lesson
+> 17, and `a4_pattern::sevenbit_is_shared_across_generations` is the test.
 
 The wrong order survived four rounds of analysis here, because it produces bytes
 that look entirely plausible — offsets, strides and diffs all read as structure.
@@ -2162,6 +2188,14 @@ questions later.
   carries a note. **Still worth the deliberate capture**, because A01 cannot
   separate "bit 0 means note" from "bit 0 is derived from the note lane", and
   those differ the moment we write one.
+
+  > **Wrong, and the deliberate capture is why we know — 2026-08-31.** A
+  > trigless trig is `(00,02)`, not `0xc0` with byte 0 bit 0 set. `0xc0` is a
+  > note trig whose note was taken off again, and the box displays that step as
+  > **empty**. The trig state is `byte1 & 0x03` alone. This bullet is the
+  > cleanest correlation in the document and it is the worked example in
+  > DEVELOPMENT.md lesson 16; see "The pool is the p-lock store, and the trig
+  > bytes were wrong twice" below.
 - **The first byte's `0x08` is positional, not state.** In an empty pattern the
   trig lane's first byte reads `00 08 00 08 …` for all 64 steps: bit 3 is set on
   even steps and clear on odd ones, in a pattern with nothing in it. So it
@@ -2247,14 +2281,25 @@ the 12,974 bytes:
 |---|---|---|
 | 0 | 4 | header |
 | 4 | 6 × 751 | tracks — 4 synth, FX, CV |
-| 4,510 | **128 × 66** | **lane pool: 2-byte parameter id, then one value per step** |
+| 4,510 | **128 × 66** | **p-lock pool: `[param_id][track]`, then one value per step** |
 | 12,958 | 16 | tail; the slot marker sits at +4 (byte 12,962) |
 
-Inside a 751-byte track: trigs at 0 (2 × 64), notes at 128, three `0xff`-filled
-per-step lanes at 192, 256 and 320, a zero lane at 384, and a per-track block
-from 448 that opens `30 64 0e 00 00 00 40` — default note C4, velocity 100,
-length 14, centre 64. **`0xff` in a per-step lane means "unset, use the track
-default"**, which is exactly why a fresh trig inherits its note from +448.
+Inside a 751-byte track: trigs at 0 (2 × 64), notes at 128, `0xff`-filled
+per-step lanes at 192, 256 and **384**, a **zero lane at 320**, and a per-track
+block from 448 that opens `30 64 0e 00 00 00 40` — default note C4, velocity
+100, length 14, centre 64. **`0xff` in a per-step lane means "unset, use the
+track default"**, which is exactly why a fresh trig inherits its note from +448.
+
+> **Corrected 2026-08-31.** This paragraph read "192, 256 and 320, a zero lane
+> at 384" until the fills were counted rather than remembered: 320 is the zero
+> lane and 384 is `0xff`, unanimously across 18 track-instances in three
+> captures.
+
+**The block from +448 is not opaque — it holds two more per-step lanes**, at
++532 and +596, `0xff` in a cleared pattern and populated in A01 at exactly the
+odd steps SYN1 has trigs on. Removing a note clears that step in both of them
+alongside the note lane, so they are trig-attached. They are unnamed: the
+values are note-range, which is suggestive and is not evidence.
 
 **All 128 lanes are empty in both A16 and A01**, and every per-step lane in
 those captures is `0xff`. So neither pattern carries a p-lock, and the locks
@@ -2269,31 +2314,222 @@ on one step and exactly one lane should change its header from `ff ff` to a
 parameter id, with the value at that step's index. Nothing changing refutes it,
 and is worth as much. `a4_pattern.py pool` is the one command.
 
+**Closed 2026-08-31, confirmed** — the entry below.
+
+### The pool is the p-lock store, and the trig bytes were wrong twice — 2026-08-31, A4 0195
+
+Nine captures, every one of them against a **cleared** A16 or a single change
+from the capture before it, so no diff carries more than one variable. The pool
+hypothesis above survived exactly as predicted. The trig model beside it did
+not, and neither did the correction written for it the same morning.
+
+#### The pool, confirmed, and it is the gen-2 header
+
+Locking FLTR1 FREQ to 64 on SYN1 step 1 moved lane 0's header from `ff ff` to
+`22 00` and put `0x40` at step 1, `0xff` at the other 63. That is the predicted
+result to the byte.
+
+**The header is `[param_id][track]`** — the same two bytes `protocol::plocks`
+reads on the DT2 and DN2, on a box that disagrees with them about value width,
+lane size and whether the pool compacts. Confirmed by locking the *same* parameter on
+SYN2, which gives `22 01`: param id unchanged, track byte 1. That second capture
+was necessary, not decorative. SYN1 is track 0, so `22 00` alone cannot separate
+"the second byte is the track" from "the second byte is always zero" — the same
+shape as A01's slot 0 being unable to settle whether the checksum starts at 8 or
+9, and settled the same way, by varying the axis until zero stops being an
+answer.
+
+- **Param ids are per parameter, not per track.** `0x22` is FLTR1 FREQ and
+  `0x23` is RESO — adjacent ids for adjacent knobs — and `0x22` appears on both
+  SYN1's and SYN2's lanes.
+- **The two fills are opposite, which matters for any reader.** A free lane is
+  `ff ff` then 64 **zero** bytes; inside an allocated lane `0xff` is a step with
+  **no lock**. `cmd_pool` shipped a `v != 0` filter that would have reported all
+  64 steps of a real lane as locked.
+- **The geometry was forced before the semantics were known.** The region is
+  8,448 bytes, `128 × 66` is 8,448, and in a cleared pattern all 256 `0xff`
+  bytes sit at predicted header positions with the other 8,192 zero. That is not
+  a decomposition fitted to taste.
+
+#### `80 80` is an extension lane, and both generations store the same word
+
+The first p-lock capture allocated **two** lanes for one knob: lane 0 as above,
+and a lane 1 whose header read `80 80` with `0x34` at the same step. Three
+candidate readings — end-of-pool marker, companion field, low byte — and one
+capture that separates them: **change only the lock's value.**
+
+64 → 100 changed **two bytes in the whole 12,974-byte payload**:
+
+```text
+4512   lane 0, param 0x22 FLTR1 FREQ, SYN1     0x40 -> 0x64     64 -> 100
+4578   lane 1, the 80 80 extension             0x17 -> 0x60     23 -> 96
+```
+
+RESO's lane came back byte-identical, which is what it was locked for: a control
+that proves the box rewrote nothing but the one lock.
+
+So `80 80` is bound to the lane before it and carries a second byte of the same
+value. **The coarse byte is the displayed value** — `0x40` for 64, `0x64` for
+100, measured twice — and the extension is sub-unit resolution beneath it. Four
+takes of a displayed "64" produced fine bytes of 23, 52, 113 and 116: a knob
+landing in different places inside one displayed integer, which is what a fine
+byte must look like and what a marker, a count or a companion field could not.
+
+`plocks.rs` records gen-2 storing display × 256 in a `u16be`. **Both generations
+store the same 16-bit quantity**, gen-2 inline and gen-1 split across a lane and
+its extension, because a gen-1 lane is 64 bytes where gen-2's is 128. `0x8080`
+is a continuation marker rather than a parameter id, which is why it never
+looked like a plausible one.
+
+Two things about it are still open. **FREQ always allocates an extension and
+RESO never has**, so either RESO is integer-valued or the box omits an extension
+whose fine bytes are all zero — and that decides whether an encoder emits one
+per lock or only when needed. And the fractional reading is inference: that the
+coarse byte equals the display is measured, that the fine byte is 256ths of a
+display unit is imported from gen-2.
+
+#### Gen-1 compacts the pool; gen-2 does not
+
+Adding SYN2's lock moved SYN1's existing RESO lane from index 2 to index 4, with
+the new pair inserted ahead of it, leaving lanes ordered by `(param_id, track)`.
+`plocks.rs` documents the opposite for the digis — "the box does not compact the
+pool; it clears a freed lane in place and claims the lowest free lane including
+holes". **A write path cannot assume a lane index survives an edit on this box**,
+and `apply_track_plocks`'s scrub-then-write policy is built on the gen-2
+behaviour.
+
+#### The trig bytes: four states, and two wrong models before them
+
+PLAN read the second trig byte as `0xc0` trigless / `0xc1` note, from A01, where
+`byte1 & 1` tracked the note lane across 51 trigs on two tracks with no
+exceptions. A cleared pattern with one deliberate trigless trig changed **two
+bytes**, and refuted it:
+
+| bytes | what it is | what the box shows |
+|---|---|---|
+| `(00,00)` | bare step | nothing |
+| `(00,02)` | trigless trig | a trig |
+| `(01,c1)` | note trig | a trig |
+| `(01,c0)` | note trig with the note taken off | **nothing** |
+
+Byte 0 bit 0 was **clear** on the trigless trig, and byte 1 was `0x02`. The
+replacement model written that morning — `b0 & 1 or b1 & 2` — was also wrong,
+and the fourth row is what settled it: `(01,c0)` has byte 0 bit 0 set and the
+box displays an **empty step**. No dump can see that. It came from Neil looking
+at an unlit LED on A01 SYN4, before and after a factory reset.
+
+**The trig state is `byte1 & 0x03` alone**; byte 0 bit 0 is residue from a note
+trig that used to be there. The regression is the argument: under the corrected
+reader A01 SYN4 holds **4 trigs, on steps 1, 17, 33 and 49** — the roots on the
+bar lines that this document already used to validate the layout, where both
+earlier models counted 19. And `a4-pattern-A01-rmv-trig1` finally reads 31 trigs
+against A01's 32, so the capture agrees with its own filename for the first
+time. See DEVELOPMENT.md lesson 16.
+
+#### A factory reset restored A01 to within one byte
+
+A01 dumped after a factory reset differs from the 2026-08-30 capture by **1 byte
+in 12,974**: SYN1 `+448`, `0x45` → `0x3c`. Every trig byte, note lane and
+per-step lane is identical.
+
+That anchors the trig finding to the exact bytes the analysis ran against, which
+mattered because the reset happened between the capture and the observation. It
+also confirms A01 is a factory pattern, so the baseline is reproducible. And the
+one byte that did drift is the per-track default note — **it moved alone**,
+which is independent confirmation that +448 is per-track and not per-step.
+
+#### Two rig notes
+
+**MIDI Monitor archives everything the box sent, not just the dump.** The
+two-track capture carries a stray pitch bend from the A4. A short channel
+message stores its bytes inline under `dataBytes` where a SysEx stores a
+reference under `data`, so a loader that assumes every row is a SysEx does not
+mis-parse — it raises and loses the whole capture. `load_mmon` skips non-SysEx
+rows.
+
+**A capture whose filename records an intention is not evidence of it.**
+`A4-transfer-A16-plocks.mmon` has a payload byte-identical to the capture before
+it: whatever it was taken to record, it recorded nothing. Dump a baseline
+minutes before the change, and diff against that.
+
 #### What the A4 pattern path still owes
 
-Ordered by what unblocks the most, and every one of them is now a small
-question rather than an open-ended one:
+**Items 1 and 2 closed 2026-08-31.** The reading side of this format is done:
+nothing further is learned by dumping the box. What remains needs a write, a
+keyboard, or a decision.
 
-1. **The p-lock capture**, with the predicted result above. One knob, one step,
-   one dump, then `a4_pattern.py pool`.
-2. **The trigless capture** — bit 0 of the second trig byte, predicted `0xc0`
-   with a `0xff` note lane. Then the experiment only a *write* can run: author
-   `byte1 = 0xc1` with the note lane `0xff` and see what the box displays. That
-   separates "bit 0 means note" from "bit 0 is derived from the note lane",
-   which no capture can do, and it is the first question this project has been
-   able to ask the hardware rather than a dump of it.
-3. **Bring the gen-1 format into `protocol`.** It lives in `local/a4_pattern.py`
-   and an example, which is right while captures are still moving it and wrong
-   the moment the app should be able to write an A4 pattern. `sevenbit.rs` needs
-   the bit order as a parameter before that can happen.
+1. ~~**Bring the gen-1 format into `protocol`.**~~ **Done 2026-08-31**, and it
+   was a *smaller* job than this bullet says, in the two places the bullet was
+   describing our own code from memory. `crates/protocol/src/a4_pattern.rs` and
+   `a4_plocks.rs` are the port; `tests/a4.rs` is 19 tests against nine committed
+   fixtures.
+
+   **Two of the three planned changes were unnecessary.** `sevenbit.rs` needed
+   no bit-order parameter — see the correction above — and the framing needed
+   nothing at all, because it was already the gen-2 framing. The whole diff to
+   existing code is two doc comments and one constant
+   (`FAMILY_ANALOG_FOUR = 0x06`). DEVELOPMENT.md lesson 17 is what that turned
+   into.
+
+   **`plocks.rs` was left alone, and gen-1 got its own module rather than a
+   generation parameter.** The remaining differences are real and they are not a
+   width: a gen-1 value is a `u8` plus an optional *sibling lane*, which changes
+   the lane→value mapping rather than the size of a field, and gen-1 compacting
+   the pool inverts the premise `apply_track_plocks`'s scrub-then-write policy is
+   built on. A `Generation` enum would have made a hardware-verified write policy
+   conditional in order to express a structure it cannot represent. §7 rule 3
+   pointed the same way.
+
+   **The fixtures are committed**, which was the load-bearing half of this
+   bullet: nine captures under `crates/protocol/tests/fixtures/analogfour-*.syx`,
+   extracted from `local/a4-check/`. Before that they existed on one disk.
+   `A4-transfer-A16-plocks` is deliberately not among them — its payload is
+   byte-identical to the capture before it, and `every_fixture_is_a_distinct_pattern`
+   is the assertion that keeps that class of file out.
+
+   **The reader is complete; the pool writer is not, and refuses rather than
+   guesses.** Trig and note writes are ported, including the one hardware has
+   confirmed. A pool writer waits on items 3 and 4 below — see item 3.
+
+   **`local/a4_pattern.py` stays, with a smaller job.** It is the tool that makes
+   a `.mmon` legible in one command — loading MIDI Monitor archives, annotated
+   diffs, `pool` — and none of that belongs in a shipped crate. What it is no
+   longer is the authority on the format. `examples/a4_pattern_send.rs` now calls
+   `protocol::a4_pattern` rather than carrying its own copy, which is how its
+   copy came to be counting trigs by the model the box refuted and printing every
+   note an octave low.
+2. **The write experiment on the trig bytes.** The model says `byte1 & 0x03`
+   alone decides what the box shows. Authoring `(00,02)` on a bare step should
+   light a trigless trig and `(01,c0)` should show nothing — the second being the
+   sharper test, since it asks the box to ignore a bit that is set. Still the
+   only question here that a capture cannot answer.
+3. **The extension-lane rule.** FREQ always allocates an `80 80` extension and
+   RESO never has. Either RESO is integer-valued or the box omits an all-zero
+   extension. An encoder has to know which.
+
+   **This is why `a4_plocks` has no write half**, alongside a second unknown
+   found while porting: that the box *produces* a compacted, `(param_id,
+   track)`-sorted pool is measured, but whether it *requires* one is not. Both
+   are pinned as observations — `freq_always_has_an_extension_and_reso_never_does`
+   and `a4_plocks::is_compacted` — rather than turned into rules. The reader is
+   finished and the writer waits for the capture, which is the same refusal
+   `build_pattern` makes about item 4 one level down.
 4. **The ragged final group.** 12,974 is 1853×7+3 and no capture has a high bit
    in the last three bytes, so both bit orders encode it identically and no
    capture can settle it. `encode7` refuses rather than guess. A payload that
    ends high-bit-set would settle it in one dump.
+
+   **The refusal is ported and is now `a4_pattern::build_pattern`'s**, not
+   `encode7`'s — `encode7` is shared with the gen-2 path, which has no such
+   ambiguity and must not start refusing things on gen-1's behalf. Every
+   committed A4 payload ends `00 00 00`, so the question stands exactly where it
+   did.
 5. **A backup before a write.** `safe_write_track` stashes what it is about to
    overwrite; `a4_pattern_send` does not, because the A4 answers no dump request
    and so cannot be read first. The backup has to be a front-panel dump, and
-   nothing enforces that it happened.
+   nothing enforces that it happened. A factory reset is a recovery path for the
+   *factory* patterns and nothing else — it restored A01 to within one byte, and
+   it destroys anything since.
 
 #### What this does to §10.5
 

@@ -26,6 +26,10 @@ pub const DUMP_PATTERN_KIT: u8 = 0x50;
 pub const DUMP_PATTERN: u8 = 0x51;
 pub const DUMP_KIT: u8 = 0x52;
 pub const DUMP_SOUND: u8 = 0x53;
+/// **On the digis.** The same opcode is a *pattern* dump on the gen-1 Analog
+/// Four, so a `dump_type` is only meaningful alongside its `family` — see
+/// [`crate::a4_pattern::DUMP_A4_PATTERN`] and
+/// [`crate::a4_pattern::is_a4_pattern`].
 pub const DUMP_PROJECT_SETTINGS: u8 = 0x54;
 /// One track's sound in the box's **active** kit, addressed by track index
 /// 0–15 rather than by a stored slot. The store half of
@@ -55,6 +59,15 @@ pub const DUMP_WHOLE_PROJECT_REQUEST: u8 = 0x6f;
 pub const FAMILY_DIGITAKT: u8 = 0x0a;
 pub const FAMILY_DIGITAKT_2: u8 = 0x14;
 pub const FAMILY_DIGITONE_2: u8 = 0x15;
+/// The gen-1 Analog Four mk1. The identity API calls this box 4; the byte in a
+/// dump header is 6.
+///
+/// **This family is on the same dump framing as the digis and a different
+/// payload format entirely.** Everything in this module reads and writes an A4
+/// pattern dump correctly — header, checksum, count, seven-bit packing — and
+/// nothing in [`crate::pattern`] can make sense of the result.
+/// [`crate::a4_pattern`] is where gen-1 layout lives.
+pub const FAMILY_ANALOG_FOUR: u8 = 0x06;
 
 #[derive(Debug, PartialEq)]
 pub enum SysExKind {

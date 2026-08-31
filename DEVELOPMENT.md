@@ -5,9 +5,11 @@ thing was actually built, what the tests can and cannot say, and the lessons tha
 kept repeating. Source comments cite it as `DEVELOPMENT.md` and by lesson number;
 those numbers are stable.
 
-Everything below was distilled from eighteen build sessions. **Each of the nine
-lessons escaped a green test suite at least once**, most of them more than once.
-That is the whole reason this file exists.
+Everything below was distilled from eighteen build sessions. **Almost every
+lesson here escaped a green test suite at least once**, most of them more than
+once. That is the whole reason this file exists. The exceptions are the two that
+a test suite could not have caught: §16, which needed the box's own screen, and
+§17, which was wrong prose about code the tests were passing over.
 
 ---
 
@@ -758,10 +760,18 @@ wrong.
   the decode was producing results and results feel like progress. The habit
   worth building is to spend the first command on something falsifiable rather
   than on the first interesting-looking histogram.
-- **Two generations of one manufacturer do not share a primitive.** The port
-  was correct for the boxes it was written for. Assuming it generalised to a
-  third box is §9's recurring shape again: the third box splits a rule that
-  read as one.
+- ~~**Two generations of one manufacturer do not share a primitive.**~~
+  **Wrong, and it was wrong when it was written — corrected 2026-08-31.** They
+  do share this one. `sevenbit.rs` puts the first data byte's high bit in header
+  bit 6, which *is* the gen-1 order; it and the A4 decoder are the same function
+  on every input, including every ragged tail length. The order that produced
+  four wrong rounds was a hand-written `msb_first=False`, believed to be what
+  `sevenbit.rs` did and never once compared against it.
+
+  Everything else in this lesson stands: the A4 is MSB-first, `BEEFBABA` is
+  still the arbiter that proved it, and the four rounds still happened. Only the
+  blame was misplaced — onto a file that had been right all along. See lesson 17,
+  which is what this paragraph turned into.
 
 ### 15. A format is not a protocol — the rate is part of the contract
 
@@ -799,6 +809,102 @@ as the thing that ended two days of guessing in 2026-08-30's earlier session.
 capture also paid immediately in a way the reasoning did not: it proved Transfer
 relays a raw `.syx` unchanged, which turned a debugging step into a second
 sender.
+
+### 16. A model fitted to a rich capture will be confidently wrong, and only the screen can say so
+
+The A4's two trig bytes were modelled three times in two days. The first two
+models were built by correlating fields inside A01 — a real, musical, 51-trig
+pattern — and both were wrong. The third came from a cleared pattern, a
+two-byte diff, and Neil looking at an unlit LED.
+
+**Model one.** In A01, `byte1 & 1` was set on exactly the steps whose note lane
+was not `0xff`: 51 of 51, across two tracks, no exceptions. PLAN concluded
+`0xc0` was a trigless trig and `0xc1` a note trig. That is as clean a
+correlation as this project has ever had.
+
+**What refuted it** was a cleared A16 with one deliberate trigless trig on step
+1. Two bytes changed in 12,974. Byte 0 bit 0 was **clear**, not set, and byte 1
+was `0x02`, not `0xc0`.
+
+**Model two**, written the same morning to absorb that: a trig is `b0 & 1 or
+b1 & 2`. It fit all three known states and was still wrong, because a fourth
+state existed that no capture could interpret — `(01,c0)`, byte 0 bit 0 set,
+which the box displays as an **empty step**. A01 SYN4 holds fifteen of them.
+Model two counted them and reported 19 trigs where the box shows 4.
+
+**What settled it** was the front panel. Step 2 of SYN4 was not lit, checked
+either side of a factory reset. The trig state is `byte1 & 0x03` alone; byte 0
+bit 0 is residue from a note trig that used to be there.
+
+- **A rich capture is the worst place to fit a model, and it feels like the
+  best.** Fifty-one agreeing trigs reads as more evidence than two changed
+  bytes. It is less. A musical pattern varies everything at once, so a
+  correlation across it is consistent with many models; a cleared pattern
+  varies only what you touched, so a diff across it is consistent with few.
+  Evidence is not measured in how many rows agree with you.
+- **Prefer the capture where you control the baseline**, and take the baseline
+  minutes before the change rather than reusing yesterday's. Six single-variable
+  captures in one afternoon settled more than eight rich ones had in two days —
+  the pool, its header, its extension lane, its ordering, and the trig bytes.
+- **A state that displays as nothing is invisible to every check on your side of
+  the cable.** Every model above was consistent with every byte we had. What
+  separated them was whether the box *acts* on a bit, and the only instrument
+  for that is the screen. This is lesson 13's "go and look" for a case where
+  nothing was even failing.
+- **Residue is the failure mode of a format that marks rather than clears**, and
+  it makes wrong models over-count rather than under-count. Both bad models
+  reported trigs the box does not show. When a decode's counts run high, suspect
+  a field that the device stops honouring without erasing.
+- **The regression that catches this is a count checked against hardware, not a
+  round trip.** Every model round-tripped perfectly. What exposed models one and
+  two was "the box shows 4 trigs and the tool says 19", and — quietly — that
+  `a4-pattern-A01-rmv-trig1` read 32 trigs both before and after the removal it
+  is named for. **A fixture whose name states an outcome is an assertion**; check
+  the decode against the name, because when they disagree it is usually not the
+  name that is wrong.
+
+### 17. A claim about your own code, written from reading it, is a guess
+
+The A4 gen-1 port was scoped, over two days and in two documents, around three
+differences from gen-2. **Two of them did not exist**, and both were assertions
+about code sitting in this repository:
+
+- **"`sevenbit.rs` runs bit 0 to byte 0, so it needs the bit order as a
+  parameter."** It runs bit 6 to byte 0. `head |= 1 << (6 - i)` is the line, it
+  has not changed since the port, and it is the gen-1 order exactly.
+- **"Gen-1 framing is `mfr product device type 01 01 slot` with an unidentified
+  constant."** That is the gen-2 dump header, field for field:
+  `product` is `family`, and the "unidentified `01 01`" is the `version` field
+  `build_dump_message` has always written. `parse_sysex` reads an A4 pattern
+  dump, checksum and count verified, with nothing added.
+
+So the port's actual diff to existing code is **two doc comments and one
+constant**. The bit-order parameter, and the `Generation` enum that was going to
+be threaded through `plocks.rs`, were both solutions to problems that were never
+there — and threading a generation through `plocks.rs` would have made a
+hardware-verified write policy conditional for no reason at all.
+
+- **The cheap check was never run, again.** Lesson 14 says to spend the first
+  command on something falsifiable. Both of these were falsifiable in one
+  command each: run the two decoders against the same bytes, and hand a capture
+  to `parse_sysex`. Each took under a minute and each deleted a planned change.
+  Lesson 14 aimed that habit at *device* formats; it applies to your own source
+  at least as strongly, because a foreign format at least gets captured before
+  anyone writes about it.
+- **Prose about code decays in the direction of more complexity, not less.** Both
+  wrong claims made the codebase sound *less* capable than it was, and each
+  justified new machinery. Nobody re-reads a paragraph that argues for extra
+  work; it reads as diligence.
+- **The wrong claim got copied twice before it was checked.** It went into
+  PLAN.md §10, then DEVELOPMENT.md lesson 14, then a doc comment in
+  `examples/a4_pattern_send.rs`, gaining authority at each stop — and the source
+  it described was three directories away the whole time. This is §5's "a rule
+  that lives in three places will be forgotten in one of them", in the variant
+  where the thing forgotten is whether it was ever true.
+- **The mistake is cheap to find and expensive to leave.** It cost nothing to
+  correct and it had already shaped two documents, one example's design, and the
+  scope of a port. `a4_pattern::sevenbit_is_shared_across_generations` is now the
+  test that fails if anyone re-derives the old claim from the old prose.
 
 ---
 

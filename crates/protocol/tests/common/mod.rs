@@ -6,6 +6,17 @@
 //! repository has; every expected value in these suites was read out of them by
 //! the JS original (`~/Projects/digi-roll`) before being written down here, so
 //! the tests pin digi-roll's behaviour rather than the port's.
+//!
+//! **The `analogfour-*.syx` fixtures are different in one way that matters.**
+//! They are gen-1 pattern dumps from an Analog Four mk1 (OS 1.55B), taken off
+//! the box's own front-panel SysEx Dump menu on 2026-08-30 and 2026-08-31, and
+//! there is **no JS original for this format at all** — elk-herd documents only
+//! gen-2. Every expectation in `a4.rs` was measured from these nine files and
+//! nothing else, so those tests pin the captures rather than a second
+//! implementation. Two of the findings they carry could not have come from the
+//! files either way: the trig-state model and the octave numbering were settled
+//! by looking at the box's screen (DEVELOPMENT.md lesson 16), and what the
+//! fixtures do is hold the exact bytes that observation was made against.
 
 #![allow(dead_code)]
 
@@ -72,4 +83,16 @@ pub fn by_pitch(notes: &[Note]) -> Vec<Note> {
     let mut v = notes.to_vec();
     v.sort_by(|a, b| a.step.cmp(&b.step).then(a.pitch.cmp(&b.pitch)));
     v
+}
+
+/// One gen-1 Analog Four pattern dump from a fixture, parsed and verified.
+///
+/// Asserts the capture is a single well-formed message, for the reason
+/// [`pattern_kits`] does: a capture whose checksum or count does not hold is not
+/// evidence of anything, and a silent decode failure here would make every
+/// expectation downstream meaningless.
+pub fn a4_pattern(name: &str) -> digi_protocol::a4_pattern::A4Pattern {
+    let bytes = fixture_bytes(name);
+    digi_protocol::a4_pattern::parse_pattern(&bytes)
+        .unwrap_or_else(|e| panic!("{name}: {e}"))
 }

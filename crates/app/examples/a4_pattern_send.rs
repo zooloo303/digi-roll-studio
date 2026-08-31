@@ -12,21 +12,31 @@
 //       **The real thing.** Overwrites one pattern slot on the box. Asks for
 //       typed consent, and refuses without it.
 //
-// **Why this is a separate example and not a `digi_midi` function.** The A4's
-// pattern format is gen-1 and this workspace speaks gen-2: `sevenbit.rs` packs
-// the other way (DEVELOPMENT.md lesson 14), and `protocol::pattern` cannot read
-// one of these. So the layout lives in `local/a4_pattern.py` while it is still
-// being settled by captures, and this example is the twelve inches of cable.
-// Nothing else in the workspace calls it, and it constructs no `0x5x` file
-// opcode and no `0x7x` store — it sends one dump message and reads no reply.
+// **The format lives in `digi_protocol::a4_pattern` as of 2026-08-31**, and this
+// example is now just the twelve inches of cable. It used to carry its own copy
+// of the layout, on the grounds that "this workspace speaks gen-2 and
+// `sevenbit.rs` packs the other way" — which was wrong twice over. `sevenbit.rs`
+// packs the same way, and `protocol::parse_sysex` reads one of these dumps with
+// nothing added; only the *payload* layout is gen-1's own. DEVELOPMENT.md lesson
+// 17.
 //
-// **The validation is deliberately duplicated.** `local/a4_pattern.py` already
-// checks all of this before it writes the file. It is checked again here, from
-// the bytes on disk, because the thing that must be true is not "the builder was
-// correct" but "these bytes are well-formed" — and a file can be edited, renamed
-// or half-written between the two. A body this box cannot parse takes its whole
-// SysEx API down until it is power-cycled (DEVELOPMENT.md lesson 13), so the
-// check that matters is the one immediately before the send.
+// That copy had gone stale in exactly the way a second copy does. It counted a
+// trig as `byte 0 bit 0`, which is the model the box's own screen refuted on
+// 2026-08-31 — so it reported A01 SYN4 as 19 trigs where the box shows 4 — and
+// it printed every note an octave low. Both are fixed by not having a second
+// copy. Nothing else in the workspace calls this, and it constructs no `0x5x`
+// file opcode and no `0x7x` store: it sends one dump message and reads no reply.
+//
+// **The validation is deliberately duplicated.** `protocol::a4_pattern` already
+// checks the framing, and `local/a4_pattern.py` checked it again before it wrote
+// the file. It is checked once more here, from the bytes on disk, because the
+// thing that must be true is not "the builder was correct" but "these bytes are
+// well-formed" — and a file can be edited, renamed or half-written between the
+// two. A body this box cannot parse takes its whole SysEx API down until it is
+// power-cycled (DEVELOPMENT.md lesson 13), so the check that matters is the one
+// immediately before the send. The two checks this file keeps for itself are the
+// ones `parse_pattern` has no business making: that the frame is `F0 … F7`
+// shaped, and that no byte inside it has its high bit set.
 //
 // **Verifying afterwards is a manual step, and there is no way around it.** The
 // A4 answers no dump *request* — the supported-opcode reply lists no `0x6x`, and
@@ -38,22 +48,9 @@ use std::io::Write as _;
 use std::time::Duration;
 
 use digi_midi::{capture_sysex, list_outputs, open_output_by_name};
-
-/// Header is mfr(3) product device type 01 01 slot; trailer is checksum(2)
-/// length(2). PLAN.md §10.
-const HEADER: usize = 9;
-const TRAILER: usize = 4;
-const MFR: [u8; 3] = [0x00, 0x20, 0x3C];
-const PRODUCT_A4: u8 = 0x06;
-const TYPE_PATTERN: u8 = 0x54;
-const PAYLOAD_LEN: usize = 12974;
-const TRACK_BASE: usize = 4;
-const TRACK_STRIDE: usize = 751;
-const TRACKS: usize = 6;
-const STEPS: usize = 64;
-const NOTE_LANE: usize = 128;
-const NO_NOTE: u8 = 0xFF;
-const TRACK_NAMES: [&str; TRACKS] = ["SYN1", "SYN2", "SYN3", "SYN4", "FX", "CV"];
+use digi_protocol::a4_pattern::{
+    effective_note, note_name, parse_pattern, read_track_trigs, slot_name, TRACK_NAMES,
+};
 
 /// Which box to send to when nothing is named. Matched as a case-insensitive
 /// substring of the port name.
@@ -119,15 +116,25 @@ fn main() {
     println!("  slot {} ({})  checksum {:#06x} ok  length {} ok", msg.slot, slot_name(msg.slot), msg.checksum, msg.length);
     println!("  payload {} bytes, decodes clean", msg.payload.len());
     for (track, name) in TRACK_NAMES.iter().enumerate() {
-        let trigs = trigs_of(&msg.payload, track);
+        // `read_track_trigs` skips the steps that carry only residue, which is
+        // what the box's own screen does. The count printed here is the count
+        // the front panel shows — that equality is the regression that caught
+        // two wrong trig models, so it is worth it being the same function.
+        let trigs = read_track_trigs(&msg.payload, track).expect("validated payload");
         if trigs.is_empty() {
             continue;
         }
         let listed: Vec<String> = trigs
             .iter()
-            .map(|(step, note)| match note {
-                Some(n) => format!("{step}:{}", note_name(*n)),
-                None => format!("{step}:--"),
+            .map(|t| {
+                // `effective_note`, not `t.note`: an unset note lane means "take
+                // the track default", so the raw byte would print `--` on a step
+                // the box sounds. No capture has one, which is the reason to be
+                // careful rather than the reason not to be.
+                let note = effective_note(&msg.payload, track, t).expect("validated payload");
+                let shown = note.map_or_else(|| "--".to_string(), note_name);
+                let inherited = if note.is_some() && t.note.is_none() { "*" } else { "" };
+                format!("{}:{shown}{inherited}", t.step)
             })
             .collect();
         println!("  {name}  {} trigs  {}", trigs.len(), listed.join(" "));
@@ -248,84 +255,38 @@ struct Message {
 }
 
 /// Everything that must be true of these bytes before one of them leaves.
+///
+/// The format checks are `digi_protocol::a4_pattern::parse_pattern`'s — framing,
+/// family, opcode, checksum, count and payload length, all in one call. The two
+/// checks kept here are the ones that belong to a *file on disk about to be put
+/// on a cable* rather than to the format:
+///
+/// * **The frame must be `F0 … F7` or bare.** A file starting `F0` and not
+///   ending `F7` is truncated, and saying so beats "not an Elektron dump".
+/// * **No byte inside the frame may have its high bit set.** A parser would
+///   reject such a message eventually; this says which byte, because the answer
+///   is nearly always a file that was edited by hand.
 fn validate(raw: &[u8]) -> Result<Message, String> {
     let body: &[u8] = match (raw.first(), raw.last()) {
         (Some(0xf0), Some(0xf7)) => &raw[1..raw.len() - 1],
         (Some(0xf0), _) => return Err("starts F0 but does not end F7 — truncated".into()),
         _ => raw,
     };
-    if body.len() < HEADER + TRAILER {
-        return Err(format!("{} bytes is too short to be a dump", body.len()));
-    }
-    if body[..3] != MFR {
-        return Err(format!("manufacturer id is {:02x?}, not Elektron", &body[..3]));
-    }
-    if body[3] != PRODUCT_A4 {
-        return Err(format!("product byte is {:#04x}, not an A4's {PRODUCT_A4:#04x}", body[3]));
-    }
-    if body[5] != TYPE_PATTERN {
-        return Err(format!("message type is {:#04x}, not a pattern dump", body[5]));
-    }
-    // Every byte between F0 and F7 must be 7-bit, or the OS will not send what
-    // we think it will.
     if let Some(i) = body.iter().position(|b| b & 0x80 != 0) {
         return Err(format!("byte {i} is {:#04x}: high bit set inside the frame", body[i]));
     }
-
-    let encoded = &body[HEADER..body.len() - TRAILER];
-    let stated_sum = u16::from(body[body.len() - 4]) << 7 | u16::from(body[body.len() - 3]);
-    let stated_len = u16::from(body[body.len() - 2]) << 7 | u16::from(body[body.len() - 1]);
-    let sum = encoded.iter().map(|&b| u32::from(b)).sum::<u32>() as u16 & 0x3FFF;
-    let len = (body.len() - 8) as u16;
-    if stated_sum != sum {
-        return Err(format!("checksum says {stated_sum:#06x}, bytes say {sum:#06x}"));
-    }
-    if stated_len != len {
-        return Err(format!("length says {stated_len}, bytes say {len}"));
-    }
-
-    let payload = decode7_msb_first(encoded);
-    if payload.len() != PAYLOAD_LEN {
-        return Err(format!("payload is {} bytes, an A4 pattern is {PAYLOAD_LEN}", payload.len()));
+    if body.len() < 4 {
+        return Err(format!("{} bytes is too short to be a dump", body.len()));
     }
 
     let mut wire = Vec::with_capacity(body.len() + 2);
     wire.push(0xf0);
     wire.extend_from_slice(body);
     wire.push(0xf7);
-    Ok(Message { wire, slot: body[8], checksum: stated_sum, length: stated_len, payload })
-}
 
-/// The A4's gen-1 order: the MSB byte's bit 6 carries the *first* payload byte.
-/// `digi_protocol::sevenbit` runs bit 0 to byte 0 and is right for the digis —
-/// the two generations do not share this. DEVELOPMENT.md lesson 14.
-fn decode7_msb_first(data: &[u8]) -> Vec<u8> {
-    let mut out = Vec::with_capacity(data.len() / 8 * 7 + 7);
-    for group in data.chunks(8) {
-        let msbs = group[0];
-        for (n, &b) in group[1..].iter().enumerate() {
-            out.push(b | if msbs >> (6 - n) & 1 == 1 { 0x80 } else { 0 });
-        }
-    }
-    out
-}
-
-fn trigs_of(payload: &[u8], track: usize) -> Vec<(usize, Option<u8>)> {
-    let base = TRACK_BASE + track * TRACK_STRIDE;
-    (0..STEPS)
-        .filter(|&s| payload[base + s * 2] & 1 == 1)
-        .map(|s| {
-            let note = payload[base + NOTE_LANE + s];
-            (s + 1, (note != NO_NOTE).then_some(note))
-        })
-        .collect()
-}
-
-fn slot_name(slot: u8) -> String {
-    format!("{}{:02}", (b'A' + slot / 16) as char, slot % 16 + 1)
-}
-
-fn note_name(v: u8) -> String {
-    const N: [&str; 12] = ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"];
-    format!("{}{}", N[usize::from(v) % 12], i16::from(v) / 12 - 1)
+    let parsed = parse_pattern(&wire)?;
+    // Both trailer fields verified by `parse_pattern`; read back only to print.
+    let checksum = u16::from(body[body.len() - 4]) << 7 | u16::from(body[body.len() - 3]);
+    let length = u16::from(body[body.len() - 2]) << 7 | u16::from(body[body.len() - 1]);
+    Ok(Message { wire, slot: parsed.slot, checksum, length, payload: parsed.payload })
 }
