@@ -25,11 +25,10 @@
 //!   `core::import` and its own tests. Only those cases are deferred, and this
 //!   note is where they are recorded rather than quietly dropped.
 
-mod common;
 
 use std::collections::BTreeMap;
 
-use common::payload;
+use crate::common::payload;
 use digi_protocol::pattern::{
     decode_pattern_kit, describe_offset, diff_payloads, dn2_spec, dt2_spec, encode_track_notes,
     track_notes, Note, Spec, TRIG_ENABLED,

@@ -21,9 +21,8 @@
 //! was added for this suite: one pattern-kit message lifted out of a real DN2
 //! project capture, with 9 of its 16 slots tagged by hand on the box.
 
-mod common;
 
-use common::*;
+use crate::common::*;
 use digi_protocol::pattern::{dn2_spec, dt2_spec, Spec};
 use digi_protocol::sound::*;
 

@@ -16,11 +16,10 @@
 //! 2026-08-18); its suite is `tests/trig_write.rs`, the port of
 //! `test/trig-write.test.js`. This file stays the read half's.
 
-mod common;
 
 use std::collections::BTreeMap;
 
-use common::payload;
+use crate::common::payload;
 use digi_protocol::pattern::{decode_pattern_kit, dn2_spec, dt2_spec, Spec, TRIG_ENABLED};
 use digi_protocol::trig_cond::{
     read_step_trig_setting, read_track_prob, read_track_trig_settings, TrigSetting,

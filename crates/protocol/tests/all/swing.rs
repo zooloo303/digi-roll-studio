@@ -17,9 +17,8 @@
 //! The DT2 *offset* is still pinned below, by `swing_offset`, and the DN2
 //! experiment — which is where the mapping actually came from — ports whole.
 
-mod common;
 
-use common::payload;
+use crate::common::payload;
 use digi_protocol::pattern::{diff_payloads, dn2_spec, dt2_spec, ByteDiff, Spec};
 use digi_protocol::pattern_settings::{
     apply_swing, read_swing, swing_offset, SWING_MAX, SWING_MIN,

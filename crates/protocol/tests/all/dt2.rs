@@ -5,9 +5,8 @@
 //! are small enough to commit, so the pattern-stream and blank-pattern cases
 //! move to what these fixtures can actually show.
 
-mod common;
 
-use common::*;
+use crate::common::*;
 use digi_protocol::pattern::*;
 
 const COND: &str = "digitakt2-A01-conditions-2026-08-02.syx";

@@ -27,11 +27,10 @@
 //! The p-lock translation needed no seeding: `digitakt2-A01-plock-final` carries
 //! ten lanes whose paramIds include the two that collide across the boxes.
 
-mod common;
 
 use std::collections::BTreeMap;
 
-use common::payload;
+use crate::common::payload;
 use digi_protocol::copy_track::{
     copy_track, copy_track_from_bytes, describe_chord_drops, plock_lanes_for_target,
     truncate_chords, ChordDrop, CopyResult,

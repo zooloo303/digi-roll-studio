@@ -28,9 +28,8 @@
 //! [`every_fixture_is_a_distinct_pattern`] is the assertion that keeps that kind
 //! of file out.
 
-mod common;
 
-use common::{a4_pattern, fixture_bytes};
+use crate::common::{a4_pattern, fixture_bytes};
 
 use digi_protocol::a4_pattern::{
     build_pattern, build_trig_probe, note_name, parse_pattern, read_track_states, read_track_trigs,

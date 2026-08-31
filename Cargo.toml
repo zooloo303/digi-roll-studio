@@ -39,3 +39,27 @@ version = "0.2.0"
 edition = "2021"
 rust-version = "1.95"   # set by egui/eframe 0.36
 license = "GPL-3.0-or-later"
+
+# Debug info, cut from full DWARF to line tables only — added 2026-08-31.
+#
+# This was expected to be the big win on test-loop time and **measured as no win
+# at all**: 1487s against a 1425s baseline, i.e. nothing outside noise. The
+# reason is platform-specific and worth recording so nobody re-derives it. On
+# macOS the dev profile defaults to `split-debuginfo = "unpacked"`, so DWARF
+# stays in the `.rcgu.o` files and the linker writes only a debug map pointing at
+# them — `otool -l` finds zero `__DWARF` segments in a test binary and `nm -pa`
+# finds 173 OSO entries. The link step was never paying for debug info here, so
+# there was nothing for this to save. On Linux and the Windows CI target, where
+# DWARF *is* copied into every executable, it would cut real time.
+#
+# What it does buy on this machine is disk: a clean build of the workspace is
+# 1.9G with this set against 2.3G without, same file count. That is kept because
+# `target/` reaching 75 GiB is what made the test loop pathological in the first
+# place (see DEVELOPMENT.md, "Working on this") — a smaller build grows toward
+# that more slowly.
+#
+# Backtraces keep file and line, which is all a failing test needs. Set this back
+# to `2` for a session with lldb attached, and expect a full rebuild both ways,
+# because changing a profile invalidates every artifact in `target/`.
+[profile.dev]
+debug = "line-tables-only"

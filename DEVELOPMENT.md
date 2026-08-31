@@ -17,13 +17,45 @@ a test suite could not have caught: §16, which needed the box's own screen, and
 
 ```sh
 cargo build --release
-cargo test --workspace              # no system dependencies, no hardware
+cargo test -p digi_protocol --test all   # the dev loop: one crate, ~7s
+cargo test --workspace                   # before a commit; ~11s, no hardware
 cargo clippy --workspace --all-targets   # clean as of 2026-08-23; keep it that way
 cargo run -p digi_roll_studio
 ```
 
+**If `cargo test --workspace` is taking minutes, clean `target/` before you
+change anything else.** On 2026-08-31 that command took **1425 seconds** to run
+1671 tests that execute in under three. Almost none of it was the tests, and —
+against the obvious guess — almost none of it was inherent link cost either.
+`target/` had grown to **75 GiB across 1.1 million files**, because cargo never
+collects the artifacts of renamed targets, changed profiles or deleted test
+files, and on macOS the dev profile leaves each binary's debug info in thousands
+of separate `.rcgu.o` files that are then never swept. Every cargo invocation
+was stat-ing that pile. A single `cargo clean` took the same command from
+**1425s to 18s with no source change at all**; a full cold rebuild of all 185
+crates is **28 seconds**.
+
+So: `cargo clean` is maintenance, not a last resort — reach for it when the loop
+feels slow, and do not conclude anything about build times from a `target/` that
+has not been swept. Everything below was measured on a clean one.
+
 The protocol suites read `.syx` captures from `crates/protocol/tests/fixtures/`,
 committed so the tests run anywhere.
+
+**A new integration test goes in `crates/<crate>/tests/all/`, and gets a `mod`
+line in that crate's `tests/all/main.rs`.** Cargo builds one executable per
+`.rs` file placed *directly* under `tests/`, so the old layout — 31 files across
+four crates — linked 38 executables, and the app crate's ten each linked the
+whole `egui`/`eframe` tree. Collapsing them to one target per crate leaves every
+file, name and test exactly where it was and, on a clean `target/`, halves the
+workspace run: **18s to 10s**, 38 binaries to 11, all 1671 tests still passing.
+Worth having, but note the size of it against the paragraph above — this is the
+2x, the sweep was the 80x. Its real value is that it stops the *growth*: the
+`mod` line is the only cost of adding a file, where a `.rs` dropped straight
+into `tests/` puts that crate back to paying for another whole link.
+
+Shared helpers live in `tests/all/common/`, declared once in `main.rs` and
+reached as `use crate::common::…` from the sibling modules.
 
 **Clippy is part of the loop as of 2026-08-23**, and it was installed late enough
 to be worth saying what it is for here. It runs clean, which is the only state in

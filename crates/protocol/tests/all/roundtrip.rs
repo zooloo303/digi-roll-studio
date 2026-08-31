@@ -6,9 +6,8 @@
 //! until the minimal-diff contract — the thing that makes a read-modify-write to
 //! hardware safe — is evidence rather than an intention.
 
-mod common;
 
-use common::*;
+use crate::common::*;
 use digi_protocol::pattern::*;
 
 struct Fixture {

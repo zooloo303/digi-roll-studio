@@ -4,9 +4,8 @@
 //! `quad`: one record per sounding note, so a chord is several consecutive
 //! records sharing (track, step).
 
-mod common;
 
-use common::*;
+use crate::common::*;
 use digi_protocol::pattern::*;
 
 const COND: &str = "digitone2-A01-conditions-2026-08-02.syx";

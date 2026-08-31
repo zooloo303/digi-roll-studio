@@ -22,9 +22,8 @@
 //! (`/tmp/plock-write-derive.mjs`, recipe in this header) before being written
 //! down.
 
-mod common;
 
-use common::payload;
+use crate::common::payload;
 use digi_protocol::pattern::{describe_offset, diff_payloads, dn2_spec, dt2_spec, Spec};
 use digi_protocol::plocks::{
     apply_track_plocks, free_lane_count, lane_has_trigless_values, read_all_plocks, read_lane,

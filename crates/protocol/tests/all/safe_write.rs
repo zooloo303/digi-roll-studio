@@ -38,13 +38,12 @@
 //!   note on [`WriteHooks::confirm_restore`] — a restore must not need the bytes
 //!   it is replacing to decode.
 
-mod common;
 
 use std::cell::RefCell;
 use std::collections::BTreeMap;
 use std::rc::Rc;
 
-use common::payload;
+use crate::common::payload;
 use digi_protocol::backup_stash::{Stash, StashEntry, StashError};
 use digi_protocol::device::{identity_from_responses, product_for_family, DeviceIdentity, DeviceResponse};
 use digi_protocol::pattern::{
