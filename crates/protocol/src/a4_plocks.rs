@@ -85,12 +85,23 @@
 //! # There is no write path here, deliberately
 //!
 //! [`apply_track_plocks`](crate::plocks::apply_track_plocks) has a gen-1
-//! counterpart only when two things are known, and neither is:
+//! counterpart only when two things are known. **The first was answered on
+//! 2026-08-31 and the second was not**, so there is still no writer:
 //!
-//! 1. **Whether the box omits an extension whose fine bytes are all zero.**
-//!    FLTR1 FREQ has allocated one in every capture and RESO never has. Either
-//!    RESO is integer-valued or the extension is conditional, and an encoder has
-//!    to know which. PLAN.md §10 open item 3.
+//! 1. ~~**Whether the box omits an extension whose fine bytes are all zero.**~~
+//!    **Answered 2026-08-31: FLTR1 RESO is integer-valued.** Four RESO locks on
+//!    one lane at 0, 50, 90 and 127 allocated no extension, where the
+//!    omit-when-zero reading would need four 1-in-256 accidents. So an encoder
+//!    **emits an extension iff some fine byte is non-zero** — which was the rule
+//!    under either answer, so this closed confidence rather than the rule.
+//!
+//!    Two things that capture is worth reading for beyond its verdict.
+//!    **`0` and `127` in one lane** say RESO spans the full range as integers.
+//!    And its FREQ control lane, four steps wide, holds its fine bytes at exactly
+//!    its parent's four steps with [`NO_VALUE`] elsewhere — so **an extension is
+//!    indexed per step**, which every previous capture left as inference because
+//!    every previous lock sat on step 1. `tests/a4.rs` pins all of it;
+//!    `examples/a4_plock_extension_check.rs` is the tool that read it.
 //! 2. **Whether the box requires the compacted, `(param_id, track)`-sorted
 //!    order it produces.** That it produces that order is measured. That it
 //!    *needs* it is not, and a pool written in some other order is a guess

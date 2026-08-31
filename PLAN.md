@@ -781,6 +781,16 @@ re-run on them.
   share — see the correction in §10) and the trig and note lanes, validated by
   decoding a pattern back into the arpeggio a musician had played into it. The box had a pattern path the whole
   time; this project had been reading its silence in the wrong namespace.
+- **The A4 trig model, confirmed from the write side** — 2026-08-31, A4 0195.
+  One 14,843-byte pattern carrying all four trig states authored by
+  `a4_pattern::build_trig_probe`, sent to A16, and read off SYN1's step LEDs:
+  **3, 5 and 12 lit and the other 61 dark**, which is the prediction to the step.
+  It closes §10's open item 2 and it is the first thing on this list whose result
+  could not have been obtained by reading anything — `(01,c0)` and `(09,c0)` are
+  a bit that is *set* and must be ignored, so only handing it to the box could
+  settle it. Two extras the run gave for free: steps 3 and 12 showed as
+  **trigless** trigs rather than merely lit, so the box's reading of byte 1 bit 1
+  matches ours, and step 1 went dark, so a `clear_trig` authored here takes.
 - **v0.1.2 in real use** — 2026-08-22. The registers, the longer basslines and ↻
   were all reported from a stretch of playing rather than from a test, which is
   how the three of them came to be the release.
@@ -2419,12 +2429,25 @@ box displays an **empty step**. No dump can see that. It came from Neil looking
 at an unlit LED on A01 SYN4, before and after a factory reset.
 
 **The trig state is `byte1 & 0x03` alone**; byte 0 bit 0 is residue from a note
-trig that used to be there. The regression is the argument: under the corrected
+trig that used to be there. **Confirmed from the write side 2026-08-31** — see
+§10 open item 2, now closed — which is the half no dump could reach: the box was
+handed all four states authored by our code and displayed each one as this table
+says. The regression is the argument: under the corrected
 reader A01 SYN4 holds **4 trigs, on steps 1, 17, 33 and 49** — the roots on the
 bar lines that this document already used to validate the layout, where both
 earlier models counted 19. And `a4-pattern-A01-rmv-trig1` finally reads 31 trigs
 against A01's 32, so the capture agrees with its own filename for the first
 time. See DEVELOPMENT.md lesson 16.
+
+**And the fifteen residue steps say two more things, measured 2026-08-31 while
+building the write probe.** Four of them read `(09,c0)` rather than `(01,c0)` —
+byte 0 carrying the positional bit `0x08` *and* the residue bit — so those two
+bits are independently set in real data, which no single-parity capture could
+have shown and which is why the probe tests both. And **every one of the fifteen
+has `FF` in the note lane**: the residue the box leaves is a note trig that took
+the *track default* and then lost its state bits, not one whose own note byte was
+erased. That is what makes authoring residue a composition rather than a
+primitive — `set_note_trig(None)` then `clear_trig` produces those bytes exactly.
 
 #### A factory reset restored A01 to within one byte
 
@@ -2454,9 +2477,18 @@ minutes before the change, and diff against that.
 
 #### What the A4 pattern path still owes
 
-**Items 1 and 2 closed 2026-08-31.** The reading side of this format is done:
-nothing further is learned by dumping the box. What remains needs a write, a
-keyboard, or a decision.
+**Items 1 and 2 closed 2026-08-31**, and by opposite means. Item 1 was a port:
+the reading side of this format is done and nothing further is learned by dumping
+the box. Item 2 could only be closed by a *write*, because it asks whether the box
+reads its own bytes the way it writes them — so no number of dumps would have
+moved it, which is why it outlived the reading work by a morning.
+
+**Item 3 closed the same day**, by the capture it asked for. What remains is
+items 4 and 5 — a bit order waiting on a payload no capture has produced, and a
+backup policy waiting on a decision — plus the sibling of 3 that item 3 could
+never have reached: **whether the box requires the compacted pool order it
+produces.** The pool still has no writer, and now it waits on a write rather than
+on a dump.
 
 1. ~~**Bring the gen-1 format into `protocol`.**~~ **Done 2026-08-31**, and it
    was a *smaller* job than this bullet says, in the two places the bullet was
@@ -2498,14 +2530,128 @@ keyboard, or a decision.
    `protocol::a4_pattern` rather than carrying its own copy, which is how its
    copy came to be counting trigs by the model the box refuted and printing every
    note an octave low.
-2. **The write experiment on the trig bytes.** The model says `byte1 & 0x03`
-   alone decides what the box shows. Authoring `(00,02)` on a bare step should
-   light a trigless trig and `(01,c0)` should show nothing — the second being the
-   sharper test, since it asks the box to ignore a bit that is set. Still the
-   only question here that a capture cannot answer.
-3. **The extension-lane rule.** FREQ always allocates an `80 80` extension and
-   RESO never has. Either RESO is integer-valued or the box omits an all-zero
-   extension. An encoder has to know which.
+2. ~~**The write experiment on the trig bytes.**~~ **Closed 2026-08-31 on A4
+   0195, and every one of the seven predictions held.** The model says
+   `byte1 & 0x03` alone decides what the box shows; the box was handed all four
+   states authored by our own code and displayed each one as predicted. **Steps
+   3, 5 and 12 lit, the other 61 dark.**
+
+   Three things that run settled, in the order they matter:
+
+   - **The A4 reads these two bytes the way it writes them.** Everything behind
+     the trig model came from dumps the box *sent*, and nothing in it established
+     the other direction. It does now.
+   - **The sharp half held.** `(01,c0)` on step 9 and `(09,c0)` on step 10 both
+     stayed dark, so the box ignores byte 0 bit 0 at **both parities** of the
+     positional bit. A set bit that must be ignored is the one thing no capture
+     could ever have shown, and it is the reason this experiment existed.
+   - **Steps 3 and 12 showed as *trigless* trigs, not merely as lit steps**,
+     which is more than the experiment asked for. The prediction was about a
+     lit LED; what Neil reported was the box's own interpretation of byte 1
+     bit 1, matching what we authored. Step 12 carries `(08,02)`, so the
+     positional bit does not interfere with it either.
+
+   Step 1 is worth its own line: the probe cleared a trigless trig the box itself
+   had written and the box showed it dark, so `clear_trig` takes as well.
+
+   `set_trigless_trig` and `clear_trig` are no longer predictions, and
+   `a4_pattern`'s doc comments say so with the date and the build. The probe is
+   kept rather than deleted, for the reason `probe_drive_read.rs` is kept: it is
+   the experiment the finding rests on, and a claim whose experiment has been
+   thrown away is a claim on trust.
+
+   **How it was built, 2026-08-31.** `a4_pattern::build_trig_probe`
+   authors all four states onto SYN1 of A16 and
+   `examples/a4_trig_probe.rs` writes the message and prints the prediction;
+   three tests in `tests/a4.rs` pin it. Nothing here opens a port —
+   `a4_pattern_send` remains the only thing in the repo that can write to a box,
+   because the consent ceremony, the DIN pacing and the reply listener have no
+   business existing twice.
+
+   The layout, and the reason each row is in it:
+
+   | step | authored | bytes | prediction | a disagreement means |
+   |---|---|---|---|---|
+   | 1 | the baseline's own trigless trig, cleared | `(00,00)` | dark | our clear does not take |
+   | 3 | `set_trigless_trig` | `(00,02)` | **lit** | the box refuses a trigless trig we authored |
+   | 5 | `set_note_trig`, `0x30` | `(01,c1)` | **lit** | the send did not land — discard the run |
+   | 7 | nothing | `(00,00)` | dark | the write reached offsets it did not intend |
+   | 9 | a note trig, then `clear_trig` | `(01,c0)` | dark | **the box honours byte 0 bit 0, and the model is wrong** |
+   | 10 | the same, on an odd step | `(09,c0)` | dark | the same, with the positional bit set |
+   | 12 | `set_trigless_trig` on an odd step | `(08,02)` | **lit** | the positional bit suppresses a trigless trig |
+
+   **The prediction is one line — steps 3, 5 and 12 lit and nothing else — and
+   the controls are what make a surprise readable.** Step 5 is the shape hardware
+   has already accepted, so a dark step 5 says the cable failed rather than the
+   model. Steps 9 and 10 carry the same state at both parities of the positional
+   bit, because `0x08` shares byte 0 with the residue bit and one parity cannot
+   separate them: the same trap as A01's slot 0 and the checksum start, avoided
+   the same way.
+
+   **Step 5 has to be read before the others, and that is not fussiness.** A send
+   that never arrives leaves A16 holding whatever it held before, and *what that
+   is, is not known* — the slot has been written twice by `a4_pattern_send` and
+   edited by hand on the box since. So "nothing happened" has no predictable
+   appearance and cannot be distinguished from "the model is wrong" by looking at
+   the steps predicted dark. The second half of the guard is the whole-track
+   count: the message replaces all 12,974 bytes, so a landed send leaves SYN1
+   with exactly three live trigs and 61 dark steps. Three lit *and nothing else
+   anywhere in the 64* is a result; those three plus something on step 40 is a
+   partial write, and the run gets discarded rather than interpreted.
+
+   Three things the build settled that this bullet had not thought about:
+
+   - **The baseline is the `A16-trigless` capture, not the cleared one**, and
+     that is worth a sentence because the cleared A16 is the obvious file to
+     reach for. The trigless fixture is one change away from the message the box
+     has already accepted — including byte 12,962, which reads `0f` there and
+     `ff` in the cleared capture — so the experiment varies the trig bytes and
+     nothing else. It also arrives carrying the box's own trigless trig on step
+     1, which makes "can we clear something the box wrote" a free eighth question
+     at no extra risk. `build_trig_probe` **checks** that baseline rather than
+     documenting it: a baseline with something already on the probe's steps would
+     frame and send perfectly well and its predictions would silently not hold.
+   - **The prediction is hand-written and deliberately not computed from
+     `TrigState::is_live`.** A prediction derived from the model under test agrees
+     with it by construction and the experiment measures nothing. So `PROBE_STEPS`
+     carries what the box is claimed to do, `ProbeStep::state` carries what our
+     reader thinks, a test asserts the two agree, and the front panel is the third
+     witness that can disagree with both.
+   - **Residue is authored by composition, and a measurement says that is
+     right.** `set_note_trig(None)` then `clear_trig` leaves `(b0|01, c0)` with
+     the note lane at `FF` — which is byte for byte what all fifteen residue
+     steps of A01 SYN4 hold. A `set_residue` primitive would have been one call
+     and would have hidden both the derivation and the note lane.
+
+   The part a desk could not do took one send and one look at sixteen LEDs.
+3. ~~**The extension-lane rule.**~~ **Closed 2026-08-31 on A4 0195: FLTR1 RESO
+   is integer-valued.** Four RESO locks on one SYN1 lane at **0, 50, 90 and
+   127** — both ends of the range and two points inside it — and the pool
+   allocated **no extension lane at all**. The competing reading, that the box
+   omits an extension whose fine bytes are all zero, would need all four of those
+   to have landed on a fine byte of exactly zero: four independent 1-in-256
+   accidents. 0 and 127 in one lane also say RESO spans the full 0..127 as
+   integers, which is what 128 discrete positions look like and what sub-unit
+   resolution does not.
+
+   `analogfour-A16-plock-reso4-freq64-2026-08-31.syx` is the capture, committed,
+   and `four_reso_values_on_one_lane_allocate_no_extension` pins it.
+
+   **The control paid for itself twice.** FREQ on the same four steps allocated
+   its extension as always — so the capture is good — and the extension turned out
+   to hold its fine byte at exactly steps 1, 5, 9 and 13 with `FF` at the other
+   sixty, matching its parent lane position for position. Every p-lock captured
+   before this one sat on step 1, so **"an extension is indexed per step" was
+   inference from the lane geometry and is now a measurement.** What it still does
+   not show is a fine byte *differing* between steps of one lane: all four read
+   23, which is one gesture applied to four held trigs rather than four turns. A
+   narrower gap than before, and not a closed one.
+
+   **The encoder rule was the same under either answer** — emit an extension iff
+   some fine byte is non-zero — so what this closes is confidence rather than the
+   rule. **The pool writer is still blocked**, on the sibling unknown below:
+   whether the box *requires* the compacted order it produces. That one is a write
+   test, because no dump can show a device requiring something.
 
    **This is why `a4_plocks` has no write half**, alongside a second unknown
    found while porting: that the box *produces* a compacted, `(param_id,
@@ -2514,6 +2660,55 @@ keyboard, or a decision.
    and `a4_plocks::is_compacted` — rather than turned into rules. The reader is
    finished and the writer waits for the capture, which is the same refusal
    `build_pattern` makes about item 4 one level down.
+
+   **How the capture was aimed, kept because it is the argument the dump rests
+   on.** The two readings were not equally supported, which was measured while
+   setting the experiment up and changed what the experiment had to be. The
+   sentence above says "RESO never has" and the test loops over five fixtures,
+   which reads as five independent RESO samples. It is one. Across every capture
+   there is exactly **one distinct RESO lock** — SYN1, step 1, coarse 100 — seen
+   four times because RESO was the *control* in those diffs and was deliberately
+   not touched. FREQ, over the same fixtures, has **five distinct fine bytes and
+   not one of them is zero**, which is what a fractional parameter looks like.
+
+   So "the box omits an all-zero extension" requires RESO's single sample to have
+   landed on a fine byte of exactly zero — a 1-in-256 accident — where "RESO is
+   integer-valued" needs no accident at all. The prior favours integer-valued at
+   roughly 256:1, and n=1 is why that is worth nothing yet.
+   `the_reso_observation_rests_on_a_single_lock` pins the counts so the next
+   reader does not have to re-derive them.
+
+   **The capture, and it is one dump.** From a cleared A16, put **trigs on steps
+   1, 5, 9 and 13 of SYN1** — every p-lock capture so far carries a trig on the
+   locked step, so a lock lives on a trig and this is a prerequisite rather than
+   a detail. Then p-lock **RESO on those four steps** to four clearly different
+   values, with ordinary encoder turns rather than fine-adjust: an ordinary turn
+   is exactly the gesture that produced FREQ's fractional fine bytes, so it is
+   the gesture under test. Then p-lock **FREQ on the same four steps** as a
+   control, since FREQ is known to allocate an extension and its lane is what
+   says the capture is good. Save, dump from the front panel, and run
+   `examples/a4_plock_extension_check.rs` over it.
+
+   - RESO's lane **has** an extension → the box omits an all-zero one, and an
+     encoder emits one only when some fine byte is non-zero.
+   - RESO's lane **has none across four distinct values** → RESO is
+     integer-valued, and the other reading would need four separate 1-in-256
+     accidents.
+
+   **Both outcomes give the same encoder rule** — emit an extension iff some fine
+   byte is non-zero — and that is worth knowing before the capture rather than
+   after, because it means the writer is unblocked either way. What neither
+   outcome touches is a third possibility: that some parameter *requires* an
+   extension even when its fine bytes are all zero. **No dump can show a device
+   requiring something**, so that is a write test, and it is the same shape as the
+   compaction question in the paragraph above.
+
+   **The four-step control is not only a control.** Every p-lock in every capture
+   so far sits on step 1, so a four-step FREQ lane is also the first measurement
+   of an extension carrying a fine byte **per step** rather than the lane geometry
+   implying it. That gap was found by the same count as the RESO one, and it costs
+   nothing to close in the same dump — §12's finding again: vary the axis the
+   question did not obviously need.
 4. **The ragged final group.** 12,974 is 1853×7+3 and no capture has a high bit
    in the last three bytes, so both bit orders encode it identically and no
    capture can settle it. `encode7` refuses rather than guess. A payload that

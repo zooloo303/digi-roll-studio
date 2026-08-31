@@ -17,6 +17,7 @@
 //! | `A16-plock-plus-syn2-freq64` | the same FREQ on SYN2, which proves the track byte |
 //! | `A16-plock-freq64-reso100-base` | a fresh baseline minutes before the next change |
 //! | `A16-plock-freq100-reso100` | FREQ 64 → 100 and nothing else, which proves the extension lane |
+//! | `A16-plock-reso4-freq64` | four RESO values on one lane, which closed open item 3 |
 //! | `A01` | a factory pattern — musical, and the only rich capture here |
 //! | `A01-postreset` | A01 after a factory reset, which anchors the trig finding |
 //!
@@ -32,8 +33,9 @@ mod common;
 use common::{a4_pattern, fixture_bytes};
 
 use digi_protocol::a4_pattern::{
-    build_pattern, note_name, read_track_states, read_track_trigs, set_note_trig, track_default_note,
-    TrigState, NUM_TRACKS, PAYLOAD_LEN, TRACK_BASE, TRACK_STRIDE,
+    build_pattern, build_trig_probe, note_name, parse_pattern, read_track_states, read_track_trigs,
+    set_note_trig, track_default_note, TrigState, NO_NOTE, NUM_TRACKS, PAYLOAD_LEN, PROBE_NOTE,
+    TRACK_BASE, TRACK_STRIDE, TRIG_BYTE0_POSITIONAL,
 };
 use digi_protocol::a4_plocks::{
     free_lane_count, is_compacted, orphan_extension_count, read_all_plocks, read_track_plocks,
@@ -47,11 +49,13 @@ const FREQ64_RESO100: &str = "analogfour-A16-plock-freq64-reso100-2026-08-31.syx
 const PLUS_SYN2: &str = "analogfour-A16-plock-plus-syn2-freq64-2026-08-31.syx";
 const BASE: &str = "analogfour-A16-plock-freq64-reso100-base-2026-08-31.syx";
 const FREQ100: &str = "analogfour-A16-plock-freq100-reso100-2026-08-31.syx";
+const RESO4: &str = "analogfour-A16-plock-reso4-freq64-2026-08-31.syx";
 const A01: &str = "analogfour-A01-2026-08-30.syx";
 const A01_POSTRESET: &str = "analogfour-A01-postreset-2026-08-31.syx";
 
-const ALL: [&str; 9] =
-    [CLEAR, TRIGLESS, FREQ64, FREQ64_RESO100, PLUS_SYN2, BASE, FREQ100, A01, A01_POSTRESET];
+const ALL: [&str; 10] = [
+    CLEAR, TRIGLESS, FREQ64, FREQ64_RESO100, PLUS_SYN2, BASE, FREQ100, RESO4, A01, A01_POSTRESET,
+];
 
 // --- Framing -----------------------------------------------------------------
 
@@ -288,6 +292,135 @@ fn the_confirmed_write_reproduces_and_reframes() {
     assert_eq!(reparsed.slot, p.slot);
 }
 
+/// **Residue appears at both parities of the positional bit, and always with an
+/// unset note lane.** Measured here rather than reasoned about, because it is
+/// what [`build_trig_probe`] authors and a probe that authored the wrong bytes
+/// would test nothing.
+///
+/// A01 SYN4 holds fifteen residue steps against four live ones. Four of the
+/// fifteen read `(09,c0)` — byte 0 carrying [`TRIG_BYTE0_POSITIONAL`] *and* the
+/// residue bit — so byte 0 bit 0 and bit 3 are independently set in real data,
+/// which is the thing a single-parity capture could not have shown.
+///
+/// Every one of the fifteen has [`NO_NOTE`] in the note lane. So the residue the
+/// box leaves behind is a note trig that took the **track default** and then lost
+/// its state bits, not one whose own note byte was erased.
+#[test]
+fn a01_syn4_residue_carries_an_unset_note_lane_at_both_parities() {
+    let p = a4_pattern(A01).payload;
+    let states = read_track_states(&p, 3).unwrap();
+
+    let residue: Vec<usize> = (0..64).filter(|&i| states[i] == TrigState::Residue).collect();
+    assert_eq!(
+        residue.iter().map(|i| i + 1).collect::<Vec<_>>(),
+        vec![2, 3, 5, 7, 9, 11, 13, 15, 19, 35, 44, 48, 50, 51, 53],
+        "fifteen residue steps, and read_track_trigs shows none of them"
+    );
+    assert_eq!(read_track_trigs(&p, 3).unwrap().len(), 4, "the four the box lights");
+
+    let mut parities = std::collections::BTreeSet::new();
+    for &i in &residue {
+        let o = TRACK_BASE + 3 * TRACK_STRIDE + i * 2;
+        assert_eq!(p[o + 1], 0xc0, "step {} byte 1", i + 1);
+        assert_eq!(p[o] & 0x01, 0x01, "step {} residue bit", i + 1);
+        assert_eq!(
+            p[TRACK_BASE + 3 * TRACK_STRIDE + 128 + i],
+            NO_NOTE,
+            "step {} note lane: every residue step took the track default",
+            i + 1
+        );
+        parities.insert(p[o]);
+    }
+    assert_eq!(
+        parities.into_iter().collect::<Vec<_>>(),
+        vec![0x01, 0x09],
+        "both parities of the positional bit occur beside the residue bit"
+    );
+}
+
+/// **The write experiment, pinned on this side of the cable.** PLAN.md §10 open
+/// item 2 is the one question about this format a capture cannot answer, and
+/// this is everything about it that can be checked without a box: that the
+/// authored bytes are the bytes the box itself writes for each of the four
+/// states, that the reader and the hand-written prediction agree on all seven
+/// steps, and that the result is a message the A4's own checksum accepts.
+///
+/// The front-panel half **ran on 2026-08-31 (A4 0195) and every prediction
+/// held**: steps 3, 5 and 12 lit, the other 61 dark, and 3 and 12 shown as
+/// trigless trigs rather than merely lit. So the box reads these bytes the way
+/// it writes them, and this test is now the regression that keeps the authored
+/// bytes equal to the ones hardware accepted.
+#[test]
+fn the_trig_probe_authors_the_four_states_and_predicts_three_lit_leds() {
+    let baseline = a4_pattern(TRIGLESS);
+    let probe = build_trig_probe(&baseline).unwrap();
+
+    assert_eq!(probe.slot, baseline.slot, "the probe overwrites the slot it came from");
+    assert_eq!(probe.track, 0, "SYN1");
+    assert_eq!(probe.expected_lit_steps(), vec![3, 5, 12], "the whole prediction");
+
+    // The bytes, against the four states the box's own screen established.
+    let expected: [(usize, (u8, u8), u8, TrigState); 7] = [
+        (1, (0x00, 0x00), NO_NOTE, TrigState::Empty),
+        (3, (0x00, 0x02), NO_NOTE, TrigState::Trigless),
+        (5, (0x01, 0xc1), PROBE_NOTE, TrigState::Note),
+        (7, (0x00, 0x00), NO_NOTE, TrigState::Empty),
+        (9, (0x01, 0xc0), NO_NOTE, TrigState::Residue),
+        (10, (0x09, 0xc0), NO_NOTE, TrigState::Residue),
+        (12, (0x08, 0x02), NO_NOTE, TrigState::Trigless),
+    ];
+    for (i, &(step, bytes, note, state)) in expected.iter().enumerate() {
+        let s = &probe.steps[i];
+        assert_eq!(s.step, step);
+        assert_eq!(s.bytes, bytes, "step {step} trig bytes");
+        assert_eq!(s.note, note, "step {step} note lane");
+        assert_eq!(s.state, state, "step {step} state");
+        // The reader and the hand-written prediction are independent, and this
+        // is where they have to meet. PROBE_STEPS deliberately does not compute
+        // its column from `is_live`.
+        assert_eq!(
+            s.state.is_live(),
+            s.expect_lit,
+            "step {step}: the reader and the prediction disagree"
+        );
+    }
+
+    // The two residue steps put the same state either side of the positional
+    // bit, which one parity could not have separated.
+    assert_eq!(probe.steps[4].bytes.0 & TRIG_BYTE0_POSITIONAL, 0);
+    assert_eq!(probe.steps[5].bytes.0 & TRIG_BYTE0_POSITIONAL, TRIG_BYTE0_POSITIONAL);
+
+    // Ten bytes changed and no more. Nothing outside SYN1's trig and note lanes
+    // moves, so a surprise on the screen is about these ten bytes.
+    let diffs: Vec<usize> =
+        (0..PAYLOAD_LEN).filter(|&i| baseline.payload[i] != probe.payload[i]).collect();
+    assert_eq!(diffs, vec![5, 9, 12, 13, 20, 21, 22, 23, 27, 136]);
+    assert!(diffs.iter().all(|&i| i < TRACK_BASE + TRACK_STRIDE), "SYN1 only");
+
+    // And it frames as a message the box would accept.
+    let msg = probe.build().unwrap();
+    let reparsed = parse_pattern(&msg).unwrap();
+    assert_eq!(reparsed.payload, probe.payload);
+    assert_eq!(reparsed.slot, baseline.slot);
+}
+
+/// A baseline with something already on the probe's steps would frame and send
+/// perfectly well, and its predictions would silently not hold. So the wrong
+/// baseline is an error rather than a caveat — including the cleared A16, which
+/// is the obvious file to reach for and lacks the trigless trig step 1 needs.
+#[test]
+fn the_trig_probe_refuses_a_baseline_it_cannot_predict() {
+    let err = build_trig_probe(&a4_pattern(CLEAR)).unwrap_err();
+    assert!(err.contains("trigless trig on SYN1 step 1"), "{err}");
+
+    // A01 has the trigless requirement failed too, but check the second guard
+    // directly: take the right baseline and occupy one of the bare steps.
+    let mut baseline = a4_pattern(TRIGLESS);
+    set_note_trig(&mut baseline.payload, 0, 8, Some(0x30)).unwrap();
+    let err = build_trig_probe(&baseline).unwrap_err();
+    assert!(err.contains("probe step 9 must start bare"), "{err}");
+}
+
 // --- The p-lock pool ---------------------------------------------------------
 
 /// In a cleared pattern all 256 `FF` bytes in the 8,448-byte region sit at
@@ -423,13 +556,15 @@ fn the_extension_lane_carries_the_fine_half_of_one_value() {
 }
 
 /// **FLTR1 FREQ has allocated an extension in every capture and RESO never
-/// has.** Either RESO is integer-valued or the box omits an extension whose fine
-/// bytes are all zero, and no capture can say which — so this test pins the
-/// observation rather than a rule, and PLAN.md §10 open item 3 is why there is
-/// no gen-1 pool writer.
+/// has**, now across six captures including the four-value RESO lane that settled
+/// why. This was the shape of open item 3: either RESO was integer-valued or the
+/// box omitted an all-zero extension, and no capture *we had* could say which.
+/// [`four_reso_values_on_one_lane_allocate_no_extension`] is the one that could,
+/// and it is integer-valued — so this is now a rule for RESO and still only an
+/// observation for every parameter whose id this box has not mapped.
 #[test]
 fn freq_always_has_an_extension_and_reso_never_does() {
-    for name in [FREQ64, FREQ64_RESO100, PLUS_SYN2, BASE, FREQ100] {
+    for name in [FREQ64, FREQ64_RESO100, PLUS_SYN2, BASE, FREQ100, RESO4] {
         for lane in read_all_plocks(&a4_pattern(name).payload).unwrap() {
             match lane.param_id {
                 0x22 => assert!(lane.ext_lane.is_some(), "{name}: FREQ lane {}", lane.lane),
@@ -438,6 +573,158 @@ fn freq_always_has_an_extension_and_reso_never_does() {
             }
         }
     }
+}
+
+/// **Open item 3, answered on the box 2026-08-31: FLTR1 RESO is integer-valued.**
+///
+/// Four RESO locks on one SYN1 lane at **0, 50, 90 and 127** — the ends of the
+/// range and two points inside it — and the pool allocated **no extension lane at
+/// all**. The competing reading, that the box omits an extension whose fine bytes
+/// are all zero, would need all four of those to have landed on a fine byte of
+/// exactly zero: four independent 1-in-256 accidents.
+///
+/// 0 and 127 in the same lane are worth their own line. RESO spans the full
+/// 0..=127 as integers, which is what a parameter with 128 discrete positions
+/// looks like and what a parameter with sub-unit resolution does not.
+///
+/// **The encoder rule this licenses** — emit an extension iff some fine byte is
+/// non-zero — was the same under either answer, so what this closes is confidence
+/// rather than the rule. The pool writer is still blocked, on the *other* unknown
+/// in [`digi_protocol::a4_plocks`]'s module doc: whether the box requires the
+/// compacted order it produces. That one is a write test.
+#[test]
+fn four_reso_values_on_one_lane_allocate_no_extension() {
+    let p = a4_pattern(RESO4).payload;
+    let lanes = read_all_plocks(&p).unwrap();
+
+    let reso = lanes.iter().find(|l| l.param_id == 0x23).expect("a RESO lane");
+    assert_eq!(reso.track, 0, "SYN1");
+    assert_eq!(reso.ext_lane, None, "no extension lane — the whole finding");
+    assert!(reso.fine.is_none());
+
+    let locked: Vec<(usize, u8)> =
+        (0..64).filter_map(|s| reso.values[s].map(|v| (s + 1, v))).collect();
+    assert_eq!(
+        locked,
+        vec![(1, 0), (5, 50), (9, 90), (13, 127)],
+        "four distinct values including both ends of the range"
+    );
+    // `word` reads an absent extension as fine = 0. That is the inference half of
+    // the module doc, and after this capture it is the *right* inference for RESO
+    // rather than a convenient one.
+    assert_eq!(reso.word(0), Some(0x0000));
+    assert_eq!(reso.word(12), Some(0x7f00));
+}
+
+/// **An extension lane is indexed per step, measured rather than inferred.**
+///
+/// Every p-lock captured before this one sat on step 1, so that a 64-byte
+/// extension carries a fine byte *per step* followed from the lane geometry and
+/// from nothing else. The control half of the item-3 capture put FREQ on four
+/// steps: the extension holds its fine byte at exactly steps 1, 5, 9 and 13 and
+/// [`NO_VALUE`](digi_protocol::a4_plocks::NO_VALUE) at the other sixty, matching
+/// its parent lane position for position.
+///
+/// **What this does not show** is a fine byte *differing* between steps of one
+/// lane: all four read 23, which is one gesture applied to four held trigs rather
+/// than four independent turns. So the indexing is measured and the per-step
+/// *independence* is still inference — a narrower gap than before and not a
+/// closed one, which is why this test asserts the fill pattern rather than a
+/// spread of values.
+#[test]
+fn a_four_step_lane_carries_its_fine_bytes_at_the_same_four_steps() {
+    let p = a4_pattern(RESO4).payload;
+    let lanes = read_all_plocks(&p).unwrap();
+
+    let freq = lanes.iter().find(|l| l.param_id == 0x22).expect("a FREQ lane");
+    assert!(freq.ext_lane.is_some(), "FREQ allocates an extension, as always");
+
+    let coarse: Vec<usize> = (0..64).filter(|&s| freq.values[s].is_some()).collect();
+    let fine_lane = freq.fine.as_ref().unwrap();
+    let fine: Vec<usize> = (0..64).filter(|&s| fine_lane[s].is_some()).collect();
+    assert_eq!(coarse, vec![0, 4, 8, 12]);
+    assert_eq!(fine, coarse, "the extension is filled at its parent's steps and nowhere else");
+
+    for &s in &coarse {
+        assert_eq!(freq.values[s], Some(64));
+        assert_eq!(fine_lane[s], Some(23), "one gesture on four held trigs");
+        assert_eq!(freq.word(s), Some(0x4017));
+    }
+}
+
+/// **The observation above reads like a generalisation and rests on one lock.**
+/// Recorded because it is the whole reason open item 3 is still open, and because
+/// the test above loops over five captures in a way that looks like five
+/// independent RESO samples.
+///
+/// It is not. Across every fixture there is exactly **one** distinct RESO lock —
+/// SYN1, step 1, coarse 100 — captured four times because RESO was the *control*
+/// in those diffs and was deliberately not touched. FREQ, meanwhile, has five
+/// distinct fine bytes and **none of them is zero**.
+///
+/// So the two hypotheses are not equally supported by the same amount of
+/// evidence: "the box omits an all-zero extension" requires that one RESO sample
+/// to have landed on a fine byte of exactly zero, which is a 1-in-256 accident,
+/// while "RESO is integer-valued" explains it outright. That asymmetry is worth
+/// having written down, and it is also why **one** further RESO lock at a
+/// different value settles it.
+///
+/// The other gap this pins: **every lock in these captures is on step 1.** No
+/// multi-step lane had been captured, so that an extension carries a fine byte
+/// *per step* was inference from the lane geometry rather than a measurement.
+///
+/// **Both gaps were closed the same day by one dump** — see
+/// [`four_reso_values_on_one_lane_allocate_no_extension`] and
+/// [`a_four_step_lane_carries_its_fine_bytes_at_the_same_four_steps`]. This test
+/// is kept because it is the *argument* for that dump: it holds the sample counts
+/// that made a 1-in-256 accident the alternative to a measurement, and a fixture
+/// list that grows past them is how the next thin generalisation gets caught.
+#[test]
+fn the_reso_observation_rests_on_a_single_lock() {
+    let mut reso = std::collections::BTreeSet::new();
+    let mut freq_fine = std::collections::BTreeSet::new();
+    let mut freq_lanes = 0;
+    let mut reso_lanes = 0;
+
+    for name in [FREQ64, FREQ64_RESO100, PLUS_SYN2, BASE, FREQ100] {
+        for lane in read_all_plocks(&a4_pattern(name).payload).unwrap() {
+            let locked: Vec<usize> =
+                (0..64).filter(|&s| lane.values[s].is_some()).collect();
+            assert_eq!(locked, vec![0], "{name}: every captured lock is on step 1 alone");
+
+            match lane.param_id {
+                0x22 => {
+                    freq_lanes += 1;
+                    freq_fine.insert(lane.fine.as_ref().unwrap()[0].unwrap());
+                }
+                0x23 => {
+                    reso_lanes += 1;
+                    reso.insert((lane.track, lane.values[0].unwrap()));
+                }
+                other => panic!("{name}: unexpected param id {other:#04x}"),
+            }
+        }
+    }
+
+    assert_eq!(reso_lanes, 4, "four RESO lane-instances");
+    assert_eq!(
+        reso.into_iter().collect::<Vec<_>>(),
+        vec![(0, 100)],
+        "...and all four are the SAME lock: SYN1, coarse 100"
+    );
+
+    assert_eq!(freq_lanes, 6, "six FREQ lane-instances");
+    assert_eq!(
+        freq_fine.iter().copied().collect::<Vec<_>>(),
+        vec![23, 52, 96, 113, 116],
+        "five distinct fine bytes"
+    );
+    assert!(
+        !freq_fine.contains(&0),
+        "and never zero — a fractional parameter looks like this, which is what \
+         makes RESO's single absent extension a 1-in-256 accident under the \
+         omit-when-zero hypothesis"
+    );
 }
 
 /// Four takes of a displayed "64" produced fine bytes of 23, 52, 113 and 116: a

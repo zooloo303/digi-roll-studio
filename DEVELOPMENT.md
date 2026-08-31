@@ -863,6 +863,34 @@ bit 0 is residue from a note trig that used to be there.
   the decode against the name, because when they disagree it is usually not the
   name that is wrong.
 
+**Closed on 2026-08-31 by an experiment rather than by another capture**, and the
+shape of it is the lesson's other half. Three models had been settled by *reading*
+what the box sent; what none of them could touch was whether the box reads its own
+bytes the way it writes them — `(01,c0)` is a bit that is **set** and must be
+ignored, and no dump can show a device ignoring something. So all four states were
+authored onto one cleared track and handed back to the box, with the prediction
+written down first. Steps 3, 5 and 12 lit and the other 61 stayed dark.
+
+- **A model confirmed in one direction is confirmed in one direction.** Read and
+  write are separate claims about a format, and this one had two days of evidence
+  for the first and none for the second. The gap did not show up as a doubt
+  anywhere, because everything that could be checked agreed.
+- **Write the prediction down before you look, and do not compute it from the
+  model under test.** `PROBE_STEPS` carries the expected LEDs as a hand-written
+  column; `ProbeStep::state` carries what the reader thinks; a test asserts the
+  two agree. Had the prediction been `TrigState::is_live`, the experiment would
+  have measured nothing and looked rigorous doing it.
+- **The controls are what make a surprise readable, and one of them is not
+  optional.** A send that never arrives leaves the slot holding something unknown,
+  so three of the four predicted-dark steps are also what total failure looks like.
+  The one step carrying a shape hardware had already accepted is what separates
+  "the model holds" from "nothing happened" — read it first.
+- **The box answered a question that was not asked.** Steps 3 and 12 did not just
+  light; the box showed them as *trigless* trigs. An experiment aimed at one bit
+  confirmed the box's whole interpretation of the byte, because the instrument was
+  a screen with more on it than a yes and a no. Point the cheapest instrument at
+  the question and read everything it happens to say.
+
 ### 17. A claim about your own code, written from reading it, is a guess
 
 The A4 gen-1 port was scoped, over two days and in two documents, around three

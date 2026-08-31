@@ -159,6 +159,13 @@ pub const TRIG_BYTE0_POSITIONAL: u8 = 0x08;
 /// Neil looking at an unlit LED, either side of a factory reset.
 /// DEVELOPMENT.md lesson 16 is the whole story.
 ///
+/// **Confirmed from the write side 2026-08-31 on A4 0195**, which is the half
+/// that reading dumps could never establish: the box was handed all four states
+/// authored by this module and displayed each one as the table below says. So
+/// the A4 reads these two bytes the way it writes them, and `byte1 & 0x03`
+/// decides the display in both directions. [`build_trig_probe`] is the
+/// experiment.
+///
 /// | bytes | state | the box shows |
 /// |---|---|---|
 /// | `(00,00)` | [`Empty`](TrigState::Empty) | nothing |
@@ -177,6 +184,12 @@ pub enum TrigState {
     /// was taken off again; the box stopped honouring the bit without erasing
     /// it. Displays as an empty step, and counting it as a trig is the bug that
     /// took two models to find.
+    ///
+    /// **The box ignores the bit on the way in as well**, which is the sharp
+    /// half of [`build_trig_probe`] and was confirmed on 2026-08-31: `(01,c0)`
+    /// and `(09,c0)` were authored onto bare steps of an A4 and both stayed
+    /// dark. A set bit that must be ignored is the one thing no capture could
+    /// have shown.
     Residue,
 }
 
@@ -445,14 +458,11 @@ pub fn set_note_trig(
 
 /// Author a trigless trig on one step, in place.
 ///
-/// **Predicted, not verified.** The model says the box reads `byte1 & 0x03`
-/// alone, so `(00,02)` on a bare step should light a trigless trig — and that is
-/// what the box wrote when Neil made one by hand, which is why the bytes are not
-/// in doubt. What is untested is the box *accepting* them from us: no A4 write
-/// has yet carried anything but a note trig. This is open item 2 in PLAN.md §10,
-/// and the sharper half of that experiment is the reverse — authoring `(01,c0)`
-/// and confirming the box shows nothing, since it asks the box to ignore a bit
-/// that is set.
+/// **Hardware-confirmed 2026-08-31 on A4 0195**, by [`build_trig_probe`]. The
+/// box lit steps 3 and 12 of the probe and **showed them as trigless trigs**,
+/// which is more than the LED: it is the box reading byte 1 bit 1 the way this
+/// function writes it. Step 12 carries `(08,02)`, so the positional bit does not
+/// interfere.
 ///
 /// Byte 0 is left alone entirely: the box's own trigless trig on a cleared A16
 /// changed byte 1 and nothing else.
@@ -477,6 +487,11 @@ pub fn set_trigless_trig(payload: &mut [u8], track: usize, step: usize) -> Resul
 /// The note lane is not touched either. It is a per-step lane, so [`NO_NOTE`]
 /// there means "use the track default" rather than "no note", and rewriting it
 /// would be a second, unasked-for edit.
+///
+/// **Hardware-confirmed 2026-08-31 on A4 0195.** The probe cleared a trigless
+/// trig the box itself had written, and the box showed step 1 dark — so a clear
+/// authored here takes, and the `(01,c0)` this leaves behind on a note trig
+/// really does display as an empty step.
 pub fn clear_trig(payload: &mut [u8], track: usize, step: usize) -> Result<(), String> {
     check_payload(payload)?;
     check_track(track)?;
@@ -491,6 +506,193 @@ fn check_step(step: usize) -> Result<(), String> {
         return Err(format!("no step {step}; an A4 track has {NUM_STEPS}"));
     }
     Ok(())
+}
+
+// --- The trig-model write probe ----------------------------------------------
+
+/// SYN1. One track, one screen page, and the track whose LEDs Neil has already
+/// read twice.
+pub const PROBE_TRACK: usize = 0;
+
+/// The note the probe's control trig carries. `0x30` is the only note byte a
+/// write has ever put on this box, and the box displayed it as C4 — so if the
+/// control step misbehaves, the send is at fault rather than the note.
+pub const PROBE_NOTE: u8 = 0x30;
+
+/// The probe's seven steps: `(step, the box should light it, what a
+/// disagreement would mean)`.
+///
+/// **`expect_lit` here is a hand-written prediction, deliberately not derived
+/// from [`TrigState::is_live`].** The experiment is a test of the model, and a
+/// prediction computed by the model under test would agree with it by
+/// construction. [`ProbeStep::state`] carries what the reader thinks; this
+/// column carries what the box is claimed to do; a test asserts they match, and
+/// the front panel is the third witness that settles it.
+const PROBE_STEPS: [(usize, bool, &str); 7] = [
+    (1, false, "our clear does not take — the box keeps a trig we removed"),
+    (3, true, "the box will not accept a trigless trig authored by us"),
+    (5, true, "the send did not land at all; discard the run and retry the cable"),
+    (7, false, "a step we never touched lit — the write reached the wrong offsets"),
+    (9, false, "the box honours byte 0 bit 0, so `byte1 & 0x03` alone is WRONG"),
+    (10, false, "the same, on a step whose positional bit is set"),
+    (12, true, "the positional bit suppresses an authored trigless trig"),
+];
+
+/// One step of [`build_trig_probe`]: the bytes authored, and what the front
+/// panel should show if the trig model holds.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProbeStep {
+    /// One-based, as the box counts steps.
+    pub step: usize,
+    /// The two trig bytes as they ended up in the payload.
+    pub bytes: (u8, u8),
+    /// The note lane byte, [`NO_NOTE`] where unset.
+    pub note: u8,
+    /// What [`trig_state`] reads [`ProbeStep::bytes`] as — **our** reading.
+    pub state: TrigState,
+    /// What the **box** is predicted to do — hand-written, and deliberately not
+    /// computed from [`ProbeStep::state`]. See [`build_trig_probe`].
+    pub expect_lit: bool,
+    /// What it means if the box disagrees with `expect_lit` on this step.
+    pub falsifies: &'static str,
+}
+
+/// A pattern authored to make the trig model falsifiable on a front panel.
+#[derive(Debug, Clone)]
+pub struct TrigProbe {
+    /// The slot the baseline came from, and the slot this would overwrite.
+    pub slot: u8,
+    pub payload: Vec<u8>,
+    pub track: usize,
+    pub steps: Vec<ProbeStep>,
+}
+
+impl TrigProbe {
+    /// The steps whose LEDs should be lit, which is the whole prediction in one
+    /// line: **3, 5 and 12, and nothing else on the track.**
+    pub fn expected_lit_steps(&self) -> Vec<usize> {
+        self.steps.iter().filter(|s| s.expect_lit).map(|s| s.step).collect()
+    }
+
+    /// Frame the probe as a sendable message.
+    pub fn build(&self) -> Result<Vec<u8>, String> {
+        build_pattern(self.slot, &self.payload)
+    }
+}
+
+/// Author the four trig states onto one track, so that **one look at the front
+/// panel** either confirms the trig model or refutes it.
+///
+/// This was PLAN.md §10's item 2 — **closed 2026-08-31**, and the last question
+/// about this format that a capture could not answer. The model says the box reads
+/// `byte1 & 0x03` alone and that byte 0 bit 0 is residue it ignores. Every byte
+/// behind that claim came from dumps the box *sent*; nothing establishes that
+/// the box reads its own bytes the way it writes them, and the sharp half — a
+/// bit that is set and must be ignored — cannot be checked from this side of the
+/// cable at all.
+///
+/// The layout, on [`PROBE_TRACK`], with the predicted LEDs:
+///
+/// | step | authored | bytes | box should show |
+/// |---|---|---|---|
+/// | 1 | the baseline's own trigless trig, cleared | `(00,00)` | nothing |
+/// | 3 | [`set_trigless_trig`] | `(00,02)` | **a trig** |
+/// | 5 | [`set_note_trig`] with [`PROBE_NOTE`] | `(01,c1)` | **a trig** |
+/// | 7 | nothing — left as the baseline has it | `(00,00)` | nothing |
+/// | 9 | a note trig, then [`clear_trig`] | `(01,c0)` | nothing |
+/// | 10 | the same, on an odd step | `(09,c0)` | nothing |
+/// | 12 | [`set_trigless_trig`] on an odd step | `(08,02)` | **a trig** |
+///
+/// **Run on hardware 2026-08-31, A4 0195: every one of the seven predictions
+/// held.** Steps 3, 5 and 12 lit and the other 61 steps were dark, and 3 and 12
+/// showed as *trigless* trigs rather than merely lit — so the box read byte 1
+/// bit 1 as this module writes it, ignored byte 1 bit 0 where it was clear, and
+/// ignored byte 0 bit 0 at both parities of the positional bit. PLAN.md §10 open
+/// item 2 closed on that run.
+///
+/// The function is kept rather than deleted, for the reason
+/// `probe_drive_read.rs` is kept: it is the experiment the finding rests on, and
+/// a claim whose experiment has been thrown away is a claim on trust.
+///
+/// **Steps 9 and 10 are the experiment**; the rest are controls that say which
+/// way to read a surprise. Step 5 is the shape hardware has already accepted, so
+/// a dark step 5 means the send failed rather than the model did. Steps 9 and 10
+/// carry the same state at both parities of the positional bit, because
+/// [`TRIG_BYTE0_POSITIONAL`] shares byte 0 with the residue bit and a single
+/// parity cannot separate them — the same trap as A01's slot 0 and the checksum
+/// start.
+///
+/// **Residue is authored by composition, not by a primitive**, because that is
+/// what it is: a note trig with the note taken off. [`set_note_trig`] with
+/// `None` then [`clear_trig`] leaves `(b0|01, c0)` and the note lane at
+/// [`NO_NOTE`] — which is byte-for-byte what all **fifteen** residue steps of
+/// A01 SYN4 hold, both parities included. A `set_residue` helper would have been
+/// one call and would have hidden that.
+///
+/// # The baseline
+///
+/// Takes a parsed dump rather than building from nothing, because a pattern this
+/// code invented would differ from a real one in 12,974 places and a surprise
+/// could be any of them. The intended baseline is
+/// `analogfour-A16-trigless-trk1-step1-2026-08-31.syx`: a real A16 dump, one
+/// change away from the message hardware has already accepted, and it carries
+/// the box's own trigless trig on step 1 — so clearing it is a free eighth
+/// question at no extra risk.
+///
+/// The preconditions are checked rather than assumed. A baseline with something
+/// already on the probe's steps would still frame and send, and its predictions
+/// would silently not hold.
+pub fn build_trig_probe(baseline: &A4Pattern) -> Result<TrigProbe, String> {
+    let mut payload = baseline.payload.clone();
+    check_payload(&payload)?;
+
+    let states = read_track_states(&payload, PROBE_TRACK)?;
+    if states[0] != TrigState::Trigless {
+        return Err(format!(
+            "the probe baseline must carry the box's own trigless trig on {} step 1, and this \
+             one reads {:?} there — the intended baseline is the A16-trigless capture",
+            TRACK_NAMES[PROBE_TRACK], states[0]
+        ));
+    }
+    for &(step, _, _) in &PROBE_STEPS[1..] {
+        if states[step - 1] != TrigState::Empty {
+            return Err(format!(
+                "probe step {step} must start bare and this baseline reads {:?} there",
+                states[step - 1]
+            ));
+        }
+    }
+
+    clear_trig(&mut payload, PROBE_TRACK, 0)?;
+    set_trigless_trig(&mut payload, PROBE_TRACK, 2)?;
+    set_note_trig(&mut payload, PROBE_TRACK, 4, Some(PROBE_NOTE))?;
+    // Step 7 is untouched on purpose, so leave index 6 alone.
+    for idx in [8, 9] {
+        set_note_trig(&mut payload, PROBE_TRACK, idx, None)?;
+        clear_trig(&mut payload, PROBE_TRACK, idx)?;
+    }
+    set_trigless_trig(&mut payload, PROBE_TRACK, 11)?;
+
+    // Read the bytes back out rather than recording what was asked for: the
+    // table a person checks against a screen should describe the payload that
+    // is actually going to be sent.
+    let steps = PROBE_STEPS
+        .iter()
+        .map(|&(step, expect_lit, falsifies)| {
+            let o = trig_offset(PROBE_TRACK, step - 1);
+            let bytes = (payload[o], payload[o + 1]);
+            ProbeStep {
+                step,
+                bytes,
+                note: payload[note_offset(PROBE_TRACK, step - 1)],
+                state: trig_state(bytes.0, bytes.1),
+                expect_lit,
+                falsifies,
+            }
+        })
+        .collect();
+
+    Ok(TrigProbe { slot: baseline.slot, payload, track: PROBE_TRACK, steps })
 }
 
 /// A note byte in the A4's own octave numbering: it displays `0x30` as **C4**.
