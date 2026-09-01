@@ -254,6 +254,46 @@ const CELL_BORDER_RAISED: Color32 = Color32::from_rgb(0x33, 0x41, 0x4a);
 
 /// A group heading: small, dim, and shouted, so it reads as furniture rather
 /// than as a value. Pass it already upper-cased.
+/// The line under a button: what just happened, and how loudly to say it.
+///
+/// **Three variants rather than a `Result`,** and the middle one was earned on
+/// hardware. `ui::presets` shipped an A4 refusal expressed by *removing* the
+/// button that had been pressed; Neil pressed it and reported that it "flashes
+/// and then the button disappears", which reads as a bug rather than as an
+/// answer. A control that vanishes is not a reply — so "it did not fail, and it
+/// did not do what you asked" needs somewhere to be said out loud, at the point
+/// of action. PLAN.md §10.6 step 5 is the write-up.
+///
+/// Lives here rather than in one panel because it is the shape of every panel
+/// that talks to a box. Its second user was `ui::a4`, the Analog Four's
+/// front-panel-dump panel, where most answers were `Warn` because "the A4
+/// cannot be re-read" — a premise that fell on 2026-08-31 and took the whole
+/// panel with it (the A4 transfers through `ui::transfer`/`ui::sync` now). The
+/// three-variant shape stays: `ui::presets` still needs all of it.
+pub enum Note {
+    /// It worked.
+    Good(String),
+    /// It did not fail, and it did not do what was asked either.
+    Warn(String),
+    Bad(String),
+}
+
+impl Note {
+    pub fn text(&self) -> &str {
+        match self {
+            Self::Good(t) | Self::Warn(t) | Self::Bad(t) => t,
+        }
+    }
+
+    pub fn colour(&self) -> Color32 {
+        match self {
+            Self::Good(_) => Color32::LIGHT_GREEN,
+            Self::Warn(_) => CAUTION,
+            Self::Bad(_) => Color32::LIGHT_RED,
+        }
+    }
+}
+
 pub fn caption(ui: &mut Ui, text: &str) {
     ui.label(egui::RichText::new(text).small().strong().color(CAPTION));
 }

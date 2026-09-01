@@ -78,6 +78,13 @@ use crate::trig_cond::{apply_track_prob, apply_track_trig_settings, trig_setting
 pub const WRITE_ALLOWED_BUILDS: &[(&str, &[&str])] = &[
     ("digitakt2", &["0070", "0071"]), // 1.15B, verified 2026-08-01; 1.15C, 2026-08-21
     ("digitone2", &["0049", "0050"]), // 1.10D, verified 2026-08-01; 1.10E, 2026-08-21
+    // 1.55B. The gen-1 write cycle on this build: a pattern sent and displayed
+    // 2026-08-30, four authored trig states shown as predicted 2026-08-31, and
+    // the same day a `0x64` fetch of A16 carried exactly the trigs the probe
+    // wrote — send, re-read and compare, at trig rather than byte granularity.
+    // The full byte-for-byte verify is what `a4_safe_write_tracks` runs on
+    // every write, so the first send through it completes this row's evidence.
+    ("analogfour", &["0195"]),
 ];
 
 /// How many mismatching offsets the verify step reports. The JS default is 64;
@@ -92,11 +99,17 @@ pub fn decoder_for(slug: &str) -> Option<&'static str> {
     match slug {
         "digitakt2" => Some("dt2"),
         "digitone2" => Some("dn2"),
+        // Gen-1: `crate::a4_pattern` is the struct, and there is no `Spec` —
+        // callers that need one ask `spec_for` and get `None`, which is how the
+        // gen-2 flow refuses this box (see `safe_write_tracks`).
+        "analogfour" => Some("a4"),
         _ => None,
     }
 }
 
-/// The pattern spec for a slug the gate has already accepted.
+/// The pattern spec for a slug the gate has already accepted, or `None` for a
+/// box whose decoder is not a gen-2 `Spec` — the Analog Four, whose format is
+/// `crate::a4_pattern` and whose write flow is [`a4_safe_write_tracks`].
 pub fn spec_for(slug: &str) -> Option<Spec> {
     match decoder_for(slug)? {
         "dt2" => Some(dt2_spec()),
@@ -263,10 +276,25 @@ pub fn pattern_kit_file(
         index,
         payload: payload.to_vec(),
         name: format!("{slug}-{}-{kind}-{}.syx", bank_name(index as usize), now.file_stamp()),
-        bytes: build_dump_message(family, DUMP_PATTERN_KIT, index, payload),
+        bytes: build_dump_message(family, pattern_dump_type(family), index, payload),
         slug: slug.to_string(),
         kind: kind.to_string(),
         at: now,
+    }
+}
+
+/// The dump opcode a pattern travels under, per family.
+///
+/// One byte, and it has to be looked up rather than assumed: a gen-2 pattern is
+/// an `0x50` pattern-kit, and the A4's is an `0x54` — numerically the digis'
+/// *project settings*, which is why `(family, dump_type)` is the key everywhere
+/// (`a4_pattern::is_a4_pattern` has the collision's whole story). A backup
+/// framed with the wrong one would replay as a different message.
+pub fn pattern_dump_type(family: u8) -> u8 {
+    if family == crate::protocol::FAMILY_ANALOG_FOUR {
+        crate::a4_pattern::DUMP_A4_PATTERN
+    } else {
+        DUMP_PATTERN_KIT
     }
 }
 
@@ -349,16 +377,21 @@ pub trait WriteHooks {
 /// budget sixteen times over that all sixteen tracks share.
 #[derive(Debug)]
 pub struct ConfirmArgs<'a> {
-    pub pattern_kit: &'a PatternKit,
+    /// The destination decoded, for the dialog's kit name and track kinds.
+    /// `None` on a gen-1 write ([`a4_safe_write_tracks`]), where there is no
+    /// `PatternKit` to decode into — the per-track facts below are still real.
+    pub pattern_kit: Option<&'a PatternKit>,
     pub label: String,
     pub index: u8,
     /// The swing the box is holding, so a UI can say what the write changes it
     /// *to*. This one reaches every track in the slot, unlike anything in
-    /// [`TrackConfirm`].
-    pub swing: u8,
+    /// [`TrackConfirm`]. `None` where swing is not in the mapped format — the
+    /// gen-1 write neither reads nor moves it.
+    pub swing: Option<u8>,
     /// Spare lanes in the pattern's pool of 80 — the budget *every* named track's
     /// lanes must fit between them, which is why it is here and not per track.
-    pub free_lanes: usize,
+    /// `None` where the write cannot spend from the pool at all.
+    pub free_lanes: Option<usize>,
     /// One entry per track being written, in the order the caller named them.
     /// Never empty: [`safe_write_tracks`] refuses a write with no tracks in it
     /// before anything is fetched.
@@ -549,7 +582,17 @@ pub fn safe_write_tracks(
     }
     // The gate passed, so the identity is present, decodable, and has a family.
     let identity = device.identity().expect("the gate refuses a missing identity").clone();
-    let spec = spec_for(&identity.slug).expect("the gate refuses an undecodable box");
+    // Decodable is not the same as gen-2 decodable: the gate also passes the
+    // Analog Four, whose decoder is `a4_pattern` and whose write flow is
+    // [`a4_safe_write_tracks`]. A caller that routed it here is refused rather
+    // than encoded with a `Spec` this box does not have.
+    let Some(spec) = spec_for(&identity.slug) else {
+        return Err(WriteError::Gate(format!(
+            "{} patterns are gen-1 — this write goes through the Analog Four flow, not the \
+             gen-2 one",
+            identity.name
+        )));
+    };
     let family = identity
         .family
         .expect("a decodable box has a dump family");
@@ -619,11 +662,11 @@ pub fn safe_write_tracks(
     }
 
     let consented = hooks.confirm(&ConfirmArgs {
-        pattern_kit: &target,
+        pattern_kit: Some(&target),
         label: label.clone(),
         index,
-        swing: read_swing(&spec, &original),
-        free_lanes: free_lane_count(&spec, &original),
+        swing: Some(read_swing(&spec, &original)),
+        free_lanes: Some(free_lane_count(&spec, &original)),
         tracks,
     });
     if !consented {
@@ -746,6 +789,251 @@ pub fn safe_write_tracks(
         dropped,
         written,
         warnings,
+        label,
+        index,
+        tracks: writes.iter().map(|w| w.track_index).collect(),
+        backup: Some(backup),
+        payload: Some(payload),
+    })
+}
+
+// --- the Analog Four's write ----------------------------------------------------
+
+/// One track's worth of gen-1 write, as `core` describes it.
+///
+/// The A4 twin of [`TrackWrite`], and smaller for the format's own reason: the
+/// mapped musical content of an A4 track is which steps have trigs and what
+/// note each plays ([`crate::a4_pattern`]'s module doc has the census), so that
+/// is everything a caller can say. Chords and notes past step 64 were resolved
+/// by the caller, whose warnings ride beside the write — the same split
+/// `core::export` makes for a gen-2 track.
+#[derive(Debug, Clone)]
+pub struct A4TrackWrite {
+    /// Destination slot, 0–127 — the box's eight banks of sixteen.
+    pub index: u8,
+    /// 0–5: SYN1–SYN4, FX, CV.
+    pub track_index: usize,
+    /// One entry per step, always all 64. `Some(pitch)` authors a note trig;
+    /// `None` clears the step — so this write is the track's whole trig lane,
+    /// exactly as a gen-2 [`TrackWrite`]'s notes are the track's whole contents,
+    /// and an empty track is a deliberate clear rather than a no-op.
+    pub steps: Vec<Option<u8>>,
+}
+
+/// Replace several tracks of **one** pattern on an Analog Four, safely, in one
+/// pass — [`safe_write_tracks`] for the gen-1 format.
+///
+/// A twin rather than a branch, for the reason `core` keeps `import` and
+/// `a4_transfer` as two files: the ceremony is the same five rules in the same
+/// order — gate, re-fetch, confirm, stash, send, read back, byte-compare — and
+/// almost nothing *inside* the steps is shared. The decode is
+/// [`crate::a4_pattern`]'s rather than a `Spec`'s, the encode is two lanes per
+/// track rather than an encoder with a trig-record pool, and there are no
+/// p-locks, no swing and no per-track PROB to carry, because none of those are
+/// in the mapped format.
+///
+/// **The re-fetch is what retired the baseline rule.** Until 2026-08-31 an A4
+/// write was composed on a dump kept from receive time, because "the A4 cannot
+/// be re-fetched" — and it can (`0x64`, PLAN.md §10 "The A4 answers dump
+/// requests"). Composing on the destination read moments before the send means
+/// the unmapped 10 KB — sounds, p-locks, every unnamed lane — is the
+/// *destination's own*, so a write can only ever differ from what is on the box
+/// right now by the tracks it was asked to change. That is `safe_write_tracks`'
+/// exact bargain, kept with the same bytes.
+///
+/// The one deliberate asymmetry: the send is DIN-paced by the [`PatternIo`]
+/// implementation, because an unpaced 14 KB frame is the shape this box has
+/// never once accepted (`digi_midi::a4_transfer`). Nothing here knows that —
+/// pacing is the wire's problem, and this function's `send` is one call either
+/// way.
+pub fn a4_safe_write_tracks(
+    device: &mut impl PatternIo,
+    stash: &Stash,
+    writes: &[A4TrackWrite],
+    hooks: &mut impl WriteHooks,
+    now: Timestamp,
+) -> Result<WriteResult, WriteError> {
+    use crate::a4_pattern::{
+        clear_trig, read_track_trigs, set_note_trig, slot_name, NUM_STEPS, NUM_TRACKS,
+        PAYLOAD_LEN, SLOT_MARKER,
+    };
+
+    let gate = write_gate(device.identity());
+    if !gate.ok {
+        return Err(WriteError::Gate(gate.reason));
+    }
+    let identity = device.identity().expect("the gate refuses a missing identity").clone();
+    // The mirror of `safe_write_tracks`' own refusal: the gate passes both
+    // formats, and a digi routed here would have its pattern-kit read at
+    // `a4_pattern`'s offsets — plausible nonsense, refused by name instead.
+    if decoder_for(&identity.slug) != Some("a4") {
+        return Err(WriteError::Gate(format!(
+            "{} patterns are gen-2 — this write goes through `safe_write_tracks`, not the \
+             Analog Four flow",
+            identity.name
+        )));
+    }
+    let family = identity.family.expect("a decodable box has a dump family");
+
+    // Before the fetch, because none of these need a box to be wrong.
+    let index = match writes {
+        [] => {
+            return Err(WriteError::Encode(
+                "nothing to write: a write with no tracks in it would back the slot up and send \
+                 it back unchanged"
+                    .into(),
+            ))
+        }
+        [first, ..] => first.index,
+    };
+    if let Some(stray) = writes.iter().find(|w| w.index != index) {
+        return Err(WriteError::Encode(format!(
+            "one write, one slot: these tracks are aimed at {} and {}",
+            slot_name(index),
+            slot_name(stray.index)
+        )));
+    }
+    for (position, write) in writes.iter().enumerate() {
+        if write.track_index >= NUM_TRACKS {
+            return Err(WriteError::Encode(format!(
+                "no track {}; an A4 pattern has {NUM_TRACKS}",
+                write.track_index + 1
+            )));
+        }
+        if write.steps.len() != NUM_STEPS {
+            return Err(WriteError::Encode(format!(
+                "track {} names {} steps and an A4 trig lane has {NUM_STEPS} — a partial lane \
+                 would leave steps nobody decided about",
+                write.track_index + 1,
+                write.steps.len()
+            )));
+        }
+        if writes[..position].iter().any(|w| w.track_index == write.track_index) {
+            return Err(WriteError::Encode(format!(
+                "track {} is named twice in one write — the second would silently replace the \
+                 first",
+                write.track_index + 1
+            )));
+        }
+    }
+
+    let label = slot_name(index);
+
+    // Rule: re-fetch. This payload is both the backup and the base we edit —
+    // see the header for what that buys on this box in particular.
+    hooks.on_status(&format!("Fetching {label} for backup…"));
+    let original = device.fetch_pattern_kit(index).map_err(WriteError::Io)?;
+    if original.len() != PAYLOAD_LEN {
+        return Err(WriteError::Encode(format!(
+            "the box answered {} bytes for {label}, an A4 pattern is {PAYLOAD_LEN}",
+            original.len()
+        )));
+    }
+
+    let mut tracks = Vec::with_capacity(writes.len());
+    for write in writes {
+        tracks.push(TrackConfirm {
+            track_index: write.track_index,
+            // `read_track_trigs` counts what the box shows — residue excluded —
+            // and the survey a UI ran before its dialog counts with the same
+            // call, so the two answers can be compared rather than reconciled.
+            existing_trigs: read_track_trigs(&original, write.track_index)
+                .map_err(WriteError::Encode)?
+                .len(),
+            note_count: write.steps.iter().filter(|s| s.is_some()).count(),
+            // The pool is real on this box and unmapped; a write never touches
+            // it, so there is nothing being cleared to warn about.
+            box_plocks: Vec::new(),
+        });
+    }
+
+    let consented = hooks.confirm(&ConfirmArgs {
+        pattern_kit: None,
+        label: label.clone(),
+        index,
+        swing: None,
+        free_lanes: None,
+        tracks,
+    });
+    if !consented {
+        return Ok(WriteResult {
+            ok: false,
+            cancelled: true,
+            diffs: Vec::new(),
+            dropped: 0,
+            written: 0,
+            warnings: Vec::new(),
+            label,
+            index,
+            tracks: writes.iter().map(|w| w.track_index).collect(),
+            backup: None,
+            payload: None,
+        });
+    }
+
+    // Rule 1, and the point past which the destination is recoverable — the
+    // bytes exactly as the box sent them, framed back up as the `0x54` message
+    // it would take again ([`pattern_dump_type`]).
+    let backup = pattern_kit_backup(&identity.slug, family, index, &original, now);
+    let stashed = stash
+        .stash(
+            &backup,
+            &BackupContext {
+                device_name: identity.name.clone(),
+                // Nothing in the mapped format is a kit name, and inventing one
+                // would label the restore list with a guess.
+                kit_name: String::new(),
+                track_index: match writes {
+                    [only] => Some(only.track_index),
+                    _ => None,
+                },
+            },
+        )
+        .map_err(WriteError::Stash)?;
+    hooks.on_backup(&backup).map_err(WriteError::Backup)?;
+    hooks.on_log(&format!("Backed up {} — restorable from “{}”", stashed.summary(), backup.name));
+
+    let mut payload = original.clone();
+    let mut written = 0usize;
+    for write in writes {
+        for (step, pitch) in write.steps.iter().enumerate() {
+            match pitch {
+                Some(p) => {
+                    // Written explicitly even when it equals the track default:
+                    // leaving the note lane at FF would make the trig follow a
+                    // default somebody may change on the box later.
+                    set_note_trig(&mut payload, write.track_index, step, Some(*p))
+                        .map_err(WriteError::Encode)?;
+                    written += 1;
+                }
+                None => clear_trig(&mut payload, write.track_index, step)
+                    .map_err(WriteError::Encode)?,
+            }
+        }
+    }
+    // The payload's own slot marker. Fetched from this very slot it already
+    // agrees — except on a slot the box has never saved, where it reads FF, and
+    // the box itself writes the slot here on every save. Doing the same is the
+    // one byte this write touches outside the named tracks' lanes.
+    payload[SLOT_MARKER] = index;
+
+    hooks.on_status(&match writes {
+        [only] => format!("Writing {label} T{}…", only.track_index + 1),
+        many => format!("Writing {} to {label}…", plural(many.len(), "track")),
+    });
+    device.send_pattern_kit(index, &payload).map_err(WriteError::Io)?;
+
+    hooks.on_status("Verifying — reading the pattern back…");
+    let reread = device.fetch_pattern_kit(index).map_err(WriteError::Io)?;
+    let diffs = diff_payloads(&payload, &reread, VERIFY_DIFF_CAP);
+
+    Ok(WriteResult {
+        ok: diffs.is_empty(),
+        cancelled: false,
+        diffs,
+        dropped: 0,
+        written,
+        warnings: Vec::new(),
         label,
         index,
         tracks: writes.iter().map(|w| w.track_index).collect(),
@@ -1112,11 +1400,11 @@ mod tests {
             box_plocks: Vec::new(),
         };
         let args = ConfirmArgs {
-            pattern_kit: &kit,
+            pattern_kit: Some(&kit),
             label: "A01".into(),
             index: 0,
-            swing: 50,
-            free_lanes: 80,
+            swing: Some(50),
+            free_lanes: Some(80),
             tracks: vec![track.clone(), TrackConfirm { track_index: 1, ..track }],
         };
         let _ = args.one();
@@ -1178,6 +1466,20 @@ mod tests {
         assert_eq!(r.reason, "no device connected");
     }
 
+    // The A4 passes the same gate the digis do — its decoder is `a4_pattern`
+    // rather than a `Spec`, which is `spec_for`'s answer and not the gate's.
+    #[test]
+    fn gate_passes_the_analog_four_on_its_verified_build_and_no_other() {
+        let r = write_gate(Some(&identity(4, "0195")));
+        assert!(r.ok, "{}", r.reason);
+        assert_eq!(r.spec_kind, Some("a4"));
+        assert!(spec_for("analogfour").is_none(), "gen-1 has no Spec to hand out");
+
+        let r = write_gate(Some(&identity(4, "0196")));
+        assert!(!r.ok, "an unverified A4 build must stay read-only");
+        assert!(r.reason.contains("0196"));
+    }
+
     #[test]
     fn the_allowlist_holds_only_the_builds_the_writes_were_verified_on() {
         // The one copy of this list in the crate. It had a duplicate at the crate
@@ -1185,7 +1487,11 @@ mod tests {
         // the one that drifts is the one nothing tests.
         assert_eq!(
             WRITE_ALLOWED_BUILDS,
-            &[("digitakt2", &["0070", "0071"][..]), ("digitone2", &["0049", "0050"][..])]
+            &[
+                ("digitakt2", &["0070", "0071"][..]),
+                ("digitone2", &["0049", "0050"][..]),
+                ("analogfour", &["0195"][..]),
+            ]
         );
     }
 

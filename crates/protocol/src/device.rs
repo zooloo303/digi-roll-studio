@@ -9,7 +9,9 @@
 // Protocol behaviour ported from elk-herd (BSD-2-Clause, © mzero):
 // src/SysEx.elm, src/Elektron/Instrument.elm, src/Project/Update.elm.
 
-use crate::protocol::{FAMILY_DIGITAKT, FAMILY_DIGITAKT_2, FAMILY_DIGITONE_2};
+use crate::protocol::{
+    FAMILY_ANALOG_FOUR, FAMILY_DIGITAKT, FAMILY_DIGITAKT_2, FAMILY_DIGITONE_2,
+};
 
 /// A product we recognise from the Device response. Only boxes with a known
 /// dump family byte can be backed up; anything else stays read-only until we
@@ -19,12 +21,13 @@ pub struct Product {
     pub product_id: u8,
     pub name: &'static str,
     pub slug: &'static str,
-    /// `None` for a box that answers the identity API but has no dump family —
-    /// the Analog Four, whose supported-opcode list contains no `0x6x` request
-    /// at all (captured 2026-08-28). Being *identifiable* and being
-    /// *dumpable* were the same thing until that box was plugged in, and this
-    /// is where they come apart: a row may name a box without claiming its
-    /// dumps can be read.
+    /// `None` for a box that answers the identity API but whose dump family
+    /// nobody has captured. The field became an `Option` for the Analog Four,
+    /// on the theory that it *had* no family — and that theory was wrong
+    /// (2026-08-31, PLAN.md §10 "The A4 answers dump requests"), so no shipped
+    /// row is `None` today. The `Option` stays: the next unmapped box will be
+    /// identifiable before it is dumpable again, and a row must be able to say
+    /// so without inventing a byte.
     pub family: Option<u8>,
 }
 
@@ -37,11 +40,13 @@ pub const PRODUCTS: &[Product] = &[
     Product { product_id: 43, name: "Digitone II", slug: "digitone2", family: Some(FAMILY_DIGITONE_2) },
     // Answers 0x01 with product id 4 and the name "Analog Four", on OS 1.55B
     // (build 0195) — so the mk1 does *not* predate this API, which is what the
-    // 2026-08-24 guess had assumed. `family: None` because the same reply's
-    // supported-opcode list is 01,02,03,04,06,07,09 then 50-5e: every file and
-    // store opcode, and not one `0x6x` dump request. There is no dump family to
-    // capture, rather than one nobody has looked for yet.
-    Product { product_id: 4, name: "Analog Four", slug: "analogfour", family: None },
+    // 2026-08-24 guess had assumed. This row said `family: None` for three
+    // days, reasoned from the same reply's supported-opcode list (01-09 and
+    // 50-5e, no 0x6x) — but that list describes the API namespace only, and on
+    // 2026-08-31 the box answered `0x60`–`0x6d` dump requests on family 0x06,
+    // the byte already sitting in `protocol.rs` from its own outbound dumps
+    // (`examples/a4_dump_probe`, PLAN.md §10 "The A4 answers dump requests").
+    Product { product_id: 4, name: "Analog Four", slug: "analogfour", family: Some(FAMILY_ANALOG_FOUR) },
 ];
 
 pub fn product_for_id(product_id: u8) -> Option<&'static Product> {
@@ -51,10 +56,12 @@ pub fn product_for_id(product_id: u8) -> Option<&'static Product> {
 /// The product a `core::DeviceModel`'s slug names, for a caller that has a row
 /// in a session and no box on the wire.
 ///
-/// The one thing worth asking it offline is [`Product::family`]: a box with none
-/// answers no `0x6x` request, so it has no `0x6b` to read a kit track back with
-/// and no `0x5b` to store one — which a preset browser needs to know before it
-/// offers to load anything, and can know without opening a port.
+/// The one thing worth asking it offline is [`Product::family`] — though note
+/// what it no longer implies: "a box with a family answers the kit-track
+/// `0x6b`/`0x5b` pair" held only while the gen-2 boxes were the only ones with
+/// families. The A4 has one and answers `0x6b` with something else entirely, so
+/// a preset browser deciding whether it can *load* keys on the pattern route,
+/// not on this field (`ui::presets::load_blocker` has the story).
 pub fn product_for_slug(slug: &str) -> Option<&'static Product> {
     PRODUCTS.iter().find(|p| p.slug == slug)
 }

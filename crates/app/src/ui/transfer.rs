@@ -14,11 +14,12 @@
 // one slot, never "the session"). The left rail is what you are composing; this
 // is what you are composing on.
 //
-// **Read-only, and structurally so.** The only thing this sends a box is the
-// 0x60 pattern-kit *request*, through `ElektronDevice`, whose every dump path
-// goes through `assert_request_opcode`. There is no write direction to reach
-// even by accident (PLAN.md §7 rule 2), so pressing Fetch is the same safety
-// class as Identify: it asks, it does not store.
+// **Read-only, and structurally so.** The only thing this sends a box is a
+// pattern *request* — the gen-2 `0x60`, or the A4's `0x64` since 2026-08-31 —
+// through `ElektronDevice`, whose every dump path goes through
+// `assert_request_opcode`. There is no write direction to reach even by
+// accident (PLAN.md §7 rule 2), so pressing Fetch is the same safety class as
+// Identify: it asks, it does not store.
 //
 // Four decisions worth the words:
 //
@@ -74,29 +75,40 @@
 use std::collections::HashMap;
 use std::sync::mpsc::{channel, Receiver};
 
-use digi_core::device::{model_for_slug, Device, PortRef};
+use digi_core::a4_transfer::A4ImportReport;
+use digi_core::device::{model_for_slug, Device, DeviceModel, PortRef};
 use digi_core::import::{Fetched, ImportReport};
+use digi_core::device::PatternRoute;
 use digi_core::session::PatternRef;
 use digi_core::{DeviceId, Session};
 use digi_midi::{ElektronDevice, PortBinding};
+use digi_protocol::a4_pattern::A4Pattern;
 use digi_protocol::pattern::{decode_pattern_kit, PatternKit, Spec};
 use eframe::egui::{self, Ui};
 
 use crate::engine::EngineLink;
 
-/// One fetched dump, owned, as the worker hands it back.
-///
-/// `Fetched` borrows, and it has to: the payload is ~111 KB and the trig lanes
-/// are read straight off it. So the worker returns the owned pieces and the
-/// borrow is taken on the UI thread, for the two statements it lives.
-struct Dump {
-    /// The spec of the box that *answered*, which is the point — see the header.
-    spec: &'static Spec,
-    kit: PatternKit,
-    payload: Vec<u8>,
-    from: PatternRef,
-    /// What the box called itself in the handshake, for the failure line.
-    answered: String,
+/// One fetched dump, owned, as the worker hands it back — in whichever format
+/// the box that *answered* speaks, which is the point (see the header): the
+/// import refuses a cross-format landing, and it can only do that if the bytes
+/// arrive labelled by what they are rather than by what the row expected.
+enum Dump {
+    /// A gen-2 pattern-kit, decoded with the spec of the box that answered.
+    ///
+    /// Owned rather than a `Fetched`, which borrows and has to: the payload is
+    /// ~111 KB and the trig lanes are read straight off it. So the worker
+    /// returns the owned pieces and the borrow is taken on the UI thread, for
+    /// the two statements it lives.
+    Gen2 {
+        spec: &'static Spec,
+        kit: PatternKit,
+        payload: Vec<u8>,
+        from: PatternRef,
+        /// What the box called itself in the handshake, for the failure line.
+        answered: String,
+    },
+    /// A gen-1 Analog Four pattern, fetched with `0x64`.
+    A4 { pattern: A4Pattern, answered: String },
 }
 
 /// A fetch in flight. The destination is captured at the press: the row's
@@ -111,6 +123,9 @@ struct Pending {
 /// What the last fetch on this row did.
 enum Outcome {
     Imported { into: PatternRef, report: ImportReport },
+    /// An Analog Four landing — its report counts different losses (trigless
+    /// trigs, an invented velocity) so it words its own summary.
+    ImportedA4 { into: PatternRef, report: A4ImportReport },
     /// Anything that stopped it: a port that would not open, a box that did not
     /// answer, a corrupt dump, a decode, or an import `core` refused.
     Failed(String),
@@ -163,6 +178,10 @@ impl TransferPanel {
             return edited;
         }
 
+        // Every box in the session, the A4 included: since 2026-08-31 it is
+        // fetched by request exactly as the digis are, so the FRONT-PANEL DUMP
+        // group this used to filter it out toward is gone. A live-only box
+        // still gets a row, with `blocker`'s sentence instead of pickers.
         let devices: Vec<DeviceId> = session.devices.iter().map(|d| d.id).collect();
         let last = devices.len().saturating_sub(1);
         for (position, id) in devices.into_iter().enumerate() {
@@ -194,6 +213,7 @@ impl TransferPanel {
         }
 
         let slots = device.patterns.len();
+        let model = device.model;
         let into_choices = slot_choices(device);
         // Captured before the row is borrowed mutably: the caution line below
         // needs to know what is about to be overwritten.
@@ -234,7 +254,7 @@ impl TransferPanel {
                 .selected_text(egui::RichText::new(from.label()).color(super::TEXT_DIMMER))
                 .width(56.0)
                 .show_ui(ui, |ui| {
-                    for slot in wire_slots() {
+                    for slot in wire_slots(model) {
                         ui.selectable_value(&mut picked, slot, slot.label());
                     }
                 });
@@ -374,6 +394,35 @@ impl TransferPanel {
                     ));
                 }
             }
+            Some(Outcome::ImportedA4 { into, report }) => {
+                ui.colored_label(egui::Color32::LIGHT_GREEN, a4_summary(*into, report));
+                if report.trigless_dropped > 0 {
+                    ui.weak(format!(
+                        "{} trigless trig(s) were not imported — this app holds notes, and a \
+                         trigless trig is a trig with no note",
+                        report.trigless_dropped
+                    ));
+                }
+                // Louder than the gen-2 caveats above, because it is a bigger
+                // claim: these two lanes are not in the mapped format, so every
+                // note's velocity and length are this app's defaults, not the
+                // box's. A green line alone would say the pattern came across
+                // whole.
+                ui.colored_label(
+                    super::CAUTION,
+                    "Velocity and length are not in the A4's mapped format — every note came \
+                     in at a default.",
+                );
+                // The answer to "why did nothing change in the roll" — the same
+                // line the gen-2 arm draws.
+                let playing = session.slot_in_scene(session.current_scene, id);
+                if playing.is_some_and(|p| p != *into) {
+                    ui.weak(format!(
+                        "This box is playing {} in the scene on screen",
+                        playing.expect("checked").label()
+                    ));
+                }
+            }
             Some(Outcome::Failed(e)) => {
                 ui.colored_label(egui::Color32::LIGHT_RED, e);
             }
@@ -421,15 +470,10 @@ impl TransferPanel {
 
         let mut edited = false;
         let outcome = match result {
-            Ok(dump) => {
+            Ok(Dump::Gen2 { spec, kit, payload, from, answered }) => {
                 // The borrow the header talks about, taken for exactly as long
                 // as the import needs it.
-                let fetched = Fetched {
-                    spec: dump.spec,
-                    kit: &dump.kit,
-                    payload: &dump.payload,
-                    from: dump.from,
-                };
+                let fetched = Fetched { spec, kit: &kit, payload: &payload, from };
                 match session.import_pattern(id, into, &fetched) {
                     Ok(report) => {
                         edited = true;
@@ -438,7 +482,16 @@ impl TransferPanel {
                     // `NotThisBox` reads best with the box that actually spoke
                     // named, since the whole point of the refusal is that it is
                     // not the one this row belongs to.
-                    Err(e) => Outcome::Failed(format!("{e} ({} answered)", dump.answered)),
+                    Err(e) => Outcome::Failed(format!("{e} ({answered} answered)")),
+                }
+            }
+            Ok(Dump::A4 { pattern, answered }) => {
+                match session.import_a4_pattern(id, into, &pattern) {
+                    Ok(report) => {
+                        edited = true;
+                        Outcome::ImportedA4 { into, report }
+                    }
+                    Err(e) => Outcome::Failed(format!("{e} ({answered} answered)")),
                 }
             }
             Err(e) => Outcome::Failed(e),
@@ -467,13 +520,28 @@ fn fetch(
     let identity = device.identify().map_err(|e| e.to_string())?;
     let model = model_for_slug(&identity.slug)
         .ok_or_else(|| format!("{} is not a box this build knows how to decode", identity.name))?;
+
+    // Decoded in the format of the box that *answered*, not the row's — the
+    // header's decision 2. An A4 answering on a digi's row (or the other way
+    // round) therefore parses cleanly here and is refused by the import's own
+    // `NotThisBox`, with the answering box named.
+    if model.pattern_route() == PatternRoute::RequestGen1 {
+        // The wire re-verified the checksum and matched the echoed index, so
+        // the pair below is exactly what `parse_pattern` would have produced;
+        // the length is `import_a4_pattern`'s to refuse.
+        let payload = device.fetch_pattern_kit(index).map_err(|e| e.to_string())?;
+        return Ok(Dump::A4 {
+            pattern: A4Pattern { slot: index, payload },
+            answered: identity.name,
+        });
+    }
     let spec = model
         .spec()
         .ok_or_else(|| format!("{} plays over MIDI but has no pattern dumps", model.display))?;
 
     let payload = device.fetch_pattern_kit(index).map_err(|e| e.to_string())?;
     let kit = decode_pattern_kit(spec, &payload).map_err(|e| e.to_string())?;
-    Ok(Dump { spec, kit, payload, from, answered: identity.name })
+    Ok(Dump::Gen2 { spec, kit, payload, from, answered: identity.name })
 }
 
 pub(crate) fn binding(port: &PortRef) -> PortBinding {
@@ -487,7 +555,10 @@ pub(crate) fn binding(port: &PortRef) -> PortBinding {
 /// back on the input, and a desk with only one of them wired is a real and
 /// confusing state.
 fn blocker(device: &Device) -> Option<String> {
-    if !device.can_sysex() {
+    // The route, not `can_sysex`: that field means "has a gen-2 Spec", and the
+    // A4 fetches perfectly well without one. `PatternRoute::transfers` is the
+    // question actually being asked here.
+    if !device.pattern_route().transfers() {
         return Some(format!(
             "{} plays over MIDI but has no pattern dumps to fetch",
             device.model.display
@@ -501,10 +572,12 @@ fn blocker(device: &Device) -> Option<String> {
     }
 }
 
-/// Every slot a dump request can name: sixteen banks of sixteen, which is both
-/// boxes' whole pattern space and exactly the byte the wire carries.
-pub(crate) fn wire_slots() -> impl Iterator<Item = PatternRef> {
-    (0..256usize).map(PatternRef::from_slot)
+/// Every slot a dump request can name on this box: sixteen banks of sixteen on
+/// a digi, eight on an Analog Four. The model's own number
+/// ([`DeviceModel::wire_slots`]), because a picker offering I01 to a box whose
+/// banks stop at H would be offering a request nobody has ever seen answered.
+pub(crate) fn wire_slots(model: &DeviceModel) -> impl Iterator<Item = PatternRef> {
+    (0..model.wire_slots).map(PatternRef::from_slot)
 }
 
 /// This session's slots for one box, each saying what is already in it.
@@ -585,6 +658,18 @@ fn summary(into: PatternRef, report: &ImportReport) -> String {
     )
 }
 
+/// [`summary`]'s A4 twin. Smaller because the report is: no swing, no p-lock
+/// lanes and no box tempo are in the mapped format, so a line claiming them
+/// would be inventing facts the wire never carried.
+fn a4_summary(into: PatternRef, report: &A4ImportReport) -> String {
+    format!(
+        "Into {} · {} note(s) on {} track(s)",
+        into.label(),
+        report.notes,
+        report.tracks_with_notes,
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -629,12 +714,19 @@ mod tests {
     }
 
     #[test]
-    fn the_wire_offers_every_slot_and_stops_at_the_last_one_a_byte_can_name() {
-        let slots: Vec<PatternRef> = wire_slots().collect();
+    fn the_wire_offers_every_slot_the_box_has_and_not_one_more() {
+        let slots: Vec<PatternRef> = wire_slots(&DT2).collect();
         assert_eq!(slots.len(), 256);
         assert_eq!(slots[0].label(), "A01");
         assert_eq!(slots[255].label(), "P16");
         assert!(slots.iter().all(|s| s.wire_index().is_some()));
+
+        // The A4's banks stop at H — its `0x64` index is linear 0–127, and a
+        // picker offering I01 would be offering a request nobody has ever seen
+        // answered.
+        let slots: Vec<PatternRef> = wire_slots(&digi_core::device::A4).collect();
+        assert_eq!(slots.len(), 128);
+        assert_eq!(slots[127].label(), "H16");
     }
 
     #[test]

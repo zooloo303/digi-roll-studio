@@ -62,8 +62,8 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
-use crate::protocol::{split_sysex_stream, SysExKind, DUMP_PATTERN_KIT};
-use crate::safe_write::PatternKitFile;
+use crate::protocol::{split_sysex_stream, SysExKind};
+use crate::safe_write::{pattern_dump_type, PatternKitFile};
 
 /// How many backups the ring keeps.
 ///
@@ -446,7 +446,14 @@ impl Stash {
             .into_iter()
             .find(|m| {
                 m.kind == SysExKind::Dump
-                    && m.dump.as_ref().is_some_and(|d| d.dump_type == DUMP_PATTERN_KIT)
+                    // Per family, not the bare `0x50`: an A4 backup is framed
+                    // `0x54` (`safe_write::pattern_dump_type`), and a filter
+                    // that only knew the gen-2 opcode made every A4 backup a
+                    // file the restore path could list and never read — found
+                    // by the first test that tried, 2026-08-31.
+                    && m.dump
+                        .as_ref()
+                        .is_some_and(|d| d.dump_type == pattern_dump_type(d.family))
             })?
             .dump
             .map(|d| d.payload)
@@ -502,9 +509,11 @@ impl Stash {
             .into_iter()
             .filter_map(|file| {
                 let bytes = std::fs::read(self.dir.join(&file)).ok()?;
+                // Per family, as `payload_of`: a rebuilt index that only knew
+                // the gen-2 opcode would silently drop every A4 backup file.
                 let index = split_sysex_stream(&bytes)
                     .into_iter()
-                    .find_map(|m| m.dump.filter(|d| d.dump_type == DUMP_PATTERN_KIT))?
+                    .find_map(|m| m.dump.filter(|d| d.dump_type == pattern_dump_type(d.family)))?
                     .index;
                 let (slug, bank, kind, at) = parse_name(&file);
                 Some(StashEntry {

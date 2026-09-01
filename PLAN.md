@@ -92,17 +92,40 @@ digi-roll's hardware-verified behaviour rather than the port's own output.
   two-box desk.
 - **"Read the kit the box has loaded *right now*" is a wire question, not a UI
   one.** The Setup panel's picker asks for a *stored* slot, which is the honest
-  thing this protocol supports. There is no working-buffer dump request anywhere
-  in `digi_protocol`, and nothing listens for the Program Change a box sends when
-  its pattern changes — so "whatever it is on, whatever slot that is" needs
-  protocol work before it needs a control. Worth knowing before anyone promises it
-  in a tooltip.
+  thing this protocol supports. ~~There is no working-buffer dump request
+  anywhere in `digi_protocol`~~ — **the A4 has six (`0x68`–`0x6d`, 2026-08-31,
+  §10), and the DN2's `0x68`/`0x69`/`0x6a` "answer at index 1 and nowhere
+  else" now reads like the same working-state family misread as slot requests
+  — worth a one-sweep re-probe on a digi.** Nothing yet listens for the
+  Program Change a box sends when its pattern changes — so "whatever it is on,
+  whatever slot that is" still needs protocol work before it needs a control.
+  Worth knowing before anyone promises it in a tooltip.
+
+- **The A4's transfer path is proven on one round trip, and its refusals are
+  not.** Built and run on 2026-08-31: a pattern off the box, edited in the roll,
+  and back onto the box, first time. What has no cable behind it is everything
+  that is not the happy path — a whole-bank dump against the quiet period, the
+  wrong box answering, a cancel mid-send, a session that runs out of slots.
+  Tests, no hardware. §9 has the list, and it is the same "it works" / "it
+  refuses properly" split §10.6 step 6 drew for the preset load.
+- **An A4 pattern carries steps and pitches and nothing else.** Velocity, length,
+  micro-timing, PROB/FILL/COND and p-locks are all in the 60% of the payload that
+  is mapped as *shape* rather than meaning, so an import invents a velocity and
+  an export leaves the box's own alone. Both reports say so in a field; the panel
+  says so in words. Closing it needs captures aimed at one lane at a time, which
+  is the same method §10 used for the trig bytes.
+- **A trigless trig cannot survive a round trip through this app**, because the
+  model holds notes and a trigless trig is a trig with no note. An import counts
+  them and drops them; an export writes none. A pattern that leans on them comes
+  back different, and the import report is the only warning.
 
 **Honest summary:** a verified protocol foundation; a sequencer that has driven
 two real boxes in sync; read, write and restore all proven on hardware from the
-app's own buttons; a session that saves and reopens; and installers for macOS and
-Windows that people have installed and run. What is missing is surface, not
-seams.
+app's own buttons on the digis, and a whole-pattern round trip proven on the A4;
+a session that saves and reopens; and installers for macOS and Windows that
+people have installed and run. What is missing is surface, not seams — and the
+refusals, which are the half of every path this project keeps having to be
+reminded is unverified.
 
 **Banks are cut rather than outstanding**, decided 2026-08-18.
 
@@ -612,8 +635,11 @@ assumptions were by being wrong about them twice in one day.
 - **The Analog Four, live-only and played.** Clock and transport receive, notes
   on channels 1–6, 64-step patterns, and all fourteen published CC/NRPN
   parameters swept against the box. §9's "The A4 plays" is the register entry.
-  Nothing is fetched from it or written to it, and that is the box's own
-  testimony rather than a gap: it advertises no `0x6x` dump request at all.
+  Nothing is fetched from it or written to it, ~~and that is the box's own
+  testimony rather than a gap: it advertises no `0x6x` dump request at all~~
+  — **the testimony was about the other namespace, and the box answers
+  `0x60`–`0x6d` (2026-08-31, "The A4 answers dump requests").** Kept struck as
+  the sentence the whole misreading grew from.
 - **Two assumptions the box refuted.** That a 2013 box could not answer the
   identity API — it answers on the first try — and that a box able to name
   itself could name its dump family, which made `Product.family` an
@@ -889,10 +915,21 @@ the failing variable regardless of size, and the checksum is crc32 seeded with
   > a gen-1 SysEx dump path off its own front panel, captured and decoded
   > 2026-08-30 — see §10's entry. The `0x6x` absence is real and means only
   > that the A4 is not on the gen-2 dump protocol.
-- **Sending anything to an A4 over gen-1 SysEx.** The pattern and sound dump
-  formats are decoded from eight captures and the checksum can be recomputed,
-  so a valid message can be *built*. None has been *sent*, and this is the box
-  that needs a power cycle after a body it cannot parse.
+- ~~**Sending anything to an A4 over gen-1 SysEx.**~~ **Closed 2026-08-30**, and
+  the bullet outlived it by a day: a pattern was sent to A16 and the box
+  displayed it, and on 2026-08-31 `build_trig_probe` sent four authored trig
+  states and the front panel showed each one as predicted. Both runs are in this
+  section. The stale sentence is kept struck rather than deleted because it is
+  the third instance of the same failure in this file — a caveat written once,
+  at the moment it was true, and never read again by anyone who could falsify
+  it. `ui::transfer`'s header has the general form.
+
+  What is still true and is the reason the caution survives the strike: **this is
+  the box that needs a power cycle after a body it cannot parse**~~, and it answers
+  no dump request, so nothing on this side can check what landed~~ — **the second
+  clause fell on 2026-08-31: `0x64` fetches any pattern slot, and A16's probe
+  trigs were read back over the wire** (§10, "The A4 answers dump requests").
+  The power-cycle hazard stands on its own.
 - **"Read patch names" on the *second* box.** One box answered on 2026-08-22 and
   the other has not been tried, so `NotThisBox` and the DT2/DN2 difference in kit
   layout are still fake-only.
@@ -916,6 +953,143 @@ the failing variable regardless of size, and the checksum is crc32 seeded with
   refusal being legible, and the OS-build gate speaking through this path. **The
   distinction is the whole point of this register**: "it loads" and "it refuses
   properly" are different claims, and only the first has been made by a box.
+
+### The A4 transfer path, end to end in the app — 2026-08-31, A4 0195
+
+> **Superseded the same day it was written — the round trip stands, the shape
+> does not.** Everything below describes `ui::a4`: the listener IN, the
+> baseline-bound OUT, the typed consent, the six surfaces. That panel was built
+> on "the A4 answers no dump request", the probe below refuted it within hours,
+> and the panel is gone — the A4 now moves patterns through `ui::transfer` and
+> `ui::sync` like the digis (§10, "The A4 joins the digi transfer path"). Kept
+> unrewritten because the hardware claim in its first paragraph is real and is
+> the evidence the allowlist row rests on: the bytes crossed both ways and the
+> box played them. What is struck from the record is only that this shape was
+> the necessary one.
+
+**A pattern came off the box into the app, was edited in the roll, and went back
+onto the box. Neil ran it the same day it was built and it worked first time.**
+That is a full round trip through every layer built below — `SysExInbox` →
+`receive_patterns` → `import_a4_pattern` → the roll → `export_a4_pattern` →
+`send_pattern` — and it is the claim this section exists to make.
+
+**What it is not is exhaustive, and Neil said so rather than being asked.** One
+slot, one small edit, one send. Untouched: a whole-bank dump against the quiet
+period, the wrong box answering, a cancel mid-send, an mk1-shaped refusal, the
+overflow path, and any pattern leaning on trigless trigs. Those are branches with
+tests and no cable behind them, which is a weaker claim than this paragraph's and
+a stronger one than yesterday's.
+
+**This entry was written the day before as "no box" and is rewritten rather than
+appended to**, because a register that accretes corrections underneath a stale
+headline is how §1's summary came to be wrong twice.
+
+The A4 now moves whole patterns in both directions from the app's own panel:
+`digi_midi::a4_transfer` is the wire, `digi_core::a4_transfer` is the seam, and
+`ui::a4` is the sixth surface in the DATA TRANSFER group. 46 tests, none of which
+needs a box, and two screenshots.
+
+**Six things the build settled that were open, or were settled wrongly.**
+
+- **The A4 is a *push* device, and every transfer in this app was built for a
+  pull.** `ElektronDevice` sends a `0x60` request, retries it, and matches a
+  reply against it; the A4's supported-opcode list has no `0x6x` in it at all.
+  So IN is a **listener** — `SysExInbox` held open, drained on a poll, ended by a
+  quiet period rather than by a message count, because a person may dump one
+  pattern or a whole bank and nothing on the wire says which they chose. The
+  consequence reaches the screen: the armed state is **an instruction, not a
+  spinner**, because the next thing that has to happen is somebody walking to a
+  piece of hardware.
+
+- **A frame that is not an A4 pattern is recorded rather than dropped**, and the
+  reason is `0x54`: a *project-settings* dump on a Digitakt II and a *pattern*
+  here, the same opcode byte carrying a different message. A three-box desk can
+  put a DT2 dump into this window. `is_a4_pattern` keys on `(family, dump_type)`
+  and the panel reports the family that answered, so a mis-cabled receive says
+  *the wrong box answered* rather than *nothing arrived* — which are the same
+  silence and different fixes.
+
+- **OUT is a read-modify-write, and that is the format's decision rather than a
+  shortcut.** Of the 751 bytes in an A4 track, `a4_pattern` names 259; the rest
+  are recorded as *shape* — six unnamed per-step lanes, a defaults block, a
+  27-byte tail. Synthesising a payload means inventing 10 KB of a 13 KB message,
+  and the box's answer to a body it cannot parse is a power cycle. So the
+  unmapped bytes are **carried, not chosen**, which is the bargain `safe_write`
+  strikes for the digis by re-fetching — taken at receive time instead, because
+  this box cannot be re-fetched.
+
+  It also **sidesteps the question `a4_plocks` is blocked on**. That module has
+  no writer because whether the box *requires* the compacted pool order it
+  produces is a write test no dump can settle (§10.6). An RMW never reorders the
+  pool, so it never asks. The blocked item is not closed; it is routed around.
+
+- **So there is a rule a user meets: you cannot send to a slot you have not
+  received from.** `A4ExportError::NoBaseline`, and the panel states it where it
+  is met rather than greying a button silently. The baseline rides on the
+  `Pattern` and is hex in the project file — 26 KB a pattern — because a session
+  reopened tomorrow must still be able to send, and a baseline in a side table
+  would need maintaining at every slot operation with a stale-bytes failure an
+  RMW cannot detect.
+
+- **`can_sysex` had stopped answering the question people asked it**, and
+  `ui::presets` had already written a paragraph explaining why it does not ask.
+  That field means "has a gen-2 `Spec`", which was the same set as "can transfer
+  a pattern" until this box. `DeviceModel::pattern_route` is now the honest
+  field — `LiveOnly`, `Request`, `FrontPanelDump` — data on the row, per §6's
+  second carried-forward decision. One place working around a name is a
+  workaround; a second would have been a pattern.
+
+- **Windows cannot pace an A4 send, and the reasoning is already in this repo
+  pointed the other way.** `midir`'s WinMM backend refuses any chunk not
+  beginning `0xF0`, which `device::SEND_CHUNK` derives at length — so a paced A4
+  send there fails on packet 2 of 58 and leaves the box holding half a message.
+  `CAN_PACE` is false there and the pacing collapses to one call, which is safe
+  and, on the 2026-08-30 measurement, useless: **the expected result on Windows
+  is that nothing happens**, and the panel says so before the user spends a slot.
+  Reasoned from `midir`'s source, not measured — no A4 has met a Windows build.
+
+**Three faults the screenshots found and no test could have**, which is lesson 8
+earning its keep for the fourth time:
+
+1. The A4's box row still read **"· live only"**. The Add-a-box dropdown had been
+   fixed and this second copy of the label had not — two places writing the same
+   sentence, and the fix reached one.
+2. The IN group said **"Analog Four plays over MIDI but has no pattern dumps to
+   fetch"** for a box that had, by then, moved patterns in both directions in the
+   suite.
+3. The A4 appeared in the IN frame **twice** — once as that dead row, once under
+   FRONT-PANEL DUMP. `ui::transfer`, `ui::sync` and `ui::write` now filter on
+   `pattern_route`, because a box with its own group does not belong in the
+   group it is not part of.
+
+**A seventh thing, and it is the one that cost something: the panel shipped an
+instruction that was false, and this file had already measured it false.** The
+SEND tooltip said *the box must be in SETTINGS > SYSEX DUMP > SYSEX RECEIVE*. It
+must not — the entry above, from 2026-08-30, records the A4 taking a 14 KB dump
+at its ordinary menu with SYSEX RECEIVE never entered, and Neil's round trip
+confirmed it again by not arming the box at all. The wrong sentence was copied
+out of `examples/a4_pattern_send`, which had carried it since before the finding
+and which nobody re-read while building on top of it.
+
+Worth more than a typo because **the two claims are not equally safe**. "Put the
+box in receive mode" describes an interlock: a step that would catch a stray
+message. There is none — there is no arming step between a 14 KB SysEx and an
+overwritten pattern slot — so the instruction did not merely misdescribe the
+box, it invented a safety net over the one place this path has none. The panel
+now says the true and louder thing, in the panel rather than in a tooltip, and
+the typed consent is the only interlock there is.
+
+This is `DEVELOPMENT.md` lesson 3's comment-level twin for the third time in this
+repo (`ui::transfer`'s header is the second), with a new wrinkle: the stale line
+was not merely *left* somewhere nobody looked, it was **propagated** — copied
+into a new file by someone who took an example as documentation. An example is
+code, and code goes stale in the direction of whatever it was true about first.
+
+**What the round trip did not settle, and what still needs a cable:** the
+quiet-period timing against a real multi-pattern bank dump, and the refusals —
+a receive with the wrong box answering, a cancel mid-send, a session whose slots
+run out. Every one has a test and none has hardware, which is the same
+distinction §10.6 step 6 drew between "it loads" and "it refuses properly".
 
 ### Not verified on a screen
 
@@ -1379,12 +1553,16 @@ port-name guess (`Elektron Analog Four`) held.
 
 **The finding worth keeping.** The same reply lists the opcodes the box
 supports: `01,02,03,04,06,07,09` and then `50`–`5e`. That is every file and
-store opcode and **not one `0x6x` dump request**. So the A4 is *identifiable but
-not dumpable*, which had not been a distinction this codebase could express —
-`Product.family` was a `u8` because every box that could name itself could name
-its dump family too. It is an `Option<u8>` now. `sysex: None` is therefore
-correct on the box's own testimony, not for want of a probe sweep the way the
-DN2's family byte once was.
+store opcode and **not one `0x6x` dump request**. ~~So the A4 is *identifiable
+but not dumpable*~~ — **wrong, 2026-08-31: the advertised list describes the
+API namespace only, and the box answers `0x60`–`0x6d` in the dump namespace
+that list never described** (§10, "The A4 answers dump requests"). What the
+finding still bought is real: `Product.family` was a `u8` because every box
+that could name itself could name its dump family too, and it is an
+`Option<u8>` now — but the A4's answer to it should be `Some(0x06)`, not the
+`None` this paragraph concluded. "Correct on the box's own testimony" was this
+file's fourth lesson-11 instance being written down *as the moral of avoiding
+the previous three*.
 
 **Which also means the A4 is a third box for §10**, since `0x53`–`0x56` and the
 `0x57`–`0x59` write trio are all in that list.
@@ -1495,10 +1673,12 @@ Neither blocks anything today: both entries are `auditable` and neither is
 p-lockable, so the cost of being wrong is a knob moving that should not have.
 
 **Every entry keeps `plock: None`, and nothing here could have changed that.**
-A paramId comes from locking a knob on hardware and reading the dump back, and
-this box answers no dump request at all. Hearing a parameter and being able to
-store it stay different capabilities — the same distinction the bug below turned
-on, arriving twice in one day from opposite directions.
+A paramId comes from locking a knob on hardware and reading the dump back, ~~and
+this box answers no dump request at all~~ — **as of 2026-08-31 it does (`0x64`,
+§10), so the read-back half of that loop no longer needs a walk to the front
+panel.** Hearing a parameter and being able to store it stay different
+capabilities — the same distinction the bug below turned on, arriving twice in
+one day from opposite directions.
 
 **The boring result is the point.** The table was *present* before today and is
 *right* now, and this section exists because those two photograph identically.
@@ -1580,9 +1760,12 @@ through a pipe with no terminal on stdin, where `read_line` returns end-of-file
 immediately and the hold silently does not happen. Same shape as the cliclick
 note in `DEVELOPMENT.md` — a wait that nothing drives is not a wait.
 
-The **A4** cannot be tried at all — it answers no `0x6x` dump request, so it has
-no `0x6b` to mirror, and the probe skips it with that reason rather than
-silently.
+The **A4** cannot be tried at all — ~~it answers no `0x6x` dump request, so it
+has no `0x6b` to mirror~~ **it has a `0x6b`, but not this one: the A4 answers
+`0x6b` with its `0x65` twin (working-state, index ignored), not a kit-track
+sound (2026-08-31, §10)**. The skip stays right and the probe's stated reason
+is stale: the A4 has no kit-track-sound *request*, so there is still nothing
+for a store to mirror.
 
 ### The DN2 says the same thing — 2026-08-29, DN2 0050
 
@@ -1717,11 +1900,13 @@ this filed as an open reverse-engineering question with no timeline; it is not
 one.
 
 **And then it turns out nothing needs the answer.** An extent buys the ability
-to splice a sound into a kit slot, and **the A4 answers no `0x6x` dump request
-at all** — no `0x6b`, so no `0x5b`, so no load-onto-track path exists for it in
-this codebase regardless of what its files look like. The extent was never on
-the critical path; it only looked like it was because the foot check is what
-`decode_sound` happens to be built around.
+to splice a sound into a kit slot, and ~~the A4 answers no `0x6x` dump request
+at all — no `0x6b`, so no `0x5b`~~ **the A4's `0x6b` exists and is not
+kit-track-sound (2026-08-31, §10: it is the `0x65` working-state twin)** — so
+no load-onto-track path exists for it in this codebase regardless of what its
+files look like. The conclusion survives its premise's correction; the extent
+was never on the critical path, and it only looked like it was because the foot
+check is what `decode_sound` happens to be built around.
 
 **Tag masks came back populated and varied** (`0x00902000`, `0x04880804`,
 `0x0400c088`), which is what §10.3's index needs and the reason the captures
@@ -2277,9 +2462,12 @@ protocol. Transfer's largest outbound SysEx to this box in the whole capture is
 **456 bytes**, because the file API chunks at the protocol level. It never had
 to solve the problem this section is about.
 
-**The write is confirmed from the box's own screen**, which is the only verifier
-available: the A4 answers no dump request, so nothing here can read back what it
-wrote. `0x30` was written to track 1 step 1 and the box displays C4 on that
+**The write is confirmed from the box's own screen**, ~~which is the only
+verifier available: the A4 answers no dump request, so nothing here can read
+back what it wrote~~ — **a second verifier arrived 2026-08-31: `0x64` fetched
+A16 back and it carried exactly the four trigs the probe wrote** (§10, "The A4
+answers dump requests"). At the time of this entry the screen was the only
+witness. `0x30` was written to track 1 step 1 and the box displays C4 on that
 step. That is also where the octave correction above came from.
 
 #### The pattern payload is now completely mapped
@@ -2720,21 +2908,167 @@ on a dump.
    committed A4 payload ends `00 00 00`, so the question stands exactly where it
    did.
 5. **A backup before a write.** `safe_write_track` stashes what it is about to
-   overwrite; `a4_pattern_send` does not, because the A4 answers no dump request
-   and so cannot be read first. The backup has to be a front-panel dump, and
-   nothing enforces that it happened. A factory reset is a recovery path for the
-   *factory* patterns and nothing else — it restored A01 to within one byte, and
-   it destroys anything since.
+   overwrite; `a4_pattern_send` does not, ~~because the A4 answers no dump
+   request and so cannot be read first~~ — **it can be read first as of
+   2026-08-31 (`0x64`, §10), so this stopped being a limitation of the box and
+   became unbuilt integration.** ~~The backup has to be a front-panel dump, and
+   nothing enforces that it happened.~~ A factory reset is a recovery path for
+   the *factory* patterns and nothing else — it restored A01 to within one
+   byte, and it destroys anything since.
 
 #### What this does to §10.5
 
 Writing a pattern to an A4 no longer depends on the multi-chunk +Drive write.
-The route is a ~15 KB SysEx message to a box in SysEx receive, not a 2 MB
+The route is a ~15 KB SysEx message to a box at whatever menu it happens to be
+on — no receive mode, per this section's own measurement — not a 2 MB
 read-modify-write of a whole project — which would have rewritten all 128
 patterns, every kit and the sound pool to change 64 steps, and clobbered
 anything touched on the box in between. Multi-chunk is still wanted for project
 backup and restore and for DT2 kit saving. It is no longer what stands between
 this project and an A4 pattern.
+
+### The A4 answers dump requests — 2026-08-31, A4 0195
+
+**"The A4 answers no dump request" was never tested; it was inferred, and the
+inference was from the wrong namespace.** The claim rested on one fact since
+2026-08-28: the supported-opcode reply lists `01,02,03,04,06,07,09` and
+`50`–`5e`, and no `0x6x`. But 2026-08-30's trap #1 (§9) established that the
+advertised list describes the **API namespace** — where `0x54` is FileOpen —
+and the *dump* namespace is invisible to it: the box demonstrably speaks dump
+messages in both directions, and those opcodes (`0x53`, `0x54` under a dump
+header) are not in the advertised list either. Nobody connected the two facts,
+and no request was ever sent. That is **lesson 11's fifth instance**, and the
+most expensive shape yet, because two sections of this plan and a module's
+whole design rationale (`midi::a4_transfer`'s "not a method on
+`ElektronDevice`, deliberately") were built on it.
+
+**One sweep settled it.** `examples/a4_dump_probe.rs` sends each request
+opcode `0x60`–`0x6e` in the A4's own dump framing (family `0x06`, empty
+payload — `build_dump_message`'s output exactly), listens raw rather than
+through `fetch_dump`'s matcher so a surprising reply is a finding rather than
+filtered noise, and asks `0x01` Device after every message so a wedge names
+its culprit opcode. The box answered eleven of fifteen, never wedged, and
+still answered `0x01` at the end.
+
+The map, all checksums and counts verified, every reply saved under
+`local/a4-check/dump-probe/`:
+
+| request | response | object | count/addressing |
+|---|---|---|---|
+| `0x60` | a **417-frame stream** | the whole project | 128 kits + 128 pool sounds + 128 patterns + 16 × `0x55` + 1 × `0x56` + 4 × `0x57` |
+| `0x61` | silent | — | |
+| `0x62` | `0x52`, 2,410 B payload | kit | index = slot |
+| `0x63` | `0x53`, 350 B | pool sound | index = slot |
+| `0x64` | `0x54`, 12,974 B | **pattern** | index = slot, linear 0–127: 1 → A02, 15 → A16, 16 → B01, all verified |
+| `0x65` | `0x55`, 1,304 B | unidentified — 16 per project | |
+| `0x66` | `0x56`, 366 B | project settings — 1 per project | |
+| `0x67` | `0x57`, 2,277 B | global — **4 per project**, the box's exact GLOBAL slot count | |
+| `0x68`–`0x6d` | `0x58`–`0x5d` | the same six objects, **current state** | index ignored, echoed as 0 |
+| `0x6e` | silent | — | |
+| `0x6f` | untried | excluded from the sweep; `0x60` already streams the project | |
+
+Three findings inside the map:
+
+- **The formats are the front-panel formats, byte for byte.** A requested
+  pattern is 14,843 wire bytes and `parse_pattern` reads it with nothing
+  added — slot, trigs, checksum, count. The request path is not a second
+  format to map; it is the mapped format, on demand.
+- **`0x68`–`0x6d` are working-state requests.** Each returns its `-6`
+  sibling's object with the index byte ignored (echoed as 0). During the sweep
+  `0x6a`'s reply was byte-identical to saved A01; minutes later it had drifted
+  by 29 payload bytes while every saved slot's reply stayed put. "Current
+  pattern, unsaved edits included" is the reading; the sharp test — turn one
+  knob, re-fetch, watch the bytes move — has a person in it and has not been
+  run. Note the digi parallel nobody has re-read: on the DN2, `0x68`/`0x69`/
+  `0x6a` "answer at index 1 and nowhere else" (§9) — those may be this same
+  working-state family, misread as slot requests that mostly fail.
+- **The first read-back of our own write.** `0x64` at index 15 returned A16
+  carrying exactly the four SYN1 trigs `build_trig_probe` wrote on
+  2026-08-31 — verify-after-write over the wire, the thing §7 rule 1 could
+  not have on this box.
+
+**What this unlocks, and what it does not.** `ElektronDevice::fetch_dump`
+works on the A4 *today* — the reply echoes the requested index, so the strict
+matcher matches; the probe bypassed it for discovery, not necessity. That
+means re-fetch before encode, backup before write, and read-back verify — four
+of the five safety rules this box was exempted from — are now wire questions
+with known answers, and `a4_transfer`'s listener remains only for what it was
+always right about: dumps a person starts from the front panel. What it does
+*not* unlock by itself: the `0x5x` *store* side beyond patterns (kit/sound/
+settings stores are untried), and the A4's `0x6b` is **not** gen-2's
+kit-track-sound — it is the `0x65` twin — so §10's load-onto-track question
+stays open. The 16 × `0x55` object is unidentified; its frames are saved.
+
+`sysex: None` on the A4's product entry is now wrong twice over — the box has
+a dump family (`0x06`, already in `protocol.rs` as `FAMILY_ANALOG_FOUR`) and
+answers requests on it. Wiring that in is the integration step, not a probe.
+
+### The A4 joins the digi transfer path — 2026-08-31, tests and a screen, no cable yet
+
+**The integration step the entry above named is built: the Analog Four fetches
+and writes from the same IN/OUT rows as the digis, through the same five-rule
+ceremony, and `ui::a4` is gone.** The FRONT-PANEL DUMP groups, the listener with
+its two-minute arm window, the typed `overwrite` consent, the SAVE .SYX button
+and the "receive this slot first" rule all existed because the box could not be
+asked for a pattern — and it can (`0x64`, above) — so the whole special case
+collapsed into the paths that already had the safety rules.
+
+What each layer got:
+
+- **`PatternRoute::FrontPanelDump` became `RequestGen1`**, and both request
+  routes label themselves "fetch + write": which generation of dump protocol a
+  box speaks is plumbing, not a fact a person routing a desk acts on. The A4's
+  product row finally carries `family: Some(0x06)`, and `wire_slots` is data on
+  the model row (256 / 256 / 128), so no picker offers I01 to a box whose banks
+  stop at H.
+- **IN**: `ui::transfer` plans and lands both formats — the worker decodes with
+  the format of the box that *answered* (decision 2 held), and an A4 landing
+  reports its own losses (trigless trigs, the invented velocity/length, said in
+  CAUTION rather than buried).
+- **OUT**: `safe_write::a4_safe_write_tracks`, the gen-1 twin of
+  `safe_write_tracks` — same gate (allowlist row `analogfour`/`0195`), same
+  order (re-fetch, confirm, stash, send, read back, byte-compare), different
+  insides (no `Spec`, two lanes per track, no p-locks/PROB/swing to carry, the
+  send DIN-paced by the `PatternIo` impl). `ui::sync` and `ui::write` branch
+  once at plan time (`JobWrites`/`PlannedWrite`) and once at ceremony time;
+  everything between — the survey, the one dialog with per-row opt-out, the
+  per-slot backup, `changed_since_survey` — is format-blind and shared.
+- **The re-fetch retired the baseline.** `DumpBaseline` — 26 KB of hex per
+  pattern in the project file, and the "you cannot send to a slot you have not
+  received from" rule — existed because "the A4 cannot be re-fetched". Deleted
+  whole: the write is composed on the destination read moments before the send,
+  so the unmapped 10 KB is the destination's own, which is `safe_write`'s exact
+  bargain on the digis. A day-old project file with a baseline in it still
+  loads; serde drops the field.
+- **Backups and restore came along for free — after two real bugs.**
+  `Stash::payload` and `Stash::scan` keyed on the gen-2 `0x50`, so every A4
+  backup was a file the restore list could show and never read (found by the
+  first test that read one back); backups are framed per family now
+  (`pattern_dump_type`, the A4's `0x54`), and `safe_restore_pattern_kit` runs
+  unmodified. And `ui::presets::load_blocker` keyed on "has a dump family" as
+  its proxy for "answers the kit-track `0x6b`" — giving the A4 its real family
+  byte would have switched preset loads *on* for a box whose `0x6b` is a
+  different message; it keys on the gen-2 route now.
+
+**Evidence, and its honest boundary.** 46 new-or-moved tests, none needing a
+box: the ceremony end to end against captures (`protocol/tests/all/
+a4_safe_write.rs` — ordering, RMW byte-carry, cancel, cross-format refusals,
+verify failure, restore round trip), the planner (`core::a4_transfer` — chords
+to the root, past-64, off-grid, lanes-don't-travel), and the panel flow
+(`app/tests/all/sync.rs` — an A4 desk and a mixed three-box desk through one
+dialog). Screenshots of the running panel with three live boxes: the A4's rows
+sit between the digis' with the same pickers, and its send button reads "Write
+back to A01 · 2 tracks > A01" off provenance.
+
+**What no test here can claim: the box.** No A4 write has gone through the new
+path on hardware. Its pieces have (the round trip and the `0x64` read-back of a
+written slot, above) — that is why `0195` is in the allowlist — but the full
+cycle as one flow, and the settle between the DIN-paced send and the verify
+re-read, meet an A4 for the first time on the first press. The verify is the
+net: a send the box ignored comes back as a loud byte-diff failure with the
+backup named, not as a quiet "sent". On Windows that is the *expected* outcome —
+`CAN_PACE` is false there, the send collapses to the one unpaced call that has
+never worked, and the verify will say so.
 
 ### 10.5 What saving a kit will cost, when it comes
 

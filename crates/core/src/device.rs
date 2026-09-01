@@ -41,11 +41,70 @@ fn dn2_spec() -> &'static digi_protocol::pattern::Spec {
 /// still means sequence-live-only.
 pub type SpecFn = fn() -> &'static digi_protocol::pattern::Spec;
 
+/// How a whole pattern moves between the app and a box.
+///
+/// **Added 2026-08-31, because `sysex.is_some()` had stopped answering the
+/// question people were asking it.** That field means "has a gen-2 `Spec`", and
+/// for two years that was the same set as "can transfer a pattern at all". The
+/// Analog Four separates them: it has no `Spec` and never will, and it moves
+/// whole patterns perfectly well. `ui::presets` had already had to write a
+/// paragraph explaining why it does *not* ask `can_sysex`; that is one place
+/// working around a name, and a second would have been a pattern.
+///
+/// A route is data on the row, per PLAN.md §6's second carried-forward decision
+/// — a new Elektron box should be a table entry — rather than a `key == "A4"`
+/// test wearing a capability's name.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PatternRoute {
+    /// None. The box plays live, takes clock and answers CC, and its patterns
+    /// stay on it.
+    LiveOnly,
+    /// **Request and reply, gen-2.** The app sends a `0x60` dump request and
+    /// the box answers; `sysex` carries the layout to read the answer with.
+    /// Both digis.
+    Request,
+    /// **Request and reply, gen-1.** The app sends a `0x64` and the box answers
+    /// a pattern in `protocol::a4_pattern`'s layout; there is no gen-2 `Spec`
+    /// and never will be. The write back is the dump message itself, DIN-paced
+    /// (`digi_midi::a4_transfer`), through `safe_write`'s A4 flow — re-fetch,
+    /// backup, confirm, verify, all of it. The Analog Four.
+    ///
+    /// This variant was `FrontPanelDump` until 2026-08-31 — "there is no
+    /// request to send" — and that was a misreading of the box's advertised
+    /// opcode list, which describes a different namespace (PLAN.md §10, "The A4
+    /// answers dump requests"). The box still *can* push a dump from its own
+    /// front panel; what died is the claim that this was the only way in.
+    RequestGen1,
+}
+
+impl PatternRoute {
+    /// Whether a pattern can cross between box and app by any route at all.
+    ///
+    /// This is the question `can_sysex` gets asked and does not answer.
+    pub fn transfers(self) -> bool {
+        !matches!(self, Self::LiveOnly)
+    }
+
+    /// What a box list says about this box in three words.
+    ///
+    /// Both request routes read "fetch + write" on purpose: which generation of
+    /// dump protocol a box speaks is this app's plumbing, not a fact a person
+    /// routing a desk acts on. The two panels behave identically, so the label
+    /// must too.
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::LiveOnly => "live only",
+            Self::Request | Self::RequestGen1 => "fetch + write",
+        }
+    }
+}
+
 /// Everything the model needs to know about a box.
 ///
-/// `sysex: None` means sequence-live-only: the device edits and plays over MIDI
-/// like any other, but fetch and write are unavailable and the UI says so up
-/// front rather than failing at write time.
+/// `sysex: None` means the box has no **gen-2** pattern `Spec`. That is *not*
+/// the same as "cannot transfer a pattern", and has not been since the A4's
+/// gen-1 dump format was mapped on 2026-08-30 — see [`PatternRoute`], which is
+/// the field to ask.
 #[derive(Debug, Clone, Copy)]
 pub struct DeviceModel {
     /// Stable id in the project file. Never rename one of these.
@@ -59,12 +118,33 @@ pub struct DeviceModel {
     pub max_steps: u16,
     pub default_track_kind: TrackKind,
     pub sysex: Option<SpecFn>,
+    /// How a whole pattern gets on and off this box.
+    pub pattern_route: PatternRoute,
+    /// How many slots a dump request can name on this box — what the `from`
+    /// picker of a fetch and the `to` picker of a send offer. The digis' wire
+    /// index spans sixteen banks of sixteen; the A4's spans eight
+    /// (`0x64`'s index is linear 0–127, hardware-verified 2026-08-31), and a
+    /// picker offering I01 to a box whose banks stop at H would be offering a
+    /// request nobody has ever seen answered. Zero for a live-only box.
+    pub wire_slots: usize,
 }
 
 impl DeviceModel {
-    /// Whether this box can be fetched from and (eventually) written to.
+    /// Whether this box has a gen-2 `Spec` — so it can be fetched with a `0x60`
+    /// request and written through `safe_write`.
+    ///
+    /// **Not the same as "can transfer a pattern".** Ask
+    /// [`DeviceModel::pattern_route`] for that: an A4 returns false here and
+    /// moves patterns both ways. The name is kept because it is what the
+    /// gen-2-only paths — `ui::write`, `ui::sync`, `ui::transfer` — actually
+    /// mean when they ask.
     pub fn can_sysex(&self) -> bool {
         self.sysex.is_some()
+    }
+
+    /// How a whole pattern moves between this box and the app.
+    pub fn pattern_route(&self) -> PatternRoute {
+        self.pattern_route
     }
 
     /// The byte-level spec for this box, or `None` for a live-only model.
@@ -89,6 +169,8 @@ pub static DT2: DeviceModel = DeviceModel {
     max_steps: 128,
     default_track_kind: TrackKind::Audio,
     sysex: Some(dt2_spec),
+    pattern_route: PatternRoute::Request,
+    wire_slots: 256,
 };
 
 pub static DN2: DeviceModel = DeviceModel {
@@ -99,24 +181,33 @@ pub static DN2: DeviceModel = DeviceModel {
     max_steps: 128,
     default_track_kind: TrackKind::Audio,
     sysex: Some(dn2_spec),
+    pattern_route: PatternRoute::Request,
+    wire_slots: 256,
 };
 
-/// The Analog Four mk1 — the first live-only row to ship, 2026-08-24, ahead
-/// of the box itself, and corrected against it on 2026-08-28.
+/// The Analog Four mk1 — shipped live-only on 2026-08-24, corrected against
+/// the box on 2026-08-28, and a full transfer peer of the digis since
+/// 2026-08-31.
 ///
 /// Six tracks as the sequencer counts them: four synth voices, the FX track
 /// and the CV track. 64 steps — four pages of sixteen, half a digi pattern.
+/// Eight banks of sixteen patterns, which is what `wire_slots: 128` records.
 ///
-/// `sysex: None` because no A4 dump has ever been read by this code — and the
-/// box's own supported-opcode list says none can be: it offers `0x50`-`0x5e`,
-/// every file and store opcode, and not one `0x6x` dump request. So this is
-/// not a gap waiting on a probe sweep the way the DN2's family byte was; it is
-/// what the box reports about itself. It still sequences live, takes clock,
-/// and answers CC/NRPN (see `protocol::params::A4_PARAMS`).
+/// `sysex: None` because there is no gen-2 `Spec` here and there will not be —
+/// but that stopped meaning "cannot transfer" twice over. This comment claimed
+/// "nothing can ask it for a pattern" on the strength of the box's advertised
+/// opcode list; that list describes the API namespace only, and on 2026-08-31
+/// the box answered `0x60`–`0x6d` dump requests (PLAN.md §10, "The A4 answers
+/// dump requests"). So the route is [`PatternRoute::RequestGen1`]: fetched and
+/// written from the same panels as the digis, in `protocol::a4_pattern`'s
+/// layout, with the write DIN-paced.
+///
+/// It also sequences live, takes clock, and answers CC/NRPN (see
+/// `protocol::params::A4_PARAMS`).
 ///
 /// It answers the identity handshake like every other shipped box — product id
 /// 4, name "Analog Four", OS 1.55B — which the 2026-08-24 guess had assumed it
-/// could not. `protocol::device::PRODUCTS` has its row.
+/// could not. `protocol::device::PRODUCTS` has its row, dump family 0x06.
 pub static A4: DeviceModel = DeviceModel {
     key: "A4",
     display: "Analog Four",
@@ -125,6 +216,8 @@ pub static A4: DeviceModel = DeviceModel {
     max_steps: 64,
     default_track_kind: TrackKind::Audio,
     sysex: None,
+    pattern_route: PatternRoute::RequestGen1,
+    wire_slots: 128,
 };
 
 /// The shipped roster. DT2 and DN2 per PLAN.md §2; A4 since 2026-08-24,
@@ -285,6 +378,11 @@ impl Device {
 
     pub fn can_sysex(&self) -> bool {
         self.model.can_sysex()
+    }
+
+    /// How a whole pattern moves between this box and the app.
+    pub fn pattern_route(&self) -> PatternRoute {
+        self.model.pattern_route
     }
 
     /// Every pattern must have exactly the model's track count.

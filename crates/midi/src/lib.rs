@@ -1,14 +1,20 @@
 use digi_protocol::protocol::split_sysex_stream;
 
+pub mod a4_transfer;
 pub mod device;
 pub mod ports;
 pub mod preset_load;
 pub mod preset_scan;
 pub mod sysex_stream;
 
+pub use a4_transfer::{
+    receive_patterns, send_pattern, A4Listener, A4Sink, Consent, Pacing, ReceiveConfig,
+    ReceiveReport, SendError, SendReport,
+};
 pub use device::{DumpResponse, ElektronDevice, KIT_TRACKS};
 pub use ports::{
     capture_sysex, list_inputs, list_outputs, open_output_by_name, PortBinding, PortInfo,
+    SysExInbox,
 };
 
 /// Re-exported so `engine` can hold an open output without depending on `midir`

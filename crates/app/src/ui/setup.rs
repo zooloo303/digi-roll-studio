@@ -226,7 +226,8 @@ pub fn ui(
                         ui.add_space(8.0);
                         // One transfer at a time, in any direction: each group's
                         // button is held off while any other is working.
-                        let elsewhere = browsing || write.busy() || restore.busy() || sync.busy();
+                        let elsewhere =
+                            browsing || write.busy() || restore.busy() || sync.busy();
                         changed |= transfer.ui(ui, session, engine, elsewhere);
                         ui.add_space(7.0);
                         ui.label(

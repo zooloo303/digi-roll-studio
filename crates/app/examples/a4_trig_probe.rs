@@ -35,8 +35,10 @@
 // # Running it
 //
 //   1. Dump A16 from the box's front panel and keep the capture. `a4_pattern_send`
-//      keeps no backup and the A4 answers no dump request, so a front-panel dump
-//      is the only backup there is (PLAN.md §10 open item 5).
+//      keeps no backup — the app's own send path does, but this bare-wire tool
+//      does not, so the capture is the only backup there is. (~~"the A4 answers
+//      no dump request"~~ fell 2026-08-31, PLAN.md §10 — `0x64` could fetch the
+//      backup now, and the app's Setup panel does exactly that.)
 //   2. Build the probe with this tool. Read the table it prints.
 //   3. Send it: `a4_pattern_send <probe.syx> --send`.
 //   4. Put the box on A16, SYN1, and read the step LEDs. Every authored step is

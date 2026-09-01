@@ -7,7 +7,7 @@
 // baked into the model.
 
 use digi_core::chords::{ChordSettings, Harmony, Quality, QualityChoice, Scale};
-use digi_core::device::{model_for_slug, Device, DeviceIo, DeviceModel, PortRef, DN2, DT2};
+use digi_core::device::{model_for_slug, Device, DeviceIo, DeviceModel, PatternRoute, PortRef, DN2, DT2};
 use digi_core::model::{Note, PLockLane, Source, TrackKind, TrackScale, PLOCK_STEPS};
 use digi_core::project::Project;
 use digi_core::session::{PatternRef, Scene, Session};
@@ -59,6 +59,8 @@ fn an_unshipped_live_only_model_constructs_correctly() {
         max_steps: 64,
         default_track_kind: TrackKind::Audio,
         sysex: None,
+        pattern_route: PatternRoute::LiveOnly,
+        wire_slots: 0,
     };
 
     let d = Device::new("ST", &SYNTAKT, 8);

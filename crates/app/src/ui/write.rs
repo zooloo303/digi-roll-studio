@@ -83,7 +83,7 @@
 use std::collections::HashMap;
 use std::sync::mpsc::{channel, Receiver, Sender};
 
-use digi_core::device::Device;
+use digi_core::device::{Device, PatternRoute};
 use digi_core::model::Pattern;
 use digi_core::session::PatternRef;
 use digi_core::{DeviceId, Session};
@@ -92,9 +92,11 @@ use digi_protocol::backup_stash::Stash;
 use digi_protocol::device::DeviceIdentity;
 use digi_protocol::pattern::{PatternKit, Spec};
 use digi_protocol::plocks::{LaneWrite, PoolLane};
+use digi_protocol::a4_pattern::TRACK_NAMES as A4_TRACK_NAMES;
 use digi_protocol::safe_write::{
-    safe_write_track, write_impact_lines, write_result_message, ConfirmArgs, ImpactArgs, PatternIo,
-    ResultMessage, Timestamp, TrackWrite, WriteHooks, BACKUP_LINE,
+    a4_safe_write_tracks, safe_write_track, write_impact_lines, write_result_message,
+    A4TrackWrite, ConfirmArgs, ImpactArgs, PatternIo, ResultMessage, Timestamp, TrackWrite,
+    WriteHooks, BACKUP_LINE,
 };
 use eframe::egui::{self, Ui};
 
@@ -118,9 +120,11 @@ pub struct Job {
     pub input: PortBinding,
     pub output: PortBinding,
     /// The destination's spec, which is the row's own: decision 3 means a box
-    /// that would need a different one is refused before this is used.
-    pub spec: &'static Spec,
-    pub write: TrackWrite,
+    /// that would need a different one is refused before this is used. `None`
+    /// on the Analog Four, whose format has no `Spec` — the write below says
+    /// which flow it takes instead.
+    pub spec: Option<&'static Spec>,
+    pub write: PlannedWrite,
     /// What `core::export` could not carry — lanes belonging to another box's
     /// numbering, notes off the end of a byte. Shown before the write is agreed
     /// to and again in the result line, per `js/main.js`.
@@ -135,6 +139,16 @@ pub struct Job {
     pub from_other_box: Option<String>,
     pub into: PatternRef,
     pub playing: bool,
+}
+
+/// One track's write in whichever format the destination speaks. Decided by
+/// [`plan`] from the model's `pattern_route`, and matched once, in [`run`] —
+/// everything between the two (the worker, the dialog plumbing, the report) is
+/// format-blind.
+#[derive(Debug)]
+pub enum PlannedWrite {
+    Gen2(TrackWrite),
+    A4(A4TrackWrite),
 }
 
 /// What the worker says while it works. `Ask` is the one that expects an answer.
@@ -203,8 +217,16 @@ pub fn run(
     // untestable weight.
 
     let mut hooks = UiHooks { events, job, device_name: identity.name.clone(), log: None };
-    let result = safe_write_track(device, stash, &job.write, &mut hooks, now)
-        .map_err(|e| e.to_string())?;
+    let result = match &job.write {
+        PlannedWrite::Gen2(write) => safe_write_track(device, stash, write, &mut hooks, now),
+        // The plural flow with a one-element slice, exactly as `safe_write_track`
+        // is — the A4 ceremony has no singular alias because this is its only
+        // single-track caller.
+        PlannedWrite::A4(write) => {
+            a4_safe_write_tracks(device, stash, std::slice::from_ref(write), &mut hooks, now)
+        }
+    }
+    .map_err(|e| e.to_string())?;
 
     // Lanes that could not be written at all were reported before the write; they
     // belong in the result line too, or a successful send reads as if everything
@@ -252,42 +274,61 @@ struct UiHooks<'a> {
 
 impl WriteHooks for UiHooks<'_> {
     fn confirm(&mut self, args: &ConfirmArgs) -> bool {
-        // One track, always: this panel's button is `safe_write_track`, which is
-        // the plural flow with a one-element slice. The mass send in `ui::sync`
-        // is the caller that reads `args.tracks`.
+        // One track, always: this panel's button is `safe_write_track` (or the
+        // A4 flow with a one-element slice), so the plural `args.tracks` is the
+        // mass send's to read, in `ui::sync`.
         let track = args.one();
-        let lanes = self.job.write.plocks.clone().unwrap_or_default();
-        let lines = confirm_lines(&Facts {
-            device_name: &self.device_name,
-            pattern_name: &self.job.pattern_name,
-            source_label: &self.job.source_label,
-            notes: track.note_count,
-            label: &args.label,
-            track_index: track.track_index,
-            kit_name: &args.pattern_kit.kit.name,
-            track_kind: &track_kind_label(
-                args.pattern_kit,
-                track.track_index,
-                self.job.spec.track_kind_fallback,
-            ),
-            existing_trigs: track.existing_trigs,
-            source_len: self.job.source_len,
-            dest_len: args
-                .pattern_kit
-                .tracks
-                .get(track.track_index)
-                .map(|t| t.length_steps)
-                .unwrap_or(0),
-            lanes: &lanes,
-            box_plocks: &track.box_plocks,
-            free_lanes: args.free_lanes,
-            track_prob: self.job.write.track_prob,
-            swing: self.job.write.swing.map(|s| s.round() as u8),
-            box_swing: args.swing,
-            warnings: &self.job.warnings,
-            from_other_box: self.job.from_other_box.as_deref(),
-            playing: self.job.playing,
-        });
+        let lines = match (&self.job.write, args.pattern_kit) {
+            (PlannedWrite::Gen2(write), Some(pattern_kit)) => {
+                let lanes = write.plocks.clone().unwrap_or_default();
+                let spec = self.job.spec.expect("a gen-2 job carries its spec");
+                confirm_lines(&Facts {
+                    device_name: &self.device_name,
+                    pattern_name: &self.job.pattern_name,
+                    source_label: &self.job.source_label,
+                    notes: track.note_count,
+                    label: &args.label,
+                    track_index: track.track_index,
+                    kit_name: &pattern_kit.kit.name,
+                    track_kind: &track_kind_label(
+                        pattern_kit,
+                        track.track_index,
+                        spec.track_kind_fallback,
+                    ),
+                    existing_trigs: track.existing_trigs,
+                    source_len: self.job.source_len,
+                    dest_len: pattern_kit
+                        .tracks
+                        .get(track.track_index)
+                        .map(|t| t.length_steps)
+                        .unwrap_or(0),
+                    lanes: &lanes,
+                    box_plocks: &track.box_plocks,
+                    free_lanes: args.free_lanes.expect("a gen-2 confirm carries the pool"),
+                    track_prob: write.track_prob,
+                    swing: write.swing.map(|s| s.round() as u8),
+                    box_swing: args.swing.expect("a gen-2 confirm carries the box's swing"),
+                    warnings: &self.job.warnings,
+                    from_other_box: self.job.from_other_box.as_deref(),
+                    playing: self.job.playing,
+                })
+            }
+            (PlannedWrite::A4(_), _) => a4_confirm_lines(&A4Facts {
+                device_name: &self.device_name,
+                pattern_name: &self.job.pattern_name,
+                source_label: &self.job.source_label,
+                notes: track.note_count,
+                label: &args.label,
+                track_index: track.track_index,
+                existing_trigs: track.existing_trigs,
+                warnings: &self.job.warnings,
+                playing: self.job.playing,
+            }),
+            // A gen-2 write whose confirm carries no decoded destination is a
+            // mis-wiring between two flows that both did their own decode; no
+            // wording is safe to invent for it.
+            (PlannedWrite::Gen2(_), None) => return false,
+        };
         let (reply, answer) = channel();
         let ask = Ask {
             lines,
@@ -447,6 +488,70 @@ pub fn confirm_lines(f: &Facts) -> Vec<String> {
     lines
 }
 
+/// Everything the A4's confirm dialog says, as plain values — [`Facts`]'s twin,
+/// with every field the format cannot answer removed rather than defaulted: no
+/// kit name (not in the mapped layout), no LEN comparison (unmapped), no lanes,
+/// no PROB, no swing.
+pub struct A4Facts<'a> {
+    pub device_name: &'a str,
+    pub pattern_name: &'a str,
+    pub source_label: &'a str,
+    pub notes: usize,
+    pub label: &'a str,
+    pub track_index: usize,
+    pub existing_trigs: usize,
+    pub warnings: &'a [String],
+    pub playing: bool,
+}
+
+/// The sentences an A4 write is agreed to on — [`confirm_lines`]'s twin.
+///
+/// One line here has no gen-2 counterpart and must not be dropped: the
+/// read-modify-write sentence. On a digi the dialog's impact lines enumerate
+/// what moves beyond the trigs (swing, PROB, lanes); on the A4 nothing does,
+/// and *saying so* is the honest version of that enumeration — the sounds and
+/// p-locks a person might expect to travel with the pattern stay exactly as
+/// the destination slot has them.
+pub fn a4_confirm_lines(f: &A4Facts) -> Vec<String> {
+    let mut lines = vec![
+        format!(
+            "Send {} from “{}” {} to {} track {} ({}) on the {}?",
+            plural(f.notes, "note"),
+            f.pattern_name,
+            f.source_label,
+            f.label,
+            f.track_index + 1,
+            A4_TRACK_NAMES.get(f.track_index).copied().unwrap_or("?"),
+            f.device_name,
+        ),
+        String::new(),
+        if f.existing_trigs > 0 {
+            format!(
+                "This replaces the {} already on that track.",
+                plural(f.existing_trigs, "trig")
+            )
+        } else {
+            "That track is currently empty.".to_string()
+        },
+        "Only the trigs move: sounds, p-locks, velocity and length stay as the destination \
+         slot holds them right now — the write is composed on a fresh read of that slot."
+            .to_string(),
+    ];
+    for w in f.warnings {
+        lines.push(format!("Note: {w}"));
+    }
+    if f.playing {
+        lines.push(
+            "The transport is running — this app keeps clocking the box while the dump goes \
+             across, and pressing this does not stop it."
+                .to_string(),
+        );
+    }
+    lines.push(String::new());
+    lines.push(BACKUP_LINE.to_string());
+    lines
+}
+
 /// What the destination track is called on the box: a MIDI track says so, and a
 /// sample/synth track gives its sound's name, falling back to the spec's word for
 /// what kind of track this box has.
@@ -562,6 +667,9 @@ impl WritePanel {
             return;
         }
 
+        // Every box in the session, the A4 included: its per-track write goes
+        // through the same ceremony as a digi's since 2026-08-31, so the
+        // FRONT-PANEL DUMP group this used to filter it out toward is gone.
         let devices: Vec<DeviceId> = session.devices.iter().map(|d| d.id).collect();
         let last = devices.len().saturating_sub(1);
         for (position, id) in devices.into_iter().enumerate() {
@@ -666,7 +774,7 @@ impl WritePanel {
                 )
                 .width(76.0)
                 .show_ui(ui, |ui| {
-                    for slot in wire_slots() {
+                    for slot in wire_slots(device.model) {
                         ui.selectable_value(&mut picked, slot, slot.label());
                     }
                 });
@@ -715,10 +823,16 @@ impl WritePanel {
         // What is going, said before the press. The dialog says what is being
         // landed on; only the box knows that, and only after a fetch.
         let notes = pattern.and_then(|p| p.track(track)).map(|t| t.notes.len()).unwrap_or(0);
-        let lanes = pattern
-            .and_then(|p| p.track(track))
-            .map(|t| t.plocks.len())
-            .unwrap_or(0);
+        // Lanes are only *going* where the format can carry them: on the A4 the
+        // pool is unmapped and a write leaves it alone, so counting the roll's
+        // lanes here would promise a travel the dialog then warns cannot happen.
+        let lanes = match device.model.spec() {
+            Some(_) => pattern
+                .and_then(|p| p.track(track))
+                .map(|t| t.plocks.len())
+                .unwrap_or(0),
+            None => 0,
+        };
         ui.weak(match lanes {
             0 => format!("{} on {} T{}", plural(notes, "note"), from.label(), track + 1),
             n => format!(
@@ -935,14 +1049,25 @@ pub fn plan(
     let (Some(input), Some(output)) = (device.io.input.clone(), device.io.output.clone()) else {
         return Err(blocker(device, present).unwrap_or_else(|| "that box has no ports".into()));
     };
-    let spec = device
-        .model
-        .spec()
-        .ok_or_else(|| format!("{} has no patterns to write to", device.model.display))?;
 
-    let export = session
-        .track_write(spec, id, from, track, into)
-        .map_err(|e| e.to_string())?;
+    // The two formats plan through their own `core` seam and meet again at
+    // `PlannedWrite`; everything below the match is shared.
+    let (spec, write, warnings) = match device.model.pattern_route() {
+        PatternRoute::RequestGen1 => {
+            let export = session.a4_track_write(id, from, track, into).map_err(|e| e.to_string())?;
+            (None, PlannedWrite::A4(export.write), export.warnings)
+        }
+        _ => {
+            let spec = device
+                .model
+                .spec()
+                .ok_or_else(|| format!("{} has no patterns to write to", device.model.display))?;
+            let export = session
+                .track_write(spec, id, from, track, into)
+                .map_err(|e| e.to_string())?;
+            (Some(spec), PlannedWrite::Gen2(export.write), export.warnings)
+        }
+    };
     let pattern = device.pattern(from.slot());
     Ok(Job {
         device: id,
@@ -951,8 +1076,8 @@ pub fn plan(
         input: binding(&input),
         output: binding(&output),
         spec,
-        write: export.write,
-        warnings: export.warnings,
+        write,
+        warnings,
         pattern_name: pattern.map(|p| p.name.clone()).unwrap_or_default(),
         source_label: format!("{} T{}", from.label(), track + 1),
         source_len: pattern.and_then(|p| p.track(track)).map(|t| t.length_steps).unwrap_or(0),
@@ -1030,7 +1155,9 @@ impl PortsPresent<'_> {
 /// port has vanished from the OS is refused for the same reason and by the same
 /// sentence as a box that never had one.
 pub fn blocker(device: &Device, present: PortsPresent<'_>) -> Option<String> {
-    if !device.can_sysex() {
+    // The route, not `can_sysex`: the A4 writes without a gen-2 `Spec`, so the
+    // question is whether patterns move at all.
+    if !device.pattern_route().transfers() {
         return Some(format!(
             "{} plays over MIDI but has no patterns to write to",
             device.model.display

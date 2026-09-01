@@ -27,29 +27,37 @@
 // copy. Nothing else in the workspace calls this, and it constructs no `0x5x`
 // file opcode and no `0x7x` store: it sends one dump message and reads no reply.
 //
-// **The validation is deliberately duplicated.** `protocol::a4_pattern` already
-// checks the framing, and `local/a4_pattern.py` checked it again before it wrote
-// the file. It is checked once more here, from the bytes on disk, because the
-// thing that must be true is not "the builder was correct" but "these bytes are
-// well-formed" — and a file can be edited, renamed or half-written between the
-// two. A body this box cannot parse takes its whole SysEx API down until it is
-// power-cycled (DEVELOPMENT.md lesson 13), so the check that matters is the one
-// immediately before the send. The two checks this file keeps for itself are the
-// ones `parse_pattern` has no business making: that the frame is `F0 … F7`
-// shaped, and that no byte inside it has its high bit set.
+// **The validation and the pacing both moved to `digi_midi::a4_transfer` on
+// 2026-08-31**, when the app grew a panel that needed them. They were this
+// file's own for one day, which was the right length of time: a thing with one
+// caller belongs at its caller, and a thing with two belongs underneath both.
 //
-// **Verifying afterwards is a manual step, and there is no way around it.** The
-// A4 answers no dump *request* — the supported-opcode reply lists no `0x6x`, and
-// that part of PLAN.md §10 is still true. A dump is initiated from the box's own
-// front panel. So: send, then re-dump the slot from the box, then
+// The validation is still deliberately duplicated *work* —
+// `a4_transfer::verify_before_send` re-checks framing `protocol::a4_pattern`
+// already checked — and its doc carries the argument for that: the thing which
+// must be true is not "the builder was correct" but "these bytes are
+// well-formed", and a file can be edited or half-written in between. What is
+// gone is the second *copy*, which is a different thing and is the one this
+// project keeps getting caught by.
+//
+// ~~**Verifying afterwards is a manual step, and there is no way around it.**~~
+// **There is, since 2026-08-31: the A4 answers dump requests** (PLAN.md §10,
+// "The A4 answers dump requests"; the supported-opcode reply describes the API
+// namespace, not this one). The wire verify is
+// `a4_dump_probe --opcode 0x64 --index <slot>` until the app grows the real
+// one. The front-panel route still works and stays written down:
+// send, then re-dump the slot from the box, then
 // `python3 local/a4_pattern.py verify <sent.syx> <redump.mmon>`.
 
 use std::io::Write as _;
 use std::time::Duration;
 
+use digi_midi::a4_transfer::{
+    send_pattern, verify_before_send, Consent, Pacing, CAN_PACE, DIN_BYTES_PER_SEC,
+};
 use digi_midi::{capture_sysex, list_outputs, open_output_by_name};
 use digi_protocol::a4_pattern::{
-    effective_note, note_name, parse_pattern, read_track_trigs, slot_name, TRACK_NAMES,
+    effective_note, note_name, read_track_trigs, slot_name, TRACK_NAMES,
 };
 
 /// Which box to send to when nothing is named. Matched as a case-insensitive
@@ -60,19 +68,12 @@ const DEFAULT_PORT: &str = "Analog Four";
 /// press by reflex.
 const CONSENT: &str = "overwrite";
 
-/// **Why the send is paced by default.** DIN MIDI is 31,250 baud — ten bits a
-/// byte, so 3,125 bytes a second. A 14,843-byte dump takes **4.75 seconds** to
-/// arrive over a cable, and that is the rate the box was designed against in
-/// 2013. Over USB, `send` hands CoreMIDI the whole frame at once and it lands in
-/// microseconds. A receive path built for a trickle has no reason to survive a
-/// flood, and the first send of this file — one unpaced call — did nothing at
-/// all on a box that was demonstrably listening.
-///
-/// So the frame is delivered in pieces, which is legal: `F0 … F7` is one message
-/// however many packets carry it, and `SysExReassembler` on our own side exists
-/// because that is normal. `--single` restores the original behaviour, kept so
+/// **Why the send is paced by default**, and where that now lives: DIN MIDI is
+/// 31,250 baud, so a 14,843-byte dump takes 4.75 s over a cable and the box was
+/// designed against that rate. One unpaced call did nothing at all on a box that
+/// was demonstrably listening. `a4_transfer::Pacing` is the whole argument and
+/// the Windows caveat with it; `--single` restores the shape that failed, kept so
 /// the difference stays measurable rather than assumed.
-const DIN_BYTES_PER_SEC: f64 = 3125.0;
 const DEFAULT_CHUNK: usize = 256;
 /// How long to listen for a reply after the last byte. The box may say nothing;
 /// silence is recorded as silence rather than as success.
@@ -140,13 +141,25 @@ fn main() {
         println!("  {name}  {} trigs  {}", trigs.len(), listed.join(" "));
     }
 
-    if single {
-        println!("\n  delivery: ONE unpaced send — the shape that did nothing on 2026-08-30");
+    let pacing = if single {
+        Pacing::single()
     } else {
-        let n = msg.wire.len().div_ceil(chunk);
+        Pacing { chunk, gap: Duration::from_secs_f64(pace_ms / 1000.0) }
+    }
+    .resolve(CAN_PACE);
+
+    if pacing.packets(msg.wire.len()) == 1 {
+        println!("\n  delivery: ONE unpaced send — the shape that did nothing on 2026-08-30");
+        if !CAN_PACE && !single {
+            println!("  (this platform's MIDI backend refuses a split SysEx, so pacing collapsed)");
+        }
+    } else {
         println!(
-            "\n  delivery: {n} chunks of {chunk} bytes, {pace_ms:.1} ms apart (~{:.1} s, DIN is {:.1} s)",
-            n as f64 * pace_ms / 1000.0,
+            "\n  delivery: {} chunks of {} bytes, {:.1} ms apart (~{:.1} s, DIN is {:.1} s)",
+            pacing.packets(msg.wire.len()),
+            pacing.chunk,
+            pacing.gap.as_secs_f64() * 1000.0,
+            pacing.estimate(msg.wire.len()).as_secs_f64(),
             msg.wire.len() as f64 / DIN_BYTES_PER_SEC
         );
     }
@@ -174,7 +187,13 @@ fn main() {
     };
 
     println!("\nThis will OVERWRITE pattern {} on {}.", slot_name(msg.slot), port.name);
-    println!("The box must be in SETTINGS > SYSEX DUMP > SYSEX RECEIVE.");
+    // **Corrected 2026-08-31.** This line said the box must be in SETTINGS >
+    // SYSEX DUMP > SYSEX RECEIVE. It does not: PLAN.md §9 measured on 2026-08-30
+    // that it takes a dump sitting at its ordinary menu, and a full round trip on
+    // 2026-08-31 confirmed it. The stale instruction was copied out of here into
+    // `ui::a4`'s tooltip before anyone re-read it, which is this file's own
+    // header warning happening to this file.
+    println!("The box needs no receive mode and will not prompt — there is no arming step.");
     println!("Whatever is in that slot now will be gone, and this tool keeps no backup:");
     println!("dump the slot from the box first if you want one.");
     print!("Type {CONSENT} to proceed: ");
@@ -198,25 +217,26 @@ fn main() {
     let listening = port.name.clone();
     let reply = std::thread::spawn(move || capture_sysex(&listening, REPLY_WINDOW));
 
-    let result = if single {
-        conn.send(&msg.wire).map_err(|e| e.to_string())
-    } else {
-        let mut sent = Ok(());
-        for (i, piece) in msg.wire.chunks(chunk).enumerate() {
-            if let Err(e) = conn.send(piece) {
-                sent = Err(format!("chunk {i} of {}: {e}", msg.wire.len().div_ceil(chunk)));
-                break;
-            }
-            std::thread::sleep(Duration::from_secs_f64(pace_ms / 1000.0));
+    // The send itself is `a4_transfer`'s, including the consent check and the
+    // re-verify. Nothing about delivery is decided here any more.
+    let cancel = std::sync::atomic::AtomicBool::new(false);
+    let result = send_pattern(&mut conn, &msg.wire, pacing, Consent::given_for(msg.slot), &cancel, |p| {
+        if p.packets_sent == 1 || p.packets_sent % 8 == 0 || p.packets_sent == p.packets_total {
+            print!("\r  {} / {} packets", p.packets_sent, p.packets_total);
+            let _ = std::io::stdout().flush();
         }
-        sent
-    };
+    });
+    println!();
 
     match result {
-        Ok(()) => println!("sent {} bytes to {}.", msg.wire.len(), port.name),
+        Ok(report) => {
+            println!("sent {} bytes to {} in {:.2} s.", report.bytes, port.name, report.elapsed.as_secs_f64());
+            if !report.paced {
+                println!("  NOT paced — this is the shape that did nothing on 2026-08-30.");
+            }
+        }
         Err(e) => {
             eprintln!("send failed: {e}");
-            eprintln!("the box may hold a partial message — power-cycle it before retrying");
             std::process::exit(1);
         }
     }
@@ -254,38 +274,25 @@ struct Message {
     payload: Vec<u8>,
 }
 
-/// Everything that must be true of these bytes before one of them leaves.
+/// Frame the bytes on disk and hand them to `a4_transfer::verify_before_send`.
 ///
-/// The format checks are `digi_protocol::a4_pattern::parse_pattern`'s — framing,
-/// family, opcode, checksum, count and payload length, all in one call. The two
-/// checks kept here are the ones that belong to a *file on disk about to be put
-/// on a cable* rather than to the format:
-///
-/// * **The frame must be `F0 … F7` or bare.** A file starting `F0` and not
-///   ending `F7` is truncated, and saying so beats "not an Elektron dump".
-/// * **No byte inside the frame may have its high bit set.** A parser would
-///   reject such a message eventually; this says which byte, because the answer
-///   is nearly always a file that was edited by hand.
+/// The only thing left here is tolerating a file saved without its `F0`/`F7`,
+/// which is a property of captures on this desk rather than of the format.
 fn validate(raw: &[u8]) -> Result<Message, String> {
-    let body: &[u8] = match (raw.first(), raw.last()) {
-        (Some(0xf0), Some(0xf7)) => &raw[1..raw.len() - 1],
+    let wire: Vec<u8> = match (raw.first(), raw.last()) {
+        (Some(0xf0), Some(0xf7)) => raw.to_vec(),
         (Some(0xf0), _) => return Err("starts F0 but does not end F7 — truncated".into()),
-        _ => raw,
+        _ => {
+            let mut w = Vec::with_capacity(raw.len() + 2);
+            w.push(0xf0);
+            w.extend_from_slice(raw);
+            w.push(0xf7);
+            w
+        }
     };
-    if let Some(i) = body.iter().position(|b| b & 0x80 != 0) {
-        return Err(format!("byte {i} is {:#04x}: high bit set inside the frame", body[i]));
-    }
-    if body.len() < 4 {
-        return Err(format!("{} bytes is too short to be a dump", body.len()));
-    }
-
-    let mut wire = Vec::with_capacity(body.len() + 2);
-    wire.push(0xf0);
-    wire.extend_from_slice(body);
-    wire.push(0xf7);
-
-    let parsed = parse_pattern(&wire)?;
-    // Both trailer fields verified by `parse_pattern`; read back only to print.
+    let parsed = verify_before_send(&wire)?;
+    let body = &wire[1..wire.len() - 1];
+    // Both trailer fields verified by `verify_before_send`; read back only to print.
     let checksum = u16::from(body[body.len() - 4]) << 7 | u16::from(body[body.len() - 3]);
     let length = u16::from(body[body.len() - 2]) << 7 | u16::from(body[body.len() - 1]);
     Ok(Message { wire, slot: parsed.slot, checksum, length, payload: parsed.payload })

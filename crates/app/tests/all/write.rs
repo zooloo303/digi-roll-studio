@@ -423,15 +423,18 @@ fn the_press_captures_the_track_it_was_aimed_at_and_everything_travelling_with_i
     let (session, id, _) = session_with_import();
     let job = job_for(&session, id, 0);
 
-    assert_eq!(job.write.index, 0);
-    assert_eq!(job.write.track_index, 0);
-    assert_eq!(job.write.notes.len(), 15);
+    let digi_roll_studio::ui::write::PlannedWrite::Gen2(write) = &job.write else {
+        panic!("a DT2 job plans a gen-2 write");
+    };
+    assert_eq!(write.index, 0);
+    assert_eq!(write.track_index, 0);
+    assert_eq!(write.notes.len(), 15);
     // The three that reach past the notes, each of which the dialog has to name:
     // the track's PROB default, its lanes (`Some`, so lanes the box holds and
     // this track does not are freed) and the pattern's swing.
-    assert_eq!(job.write.track_prob, Some(100));
-    assert_eq!(job.write.plocks.as_deref(), Some(&[][..]));
-    assert_eq!(job.write.swing, Some(50.0));
+    assert_eq!(write.track_prob, Some(100));
+    assert_eq!(write.plocks.as_deref(), Some(&[][..]));
+    assert_eq!(write.swing, Some(50.0));
     assert_eq!(job.source_label, "A01 T1");
     assert_eq!(job.from_other_box, None);
 }

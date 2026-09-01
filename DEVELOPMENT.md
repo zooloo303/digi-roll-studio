@@ -255,6 +255,42 @@ something that is not its default**, or the assertion is decoration.
 after both shipped. The rule is in that file: anything shipped gets its state line
 rewritten **in the change that ships it**.
 
+**The sharper form, 2026-08-31: the lie was *copied forward*, and it invented a
+safety interlock.** `ui::a4`'s SEND tooltip told users the Analog Four must be in
+SETTINGS > SYSEX DUMP > SYSEX RECEIVE. It must not — PLAN.md §9 had measured on
+2026-08-30 that the box takes a 14 KB dump sitting at its ordinary menu, and a
+round trip the next day confirmed it by never arming the box at all. The sentence
+came out of `examples/a4_pattern_send`, which had carried it since before the
+measurement.
+
+Three things generalise, and only the first is lesson 3 as already written:
+
+- **An example is code, and it goes stale in the direction of whatever it was
+  true about first.** It is nonetheless read as documentation, because it is the
+  only prose next to a working call. Nothing marks the difference. So a stale
+  example does not sit quietly being wrong — it gets *propagated* into the next
+  file by someone reasonably treating it as the reference, which is how a
+  one-file error became a two-file one on the day the second file was written.
+- **The two claims were not equally safe, and that is why this is worse than a
+  typo.** "Put the box in receive mode" describes an interlock: a step that would
+  catch a stray message. There is none — there is no arming step between a 14 KB
+  SysEx and an overwritten pattern slot. The instruction did not merely
+  misdescribe the box, it **described a safety net over the one place the path
+  has none**. When correcting a stale caveat, check whether the false version was
+  more reassuring than the true one; if it was, the true one belongs on the panel
+  rather than in a tooltip — which is where it lived for the rest of that day.
+  (The panel itself is gone since later on 2026-08-31: the A4 writes through the
+  digi ceremony now, whose confirm dialog, automatic backup and read-back verify
+  are real interlocks rather than described ones, so the sentence's job is done
+  by machinery. PLAN.md §10's "The A4 joins the digi transfer path" is the
+  hand-off.)
+- **The finding was already written down, in the file being edited.** PLAN.md §9
+  had the paragraph, two thousand lines from where the panel entry was being
+  added. Searching the repo for the claim before writing it would have cost one
+  `grep` and found it. The habit worth having is to grep for a *hardware fact*
+  before restating it, the same way one greps for a function before writing a
+  second copy.
+
 ### 4. Check a test's body against its name
 
 Seven tests have been found whose names promised more than they checked. The shape

@@ -335,10 +335,10 @@ impl WriteHooks for Hooks {
             track: Some(track.track_index),
             lanes: &[],
             box_plocks: &track.box_plocks,
-            free_lanes: Some(args.free_lanes),
+            free_lanes: args.free_lanes,
             track_prob: Some(TRACK_PROB),
             swing: None,
-            box_swing: Some(args.swing),
+            box_swing: args.swing,
         }) {
             println!("  {line}");
         }

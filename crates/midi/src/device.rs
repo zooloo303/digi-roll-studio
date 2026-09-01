@@ -54,11 +54,12 @@ use digi_protocol::drive::{
     API_FILE_WRITE, API_FILE_WRITE_CLOSE, API_FILE_WRITE_OPEN, READ_CHUNK,
 };
 use digi_protocol::query::{parse_query_reply, query_args, QueryValue, API_QUERY};
+use digi_protocol::a4_pattern::{build_pattern, DUMP_A4_PATTERN_REQUEST};
 use digi_protocol::protocol::{
     build_api_message, build_dump_message, parse_sysex, API_DEVICE, API_RESPONSE, API_VERSION,
     DUMP_KIT_TRACK_SOUND, DUMP_KIT_TRACK_SOUND_REQUEST, DUMP_PATTERN_KIT,
     DUMP_PATTERN_KIT_REQUEST, DUMP_PROJECT_SETTINGS, DUMP_SOUND_REQUEST,
-    DUMP_WHOLE_PROJECT_REQUEST, SysExKind,
+    DUMP_WHOLE_PROJECT_REQUEST, FAMILY_ANALOG_FOUR, SysExKind,
 };
 use digi_protocol::sound::{
     decode_dn1_sound, decode_sound_dump, measure_struct_size, SoundError, SOUND_WRAPPER,
@@ -247,10 +248,20 @@ fn plan_store(
             identity.map(|i| i.name.clone()).unwrap_or_else(|| "this device".into()),
         ))
     })?;
-    // The only 0x5n this crate ever builds. There is no "write request" in the
-    // protocol — you send an unsolicited dump *response* and the box stores it in
-    // that slot — which is why the read path's `assert_request_opcode` has no
-    // mirror worth writing here: the opcode is not a parameter, so there is
+    // The A4's pattern store is the same move in the other framing: an
+    // unsolicited `0x54` dump, built by `a4_pattern::build_pattern`, which also
+    // keeps the one refusal the gen-2 framing has no equivalent of — a ragged
+    // final seven-bit group with a high bit set, whose encoding no capture has
+    // ever pinned down. `DEVELOPMENT.md` lesson 13 is why that refusal matters
+    // *here*: a body this box cannot parse takes its SysEx API down until a
+    // power cycle.
+    if family == FAMILY_ANALOG_FOUR {
+        return build_pattern(index, payload).map_err(MidiError::WriteRefused);
+    }
+    // The only gen-2 0x5n this crate ever builds. There is no "write request" in
+    // the protocol — you send an unsolicited dump *response* and the box stores
+    // it in that slot — which is why the read path's `assert_request_opcode` has
+    // no mirror worth writing here: the opcode is not a parameter, so there is
     // nothing for a guard to refuse.
     Ok(build_dump_message(family, DUMP_PATTERN_KIT, index, payload))
 }
@@ -646,10 +657,23 @@ impl ElektronDevice {
         }
     }
 
-    /// One pattern-kit dump (0x60 request → 0x50 response) from the identified box.
+    /// One pattern dump from the identified box, in whatever the box's pattern
+    /// request is: `0x60` → `0x50` pattern-kit on a gen-2 box, `0x64` → `0x54`
+    /// on the Analog Four (whose `0x60` streams the *whole project* — asking a
+    /// digi's question of it would be answered with 417 messages).
+    ///
+    /// One name for both on purpose: this is [`PatternIo::fetch_pattern_kit`]'s
+    /// body, and the safe-write flows above it mean "the destination pattern's
+    /// bytes" — which generation of request fetches them is the wire's own
+    /// business, decided by the family the box gave in its handshake.
     pub fn fetch_pattern_kit(&mut self, index: u8) -> Result<Vec<u8>, MidiError> {
         let family = self.family()?;
-        Ok(self.fetch_dump(family, DUMP_PATTERN_KIT_REQUEST, index)?.payload)
+        let request = if family == FAMILY_ANALOG_FOUR {
+            DUMP_A4_PATTERN_REQUEST
+        } else {
+            DUMP_PATTERN_KIT_REQUEST
+        };
+        Ok(self.fetch_dump(family, request, index)?.payload)
     }
 
     /// List one +Drive directory (`0x10` request → `0x90` response).
@@ -1073,6 +1097,32 @@ impl ElektronDevice {
     fn store_pattern_kit(&mut self, index: u8, payload: &[u8]) -> Result<(), MidiError> {
         let msg = plan_store(self.identity.as_ref(), index, payload)?;
         let conn = &mut self.conn_out;
+        if self.identity.as_ref().and_then(|i| i.family) == Some(FAMILY_ANALOG_FOUR) {
+            // DIN-paced, not digest-paced: 3,125 bytes a second against the
+            // digis' 800 a millisecond, because an unpaced (or merely
+            // fast-chunked) 14 KB frame is the shape this box has never once
+            // accepted — measured 2026-08-30, `crate::a4_transfer`'s module doc.
+            // `send_pattern` also re-verifies the frame immediately before the
+            // first byte leaves, which no other store path needs: this is the
+            // box a malformed body wedges until a power cycle.
+            let cancel = std::sync::atomic::AtomicBool::new(false);
+            crate::a4_transfer::send_pattern(
+                conn,
+                &msg,
+                crate::a4_transfer::Pacing::din(),
+                crate::a4_transfer::Consent::given_for(index),
+                &cancel,
+                |_| {},
+            )
+            .map_err(|e| MidiError::Send(e.to_string()))?;
+            // The digis' settle, for the same reason it exists there: the very
+            // next thing the safe-write flow does is read the slot back, and
+            // re-reading a slot the box has not finished storing would fail a
+            // write that worked. Untested against the A4 specifically — the
+            // probe's read-back ran minutes after the write, not milliseconds.
+            sleep(SEND_SETTLE);
+            return Ok(());
+        }
         paced_send(
             &msg,
             SEND_CHUNK,

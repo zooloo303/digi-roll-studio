@@ -86,16 +86,19 @@
 //!
 //! # What this module is not
 //!
-//! It is layout, not a write path. Nothing here is wired into
-//! [`crate::safe_write`], and it cannot be: PLAN.md §7 rule 1 wants a backup and
-//! a read-back, and **the A4 answers no dump request at all**. Its dumps are
-//! initiated from its own front panel, so the only backup is a human taking one
-//! and the only verification is the box's screen. [`build_pattern`] frames a
-//! message; deciding whether to send it is somebody else's problem, and
-//! `examples/a4_pattern_send.rs` is where that lives.
+//! It is layout, not a write path. This section said the layout *could not* be
+//! wired into [`crate::safe_write`] — "the A4 answers no dump request at all" —
+//! and that claim fell on 2026-08-31: the box answers `0x60`–`0x6d` in the dump
+//! namespace its advertised opcode list never described (PLAN.md §10, "The A4
+//! answers dump requests"). So the backup and the read-back rule 1 wants are
+//! wire questions with answers, and `safe_write::a4_safe_write_tracks` is the
+//! write path built on them. This module stays what it was: the byte layout,
+//! shared by that flow, the front-panel listener in `digi_midi::a4_transfer`,
+//! and `examples/a4_pattern_send.rs`.
 
 use crate::protocol::{
-    build_dump_message, parse_sysex, SysExKind, DUMP_PROJECT_SETTINGS, FAMILY_ANALOG_FOUR,
+    build_dump_message, parse_sysex, SysExKind, DUMP_PROJECT_SETTINGS,
+    DUMP_PROJECT_SETTINGS_REQUEST, FAMILY_ANALOG_FOUR,
 };
 
 /// A decoded gen-1 pattern payload is exactly this long. 1853 × 7 + 3, so the
@@ -105,6 +108,12 @@ pub const PAYLOAD_LEN: usize = 12_974;
 /// The A4 pattern opcode. Numerically [`DUMP_PROJECT_SETTINGS`], which is a
 /// different message on the digis; the pair `(family, dump_type)` is the key.
 pub const DUMP_A4_PATTERN: u8 = DUMP_PROJECT_SETTINGS;
+
+/// The request that fetches one — [`DUMP_A4_PATTERN`] + 0x10, as for every
+/// request in the dump namespace. Index is the slot, linear 0–127: 1 is A02,
+/// 16 is B01, verified against the box 2026-08-31 (`examples/a4_dump_probe`,
+/// PLAN.md §10 "The A4 answers dump requests").
+pub const DUMP_A4_PATTERN_REQUEST: u8 = DUMP_PROJECT_SETTINGS_REQUEST;
 
 pub const NUM_TRACKS: usize = 6;
 pub const NUM_STEPS: usize = 64;

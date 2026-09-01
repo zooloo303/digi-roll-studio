@@ -87,17 +87,22 @@
 use std::collections::HashMap;
 use std::sync::mpsc::{channel, Receiver, Sender};
 
-use digi_core::device::Device;
+use digi_core::device::{Device, PatternRoute};
 use digi_core::session::PatternRef;
 use digi_core::{DeviceId, Session, Source};
 use digi_midi::{ElektronDevice, PortBinding};
+use digi_protocol::a4_pattern::{
+    read_track_trigs as a4_read_track_trigs, PAYLOAD_LEN as A4_PAYLOAD_LEN,
+    TRACK_NAMES as A4_TRACK_NAMES,
+};
 use digi_protocol::backup_stash::Stash;
 use digi_protocol::device::DeviceIdentity;
 use digi_protocol::pattern::{decode_pattern_kit, track_trig_count, PatternKit, Spec};
 use digi_protocol::plocks::{free_lane_count, read_track_plocks, PoolLane};
 use digi_protocol::safe_write::{
-    safe_write_tracks, write_gate, write_impact_lines, write_result_message, ConfirmArgs,
-    ImpactArgs, PatternIo, Timestamp, TrackWrite, WriteError, WriteHooks, BACKUP_LINE,
+    a4_safe_write_tracks, safe_write_tracks, write_gate, write_impact_lines,
+    write_result_message, A4TrackWrite, ConfirmArgs, ImpactArgs, PatternIo, Timestamp,
+    TrackWrite, WriteError, WriteHooks, BACKUP_LINE,
 };
 use eframe::egui::{self, Ui};
 
@@ -105,6 +110,28 @@ use crate::ui::transfer::{binding, slot_choices, wire_slots};
 use crate::ui::write::{aim, blocker, is_home, track_kind_label, wrong_box, PortsPresent};
 
 // --- the plan, which needs no box ------------------------------------------------
+
+/// The tracks going to one box, in whichever format that box speaks. Decided
+/// once, in [`plan_box`], from the model's `pattern_route`; matched once more,
+/// in [`run`], to pick the ceremony — everything between is format-blind.
+#[derive(Debug)]
+pub enum JobWrites {
+    Gen2(Vec<TrackWrite>),
+    A4(Vec<A4TrackWrite>),
+}
+
+impl JobWrites {
+    pub fn len(&self) -> usize {
+        match self {
+            Self::Gen2(w) => w.len(),
+            Self::A4(w) => w.len(),
+        }
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+}
 
 /// One box's share of a sync: which of its tracks are going, and where.
 #[derive(Debug)]
@@ -118,14 +145,16 @@ pub struct BoxJob {
     pub slug: Option<&'static str>,
     pub input: PortBinding,
     pub output: PortBinding,
-    pub spec: &'static Spec,
+    /// `None` on the Analog Four, whose format has no `Spec`; [`Self::writes`]
+    /// says which flow the job takes instead.
+    pub spec: Option<&'static Spec>,
     /// The scene's slot on this box — where the notes are coming from.
     pub from: PatternRef,
     /// Where they are going, by the provenance rule.
     pub into: PatternRef,
     pub pattern_name: String,
     /// One per track being sent, same order and same length as [`Self::aims`].
-    pub writes: Vec<TrackWrite>,
+    pub writes: JobWrites,
     pub aims: Vec<TrackAim>,
     /// Tracks not being sent, and why — never dropped silently (decision 3).
     pub skipped: Vec<Skipped>,
@@ -199,12 +228,11 @@ pub fn plan_box(
         plan.blocked.push(Blocked { device: id, name: device.name.clone(), why });
         return plan;
     }
-    // `blocker` already refused a box without both ports and without a spec, so
-    // these three cannot fail — but they are refused through the same list
+    // `blocker` already refused a box without both ports and without a pattern
+    // route, so these cannot fail — but they are refused through the same list
     // rather than `expect`, because a refusal that reaches the panel is always
     // better than a window that closes.
-    let (Some(input), Some(output), Some(spec)) =
-        (device.io.input.clone(), device.io.output.clone(), device.model.spec())
+    let (Some(input), Some(output)) = (device.io.input.clone(), device.io.output.clone())
     else {
         plan.blocked.push(Blocked {
             device: id,
@@ -213,6 +241,16 @@ pub fn plan_box(
         });
         return plan;
     };
+    let gen1 = device.model.pattern_route() == PatternRoute::RequestGen1;
+    let spec = device.model.spec();
+    if !gen1 && spec.is_none() {
+        plan.blocked.push(Blocked {
+            device: id,
+            name: device.name.clone(),
+            why: "this box has no ports or no pattern format".into(),
+        });
+        return plan;
+    }
 
     let pattern = device.pattern(from.slot());
     let mut job = BoxJob {
@@ -226,7 +264,7 @@ pub fn plan_box(
         from,
         into,
         pattern_name: pattern.map(|p| p.name.clone()).unwrap_or_default(),
-        writes: Vec::new(),
+        writes: if gen1 { JobWrites::A4(Vec::new()) } else { JobWrites::Gen2(Vec::new()) },
         aims: Vec::new(),
         skipped: Vec::new(),
     };
@@ -242,21 +280,43 @@ pub fn plan_box(
             });
             continue;
         }
-        match session.track_write(spec, id, from, track_index, into) {
-            Ok(export) => {
+        // Each format plans through its own `core` seam; the aim rows they
+        // produce are identical, which is what keeps the dialog format-blind.
+        let planned = match (&mut job.writes, spec) {
+            (JobWrites::A4(writes), _) => {
+                session.a4_track_write(id, from, track_index, into).map(|export| {
+                    writes.push(export.write);
+                    // `lanes: 0` even when the roll holds lanes on this track:
+                    // an A4 write cannot carry them, and the count in this row
+                    // is a promise of what travels. The loss is in
+                    // `export.warnings` instead, which the dialog prints.
+                    (0, export.warnings)
+                })
+                .map_err(|e| e.to_string())
+            }
+            (JobWrites::Gen2(writes), Some(spec)) => {
+                session.track_write(spec, id, from, track_index, into).map(|export| {
+                    writes.push(export.write);
+                    (track.map(|t| t.plocks.len()).unwrap_or(0), export.warnings)
+                })
+                .map_err(|e| e.to_string())
+            }
+            (JobWrites::Gen2(_), None) => unreachable!("refused above"),
+        };
+        match planned {
+            Ok((lanes, warnings)) => {
                 job.aims.push(TrackAim {
                     track_index,
                     name: track_name(device, from, track_index),
                     notes,
-                    lanes: track.map(|t| t.plocks.len()).unwrap_or(0),
-                    warnings: export.warnings,
+                    lanes,
+                    warnings,
                 });
-                job.writes.push(export.write);
             }
             // `core` refusing a track is not a reason to refuse the box: the
             // other fifteen are still describable, and the one that is not
             // says so in the same list the empty ones do.
-            Err(e) => job.skipped.push(Skipped { track_index, why: e.to_string() }),
+            Err(why) => job.skipped.push(Skipped { track_index, why }),
         }
     }
 
@@ -321,9 +381,12 @@ fn track_name(device: &Device, from: PatternRef, track_index: usize) -> Option<S
 /// Decision 5: this is the *wording's* copy. Nothing here becomes a payload.
 #[derive(Debug, Clone)]
 pub struct Survey {
+    /// Empty on the A4, whose mapped format has no kit name to read.
     pub kit_name: String,
-    pub box_swing: u8,
-    pub free_lanes: usize,
+    /// `None` on the A4 — swing and the lane pool are not in its mapped format,
+    /// so the dialog's slot-wide lines have nothing true to say about them.
+    pub box_swing: Option<u8>,
+    pub free_lanes: Option<usize>,
     /// Per track being sent, in the job's order: what the destination holds now.
     pub existing: Vec<TrackSurvey>,
 }
@@ -373,21 +436,50 @@ pub fn survey(device: &mut impl PatternIo, job: &BoxJob) -> Result<Survey, Strin
         .wire_index()
         .ok_or_else(|| format!("{} is not a slot this box has", job.into.label()))?;
     let bytes = device.fetch_pattern_kit(index)?;
-    let kit = decode_pattern_kit(job.spec, &bytes)?;
+
+    // The A4's survey is smaller because its mapped format is: per-track trig
+    // counts — `a4_read_track_trigs` counts what the box shows, the same call
+    // `a4_safe_write_tracks`' confirm counts with, so `changed_since_survey`
+    // compares like with like — and nothing slot-wide at all.
+    if matches!(job.writes, JobWrites::A4(_)) {
+        if bytes.len() != A4_PAYLOAD_LEN {
+            return Err(format!(
+                "the box answered {} bytes for {}, an A4 pattern is {A4_PAYLOAD_LEN}",
+                bytes.len(),
+                job.into.label()
+            ));
+        }
+        let existing = job
+            .aims
+            .iter()
+            .map(|aim| {
+                Ok(TrackSurvey {
+                    track_index: aim.track_index,
+                    existing_trigs: a4_read_track_trigs(&bytes, aim.track_index)?.len(),
+                    kind: A4_TRACK_NAMES.get(aim.track_index).copied().unwrap_or("?").into(),
+                    box_plocks: Vec::new(),
+                })
+            })
+            .collect::<Result<Vec<_>, String>>()?;
+        return Ok(Survey { kit_name: String::new(), box_swing: None, free_lanes: None, existing });
+    }
+
+    let spec = job.spec.ok_or_else(|| "this box has no pattern format".to_string())?;
+    let kit = decode_pattern_kit(spec, &bytes)?;
     let existing = job
         .aims
         .iter()
         .map(|aim| TrackSurvey {
             track_index: aim.track_index,
             existing_trigs: trigs_on(&kit, aim.track_index),
-            kind: track_kind_label(&kit, aim.track_index, job.spec.track_kind_fallback),
-            box_plocks: read_track_plocks(job.spec, &bytes, aim.track_index).unwrap_or_default(),
+            kind: track_kind_label(&kit, aim.track_index, spec.track_kind_fallback),
+            box_plocks: read_track_plocks(spec, &bytes, aim.track_index).unwrap_or_default(),
         })
         .collect();
     Ok(Survey {
         kit_name: kit.kit.name.clone(),
-        box_swing: digi_protocol::pattern_settings::read_swing(job.spec, &bytes),
-        free_lanes: free_lane_count(job.spec, &bytes),
+        box_swing: Some(digi_protocol::pattern_settings::read_swing(spec, &bytes)),
+        free_lanes: Some(free_lane_count(spec, &bytes)),
         existing,
     })
 }
@@ -511,63 +603,78 @@ pub fn ask_box(job: &BoxJob, survey: &Survey, playing: bool) -> AskBox {
             job.into.label()
         ));
     }
-    // Per track, the lanes it writes and clears and its PROB default — the parts
-    // of the impact that really are per track. Swing is left out here because it
-    // is one byte for the whole slot, and repeating it sixteen times would read
-    // as sixteen changes.
-    const NO_LANES: &[PoolLane] = &[];
-    for (aim, write) in job.aims.iter().zip(&job.writes) {
-        let per_track = write_impact_lines(&ImpactArgs {
-            label: &job.into.label(),
-            track: Some(aim.track_index),
-            lanes: write.plocks.as_deref().unwrap_or(&[]),
-            box_plocks: survey
-                .of(aim.track_index)
-                .map(|t| t.box_plocks.as_slice())
-                .unwrap_or(NO_LANES),
-            // Left to the slot-wide line below: the pool is one budget for all
-            // sixteen tracks, so a per-track "won't fit" would be counted once
-            // per track out of the same eighty.
-            free_lanes: None,
-            track_prob: write.track_prob,
-            swing: None,
-            box_swing: None,
-        });
-        for line in per_track {
-            lines.push(format!("T{}: {line}", aim.track_index + 1));
+    match &job.writes {
+        JobWrites::Gen2(writes) => {
+            // Per track, the lanes it writes and clears and its PROB default —
+            // the parts of the impact that really are per track. Swing is left
+            // out here because it is one byte for the whole slot, and repeating
+            // it sixteen times would read as sixteen changes.
+            const NO_LANES: &[PoolLane] = &[];
+            for (aim, write) in job.aims.iter().zip(writes) {
+                let per_track = write_impact_lines(&ImpactArgs {
+                    label: &job.into.label(),
+                    track: Some(aim.track_index),
+                    lanes: write.plocks.as_deref().unwrap_or(&[]),
+                    box_plocks: survey
+                        .of(aim.track_index)
+                        .map(|t| t.box_plocks.as_slice())
+                        .unwrap_or(NO_LANES),
+                    // Left to the slot-wide line below: the pool is one budget
+                    // for all sixteen tracks, so a per-track "won't fit" would
+                    // be counted once per track out of the same eighty.
+                    free_lanes: None,
+                    track_prob: write.track_prob,
+                    swing: None,
+                    box_swing: None,
+                });
+                for line in per_track {
+                    lines.push(format!("T{}: {line}", aim.track_index + 1));
+                }
+            }
+            // The pool, once, against everything this box is about to spend out
+            // of it.
+            let wanted: usize = writes
+                .iter()
+                .map(|w| w.plocks.as_ref().map(|l| l.len()).unwrap_or(0))
+                .sum();
+            let freed: usize = job
+                .aims
+                .iter()
+                .map(|a| survey.of(a.track_index).map(|t| t.box_plocks.len()).unwrap_or(0))
+                .sum();
+            let free_lanes = survey.free_lanes.unwrap_or(0);
+            if wanted > free_lanes + freed {
+                lines.push(format!(
+                    "Careful: these tracks want {} between them and the pattern only has {} — \
+                     some of them won't fit, and you'll be told which.",
+                    plural(wanted, "p-lock lane"),
+                    plural(free_lanes + freed, "spare lane")
+                ));
+            }
+            // Swing, once, because it is the slot's and not a track's.
+            let swing = writes.iter().find_map(|w| w.swing).map(|s| s.round() as u8);
+            lines.extend(write_impact_lines(&ImpactArgs {
+                label: &job.into.label(),
+                track: None,
+                lanes: &[],
+                box_plocks: &[],
+                free_lanes: None,
+                track_prob: None,
+                swing,
+                box_swing: survey.box_swing,
+            }));
         }
+        // The A4's whole impact beyond the named tracks' trigs is that there is
+        // none, and saying so is this dialog's version of the enumeration
+        // above: the sounds and p-locks a person might expect to travel with
+        // the pattern stay exactly as the destination slot has them.
+        JobWrites::A4(_) => lines.push(
+            "Only the trigs move: sounds, p-locks, velocity and length stay as the \
+             destination slot holds them right now — the write is composed on a fresh read \
+             of that slot."
+                .to_string(),
+        ),
     }
-    // The pool, once, against everything this box is about to spend out of it.
-    let wanted: usize = job
-        .writes
-        .iter()
-        .map(|w| w.plocks.as_ref().map(|l| l.len()).unwrap_or(0))
-        .sum();
-    let freed: usize = job
-        .aims
-        .iter()
-        .map(|a| survey.of(a.track_index).map(|t| t.box_plocks.len()).unwrap_or(0))
-        .sum();
-    if wanted > survey.free_lanes + freed {
-        lines.push(format!(
-            "Careful: these tracks want {} between them and the pattern only has {} — some of \
-             them won't fit, and you'll be told which.",
-            plural(wanted, "p-lock lane"),
-            plural(survey.free_lanes + freed, "spare lane")
-        ));
-    }
-    // Swing, once, because it is the slot's and not a track's.
-    let swing = job.writes.iter().find_map(|w| w.swing).map(|s| s.round() as u8);
-    lines.extend(write_impact_lines(&ImpactArgs {
-        label: &job.into.label(),
-        track: None,
-        lanes: &[],
-        box_plocks: &[],
-        free_lanes: None,
-        track_prob: None,
-        swing,
-        box_swing: Some(survey.box_swing),
-    }));
     if playing {
         lines.push(
             "The transport is running — this app keeps clocking the box while the dumps go \
@@ -748,12 +855,17 @@ pub fn run<D: PatternIo>(
             continue;
         }
 
-        let writes: Vec<TrackWrite> = job
-            .writes
-            .iter()
-            .filter(|w| accepted.contains(&(job.device, w.track_index)))
-            .cloned()
-            .collect();
+        // The per-row opt-out, applied in whichever format the job planned. The
+        // two arms are the same filter; the ceremony they feed differs.
+        let ticked = |track_index: usize| accepted.contains(&(job.device, track_index));
+        let writes = match &job.writes {
+            JobWrites::Gen2(all) => JobWrites::Gen2(
+                all.iter().filter(|w| ticked(w.track_index)).cloned().collect(),
+            ),
+            JobWrites::A4(all) => JobWrites::A4(
+                all.iter().filter(|w| ticked(w.track_index)).cloned().collect(),
+            ),
+        };
         if writes.is_empty() {
             report.boxes.push(BoxOutcome {
                 device: job.device,
@@ -767,7 +879,14 @@ pub fn run<D: PatternIo>(
         }
 
         let mut hooks = SlotHooks { events, survey: &survey, log: None, refusal: None };
-        let outcome = safe_write_tracks(&mut device, stash, &writes, &mut hooks, now);
+        let outcome = match &writes {
+            JobWrites::Gen2(writes) => {
+                safe_write_tracks(&mut device, stash, writes, &mut hooks, now)
+            }
+            JobWrites::A4(writes) => {
+                a4_safe_write_tracks(&mut device, stash, writes, &mut hooks, now)
+            }
+        };
         let (text, is_error, wrote) = match outcome {
             Ok(result) if result.cancelled => (
                 hooks
@@ -988,6 +1107,9 @@ impl SyncPanel {
             ui.weak("No boxes in this session.");
             return;
         }
+        // Every box in the session, the A4 included: its whole-pattern send
+        // goes through the same ceremony as a digi's since 2026-08-31, so the
+        // FRONT-PANEL DUMP group this used to filter it out toward is gone.
         let devices: Vec<DeviceId> = session.devices.iter().map(|d| d.id).collect();
         let last = devices.len().saturating_sub(1);
         for (position, id) in devices.into_iter().enumerate() {
@@ -1084,7 +1206,7 @@ impl SyncPanel {
                 .selected_text(egui::RichText::new(into.label()).color(super::TEXT_DIMMER))
                 .width(56.0)
                 .show_ui(ui, |ui| {
-                    for slot in wire_slots() {
+                    for slot in wire_slots(device.model) {
                         ui.selectable_value(&mut picked, slot, slot.label());
                     }
                 });
@@ -1950,8 +2072,8 @@ mod tests {
         // about to happen.
         let survey = Survey {
             kit_name: "KIT 1".into(),
-            box_swing: 50,
-            free_lanes: 80,
+            box_swing: Some(50),
+            free_lanes: Some(80),
             existing: vec![seen(8, "BD")],
         };
         let kit = PatternKit {
@@ -1974,11 +2096,11 @@ mod tests {
             box_plocks: Vec::new(),
         };
         let args = ConfirmArgs {
-            pattern_kit: &kit,
+            pattern_kit: Some(&kit),
             label: "A01".into(),
             index: 0,
-            swing: 50,
-            free_lanes: 80,
+            swing: Some(50),
+            free_lanes: Some(80),
             tracks: vec![track.clone()],
         };
         let why = changed_since_survey(&survey, &args).expect("eight is not twelve");

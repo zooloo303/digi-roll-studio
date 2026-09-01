@@ -857,3 +857,186 @@ fn a_store_that_fails_mid_run_stops_every_box_after_it() {
     assert_eq!(stash.backups(None).len(), 1, "the DT2's, and only the DT2's");
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+// --- the Analog Four, through the same flow ---------------------------------------
+//
+// Since 2026-08-31 the A4 plans, surveys, asks and writes through exactly the
+// machinery above — `plan_box` branches to `core`'s gen-1 planner and `run`
+// hands the job to `a4_safe_write_tracks` — so these tests drive the identical
+// entry points with an A4 on the desk. What they pin is the parity itself: one
+// dialog, per-row opt-out, one backup per slot, verify by re-read, with the
+// format differences confined to the wording (no kit name, no swing, the
+// read-modify-write line) and the payload (12,974 bytes of `a4_pattern`).
+
+const A4_CAPTURE: &str = "analogfour-A01-2026-08-30.syx";
+
+fn a4_payload(name: &str) -> Vec<u8> {
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../protocol/tests/fixtures")
+        .join(name);
+    let bytes =
+        std::fs::read(&path).unwrap_or_else(|e| panic!("reading fixture {}: {e}", path.display()));
+    digi_protocol::a4_pattern::parse_pattern(&bytes)
+        .unwrap_or_else(|e| panic!("{name}: {e}"))
+        .payload
+}
+
+impl FakeBox {
+    /// An A4 on build 0195, holding the A01 capture in slot 0.
+    fn a4() -> Self {
+        Self {
+            identity: identity(4, "0195", "1.55B"),
+            card: Rc::new(RefCell::new(Card {
+                slots: BTreeMap::from([(0, a4_payload(A4_CAPTURE))]),
+                ..Card::default()
+            })),
+        }
+    }
+
+    /// Live trigs on one track of one slot, counted as the box shows them.
+    fn a4_trigs(&self, index: u8, track: usize) -> usize {
+        digi_protocol::a4_pattern::read_track_trigs(&self.slot(index), track)
+            .expect("the fake box holds an A4 pattern")
+            .len()
+    }
+}
+
+/// A session holding one wired A4 with the A01 capture imported into A01 — so
+/// the plan has two tracks with notes (SYN1's 32, SYN4's 4) and four skipped.
+fn a4_desk() -> (Session, DeviceId) {
+    let mut session = Session::default();
+    let a4 = session.add_device(Device::new("A4", &digi_core::device::A4, 16));
+    let dump = digi_protocol::a4_pattern::parse_pattern(&{
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../protocol/tests/fixtures")
+            .join(A4_CAPTURE);
+        std::fs::read(&path).expect("the A4 fixture")
+    })
+    .expect("the fixture parses");
+    session.import_a4_pattern(a4, PatternRef::new(0, 0), &dump).expect("an A4 dump into an A4 slot");
+    let device = session.device_mut(a4).expect("just added");
+    device.io = DeviceIo {
+        input: Some(port("a4-in")),
+        output: Some(port("a4-out")),
+        ..DeviceIo::default()
+    };
+    (session, a4)
+}
+
+#[test]
+fn an_a4_send_runs_the_whole_ceremony_the_digis_do() {
+    let (session, id) = a4_desk();
+    let (from, into) = sync::defaults(&session, id);
+    assert_eq!((from, into), (PatternRef::new(0, 0), PatternRef::new(0, 0)), "provenance aims home");
+    let plan = sync::plan_box(&session, PortsPresent::unknown(), id, from, into);
+    let job = plan.jobs.first().expect("an imported pattern has notes to send");
+    assert_eq!(job.writes.len(), 2, "SYN1 and SYN4");
+    assert_eq!(job.skipped.len(), 4, "the empty tracks are named, not dropped");
+
+    let stash = tmp_stash("a4-ceremony");
+    let box_ = FakeBox::a4();
+    let (report, seen) = drive(&plan, &stash, vec![box_.clone()], Answer::All);
+
+    // The dialog: one, with the A4's own wording in it.
+    let [dialog] = seen.asks.as_slice() else { panic!("one dialog per press") };
+    let (heading, rows, lines, skipped) = &dialog[0];
+    assert!(heading.contains("2 tracks into A01"), "{heading}");
+    assert!(!heading.contains('“'), "nothing in the mapped format is a kit name to quote");
+    assert!(
+        rows[0].contains("replacing 32 trigs"),
+        "the survey read the destination's own count: {}",
+        rows[0]
+    );
+    assert!(
+        lines.iter().any(|l| l.contains("Only the trigs move")),
+        "the read-modify-write line is the A4's whole impact statement: {lines:#?}"
+    );
+    assert!(
+        !lines.iter().any(|l| l.contains("swing") || l.contains("lane")),
+        "no gen-2 impact line may be invented for a format that has neither: {lines:#?}"
+    );
+    assert_eq!(skipped.len(), 4);
+
+    // The write: one send, verified byte-identical against the re-read.
+    let outcome = report.boxes.first().expect("one box");
+    assert!(outcome.wrote, "{}", outcome.text);
+    assert!(outcome.text.contains("verified byte-identical"), "{}", outcome.text);
+    assert_eq!(box_.sends(), 1, "one send per slot, however many tracks");
+    assert_eq!(box_.fetches(), 3, "survey, the write's own re-fetch, and the verify");
+
+    // One backup, filed under the A4's slug — and readable back out of the
+    // stash, which is what a restore starts from. `Stash::payload` keyed on the
+    // gen-2 opcode until this test first ran, so every A4 backup was a file the
+    // restore list could show and never read.
+    let backups = stash.backups(Some("analogfour"));
+    assert_eq!(backups.len(), 1, "one backup per slot, not per track");
+    let stored = stash.payload(&backups[0].file).expect("a backup the restore path can read");
+    assert_eq!(stored, a4_payload(A4_CAPTURE), "the untouched destination, verbatim");
+}
+
+#[test]
+fn unticking_an_a4_row_leaves_that_track_exactly_as_the_box_had_it() {
+    let (session, id) = a4_desk();
+    let (from, into) = sync::defaults(&session, id);
+    let plan = sync::plan_box(&session, PortsPresent::unknown(), id, from, into);
+
+    let stash = tmp_stash("a4-opt-out");
+    let box_ = FakeBox::a4();
+    // Tick SYN4 only: SYN1's 32 trigs must survive on the box even though the
+    // session's copy also has 32 — "left alone" and "same count" differ by the
+    // bytes, so the assertion is on the bytes.
+    let before = box_.slot(0);
+    let (report, _) = drive(&plan, &stash, vec![box_.clone()], Answer::Only(vec![(id, 3)]));
+
+    assert!(report.boxes[0].wrote, "{}", report.boxes[0].text);
+    let after = box_.slot(0);
+    let base = digi_protocol::a4_pattern::track_base(0);
+    assert_eq!(
+        before[base..base + 751],
+        after[base..base + 751],
+        "SYN1 was unticked and must be byte-identical"
+    );
+    assert_eq!(box_.a4_trigs(0, 3), 4, "SYN4 went");
+}
+
+#[test]
+fn a_desk_of_both_formats_writes_each_box_through_its_own_flow_in_one_run() {
+    // One run over a mixed desk: the shared rules (survey pass, one dialog,
+    // per-slot backups) hold across formats, which is the strongest form of
+    // "the A4 behaves exactly as the digis do".
+    let (mut session, _, _) = desk();
+    let a4 = session.add_device(Device::new("A4", &digi_core::device::A4, 16));
+    let dump = digi_protocol::a4_pattern::parse_pattern(
+        &std::fs::read(
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("../protocol/tests/fixtures")
+                .join(A4_CAPTURE),
+        )
+        .expect("the A4 fixture"),
+    )
+    .expect("the fixture parses");
+    session.import_a4_pattern(a4, PatternRef::new(0, 0), &dump).expect("an A4 dump into an A4 slot");
+    let device = session.device_mut(a4).expect("just added");
+    device.io = DeviceIo {
+        input: Some(port("a4-in")),
+        output: Some(port("a4-out")),
+        ..DeviceIo::default()
+    };
+
+    let plan = plan_desk(&session);
+    assert_eq!(plan.jobs.len(), 3, "two digis and the A4");
+
+    let stash = tmp_stash("a4-mixed");
+    let boxes =
+        vec![FakeBox::dt2(DT2_CAPTURE), FakeBox::dn2(DN2_CAPTURE), FakeBox::a4()];
+    let (report, seen) = drive(&plan, &stash, boxes.clone(), Answer::All);
+
+    assert_eq!(seen.asks.len(), 1, "one dialog for the whole desk");
+    assert_eq!(seen.asks[0].len(), 3, "with all three boxes in it");
+    for outcome in &report.boxes {
+        assert!(outcome.wrote, "{}: {}", outcome.name, outcome.text);
+        assert!(outcome.text.contains("verified byte-identical"), "{}", outcome.text);
+    }
+    assert_eq!(boxes[2].sends(), 1);
+    assert_eq!(stash.backups(None).len(), 3, "one per slot written, whatever the format");
+}

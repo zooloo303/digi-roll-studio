@@ -238,10 +238,16 @@ impl WriteHooks for Recorder {
     }
 
     fn confirm(&mut self, args: &ConfirmArgs) -> bool {
+        // This recorder only ever sits under the gen-2 flow, which always
+        // decodes the destination and reads its swing and lane pool — so the
+        // three `Option`s (they are `None` only on the A4's gen-1 flow) are
+        // unwrapped rather than threaded through every assertion's tuple.
+        let swing = args.swing.expect("a gen-2 confirm carries the box's swing");
+        let free_lanes = args.free_lanes.expect("a gen-2 confirm carries the pool");
         self.slot_confirms.push((
             args.label.clone(),
-            args.swing,
-            args.free_lanes,
+            swing,
+            free_lanes,
             args.tracks
                 .iter()
                 .map(|t| (t.track_index, t.existing_trigs, t.note_count, t.box_plocks.len()))
@@ -253,12 +259,18 @@ impl WriteHooks for Recorder {
                 track.track_index,
                 track.existing_trigs,
                 track.note_count,
-                args.swing,
+                swing,
                 track.box_plocks.len(),
-                args.free_lanes,
+                free_lanes,
             ));
         }
-        self.kit_name = Some(args.pattern_kit.kit.name.clone());
+        self.kit_name = Some(
+            args.pattern_kit
+                .expect("a gen-2 confirm carries the decoded destination")
+                .kit
+                .name
+                .clone(),
+        );
         !self.cancel
     }
 

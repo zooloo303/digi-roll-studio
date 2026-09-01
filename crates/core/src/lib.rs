@@ -10,6 +10,7 @@
 // the reading. Every byte of a dump is still parsed on the other side of that
 // call.
 
+pub mod a4_transfer;
 pub mod audition;
 pub mod chords;
 pub mod device;

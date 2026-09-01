@@ -123,7 +123,7 @@ pub fn ui(
             egui::RichText::new(heading).weak()
         };
         let tracks = device.model.num_tracks;
-        let sysex = device.can_sysex();
+        let route = device.model.pattern_route();
         let build = device.io.build.clone();
         let name = device.name.clone();
         let ports_pair = device.io.input.clone().zip(device.io.output.clone());
@@ -154,8 +154,13 @@ pub fn ui(
                 // moves, so this is a claim about the box on these ports *now*.
                 ui.weak(format!("· OS {build}"));
             }
-            if !sysex {
-                ui.weak("· live only");
+            // The second of two places this label is written, and the one the
+            // first fix missed — found by looking at the panel rather than by a
+            // test. A box that fetches and writes is the unremarkable case and
+            // says nothing — the A4 included, since 2026-08-31 — and only a
+            // live-only box names itself.
+            if !route.transfers() {
+                ui.weak(format!("· {}", route.label()));
             }
         });
 
@@ -275,9 +280,15 @@ pub fn add_box_row(ui: &mut Ui, session: &mut Session) -> bool {
         .width(ui.available_width().max(120.0) - 4.0)
         .show_ui(ui, |ui| {
             for model in MODELS {
-                let label = match model.can_sysex() {
-                    true => format!("{} · {} trk", model.display, model.num_tracks),
-                    false => format!("{} · {} trk · live only", model.display, model.num_tracks),
+                // `pattern_route`, not `can_sysex`: the A4 has no gen-2 spec
+                // and is not live-only, and this dropdown called it live-only
+                // for three days after its patterns started moving both ways.
+                // A box that transfers is unremarkable and gets no suffix.
+                let route = model.pattern_route();
+                let label = if route.transfers() {
+                    format!("{} · {} trk", model.display, model.num_tracks)
+                } else {
+                    format!("{} · {} trk · {}", model.display, model.num_tracks, route.label())
                 };
                 if ui.selectable_label(false, label).clicked() {
                     pick = Some(model);
@@ -590,7 +601,9 @@ fn patch_read_row<D: PatternIo + Send + 'static>(
                 .selected_text(egui::RichText::new(shown.label()).color(super::TEXT_DIMMER))
                 .width(56.0)
                 .show_ui(ui, |ui| {
-                    for slot in crate::ui::transfer::wire_slots() {
+                    let model =
+                        session.device(id).map(|d| d.model).unwrap_or(&digi_core::device::DT2);
+                    for slot in crate::ui::transfer::wire_slots(model) {
                         ui.selectable_value(&mut picked, slot, slot.label());
                     }
                 })

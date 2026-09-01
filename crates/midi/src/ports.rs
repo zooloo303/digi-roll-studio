@@ -96,6 +96,80 @@ pub fn open_output_by_name(name: &str) -> Result<midir::MidiOutputConnection, Mi
         .map_err(|e| MidiError::Connect(e.to_string()))
 }
 
+/// An input port held open, accumulating whole SysEx frames until asked for
+/// them.
+///
+/// [`capture_sysex`] listens for a fixed window and hands back what arrived,
+/// which is the right shape for "did the box reply to what I just sent". It is
+/// the wrong shape for the Analog Four, whose dumps are started by a person
+/// walking over and pressing a button: that wait has no window worth naming in
+/// advance, has to stay cancellable, and should report frames as they land
+/// rather than in one lump at the end. So the connection is a value that can be
+/// held and drained — see [`crate::a4_transfer`], which is the reason this
+/// exists.
+///
+/// `capture_sysex` is written in terms of it, so there is one copy of the
+/// `midir` wiring and the reassembler rather than two that can drift.
+pub struct SysExInbox {
+    // Held only to keep the connection alive: dropping it closes the port.
+    _conn: midir::MidiInputConnection<()>,
+    frames: std::sync::Arc<std::sync::Mutex<Vec<Vec<u8>>>>,
+    /// Set while a frame is open, so a caller can tell "nothing is coming" from
+    /// "14 KB is halfway here". Without it a quiet-period test would call the
+    /// gap between two driver callbacks the end of the dump.
+    mid_frame: std::sync::Arc<std::sync::atomic::AtomicBool>,
+}
+
+impl SysExInbox {
+    /// Open `name` for input and start collecting.
+    pub fn open(name: &str) -> Result<Self, MidiError> {
+        use std::sync::atomic::{AtomicBool, Ordering};
+        use std::sync::{Arc, Mutex};
+
+        let mut midi_in = MidiInput::new(CLIENT_NAME)?;
+        // Default settings filter SysEx out, which would report every box as
+        // silent.
+        midi_in.ignore(midir::Ignore::None);
+        let port = midi_in
+            .ports()
+            .into_iter()
+            .find(|p| midi_in.port_name(p).as_deref() == Ok(name))
+            .ok_or_else(|| MidiError::PortNotFound(name.to_string()))?;
+
+        let frames: Arc<Mutex<Vec<Vec<u8>>>> = Arc::new(Mutex::new(Vec::new()));
+        let mid_frame = Arc::new(AtomicBool::new(false));
+        let sink = Arc::clone(&frames);
+        let flag = Arc::clone(&mid_frame);
+        let mut reasm = crate::sysex_stream::SysExReassembler::new();
+        let conn = midi_in
+            .connect(
+                &port,
+                name,
+                move |_ts, bytes, _| {
+                    let done = reasm.push(bytes);
+                    if !done.is_empty() {
+                        sink.lock().unwrap().extend(done);
+                    }
+                    flag.store(reasm.is_mid_frame(), Ordering::Relaxed);
+                },
+                (),
+            )
+            .map_err(|e| MidiError::Connect(e.to_string()))?;
+
+        Ok(Self { _conn: conn, frames, mid_frame })
+    }
+
+    /// Every frame completed since the last call. Never blocks.
+    pub fn drain(&mut self) -> Vec<Vec<u8>> {
+        std::mem::take(&mut *self.frames.lock().unwrap())
+    }
+
+    /// True when a frame is open — bytes are arriving right now.
+    pub fn mid_frame(&self) -> bool {
+        self.mid_frame.load(std::sync::atomic::Ordering::Relaxed)
+    }
+}
+
 /// Listen on one input port and collect whole SysEx frames for a fixed window.
 ///
 /// Exists so an example can hear a box's *reply* without learning what `midir`
@@ -109,37 +183,9 @@ pub fn capture_sysex(
     name: &str,
     window: std::time::Duration,
 ) -> Result<Vec<Vec<u8>>, MidiError> {
-    use std::sync::{Arc, Mutex};
-
-    let mut midi_in = MidiInput::new(CLIENT_NAME)?;
-    // Default settings filter SysEx out, which would report every box as silent.
-    midi_in.ignore(midir::Ignore::None);
-    let port = midi_in
-        .ports()
-        .into_iter()
-        .find(|p| midi_in.port_name(p).as_deref() == Ok(name))
-        .ok_or_else(|| MidiError::PortNotFound(name.to_string()))?;
-
-    let frames: Arc<Mutex<Vec<Vec<u8>>>> = Arc::new(Mutex::new(Vec::new()));
-    let sink = Arc::clone(&frames);
-    let mut reasm = crate::sysex_stream::SysExReassembler::new();
-    let _conn = midi_in
-        .connect(
-            &port,
-            name,
-            move |_ts, bytes, _| {
-                let done = reasm.push(bytes);
-                if !done.is_empty() {
-                    sink.lock().unwrap().extend(done);
-                }
-            },
-            (),
-        )
-        .map_err(|e| MidiError::Connect(e.to_string()))?;
-
+    let mut inbox = SysExInbox::open(name)?;
     std::thread::sleep(window);
-    let out = frames.lock().unwrap().clone();
-    Ok(out)
+    Ok(inbox.drain())
 }
 
 /// Resolve a remembered binding against the ports present now: id first, then

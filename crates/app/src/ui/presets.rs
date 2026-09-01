@@ -191,6 +191,7 @@ use digi_protocol::sound::{tag_names_for, DN1_SOUND_MAGIC_HEAD, SOUND_MAGIC_HEAD
 pub use digi_protocol::sound::tag_names;
 use eframe::egui::{self, Ui};
 
+use crate::ui::Note;
 use crate::ui::tracks::Selection;
 use crate::ui::transfer::binding;
 
@@ -563,8 +564,9 @@ pub fn foreign_format_reason(format: Option<u32>) -> Option<String> {
              directly on 2026-08-29, it ignores the store. Load it from the box's own \
              browser instead."
             .to_string(),
-        A4_CONTAINER_MAGIC => "This is an Analog Four preset, and that box answers no dump \
-             request at all — there is no message that puts one on a track."
+        A4_CONTAINER_MAGIC => "This is an Analog Four preset, and no message is known that \
+             puts one on a track — the A4's 0x6b is not the kit-track read a load is built \
+             on, and no store path for a sound has been found."
             .to_string(),
         magic => format!(
             "This preset's container is {magic:#010x}, which this build does not recognise. \
@@ -577,33 +579,46 @@ pub fn foreign_format_reason(format: Option<u32>) -> Option<String> {
 ///
 /// **Stricter than [`blocker`], and the extra refusal is permanent rather than a
 /// setup step.** Browsing needs two ports and nothing else. Loading needs the
-/// box to answer `0x6b` — a load reads the track before it writes it, and there
-/// is no other way to know what a track held or what length it wants — and a
-/// box with no dump family answers no `0x6x` request whatsoever.
+/// box to answer `0x6b` with a **kit-track sound** — a load reads the track
+/// before it writes it, and there is no other way to know what a track held or
+/// what length it wants — and only the gen-2 boxes do.
 ///
-/// That box is the Analog Four, and the distinction matters because everything
-/// *else* about it works: it lists, it reads, it decodes, it tags, and its
-/// presets sit in this browser next to a DN2's. So the refusal has to say which
-/// half is missing, or it reads as the browser being broken on that box.
+/// The box refused is the Analog Four, and the reason had to be *re*-stated on
+/// 2026-08-31: this function keyed on "no dump family" until the A4 turned out
+/// to have one and answer requests on it. Its `0x6b` is not this message —
+/// it returns the current *pattern* with the index ignored (`0x65`'s twin),
+/// not a kit track's sound — and no `0x5b` store path is known. So the
+/// discriminator is now the pattern route: the gen-2 dump namespace is where
+/// the kit-track read/store pair lives, and `PatternRoute::Request` is the row
+/// that speaks it.
+///
+/// The distinction matters because everything *else* about the A4 here works:
+/// it lists, it reads, it decodes, it tags, and its presets sit in this browser
+/// next to a DN2's — since 2026-08-31 its *patterns* fetch and write from the
+/// Setup panel too. So the refusal has to say which half is missing, or it
+/// reads as the browser being broken on that box.
 ///
 /// **There is nothing to enable here.** No cable, port, OS build or setting
 /// changes it: the box does not have the message. That is why this is a
 /// sentence and not a disabled control with a tooltip.
 pub fn load_blocker(device: &Device) -> Option<String> {
-    let Some(slug) = device.model.slug else {
+    if device.model.slug.is_none() || product_for_slug(device.model.slug.expect("checked")).is_none()
+    {
         return Some(format!(
             "This build has no protocol for the {} beyond the names in this list, so it \
              cannot put a preset on one of its tracks.",
             device.model.display
         ));
-    };
-    match product_for_slug(slug) {
-        Some(product) if product.family.is_some() => None,
+    }
+    match device.model.pattern_route() {
+        digi_core::device::PatternRoute::Request => None,
         _ => Some(format!(
-            "The {} answers no dump request at all, so there is no way to read a track back \
-             or store a sound onto one. Its presets browse, search and tag here like any \
-             other box's — loading one onto a track is the one thing this protocol does not \
-             give it, and no cable or OS build changes that.",
+            "The {} answers no dump request for a kit track's sound — its 0x6b is a \
+             different message — so there is no way to read a track back or store a sound \
+             onto one. Its presets browse, search and tag here like any other box's, and \
+             its patterns fetch and write from Setup; loading a preset onto a track is the \
+             one thing this protocol does not give it, and no cable or OS build changes \
+             that.",
             device.model.display
         )),
     }
@@ -1223,33 +1238,6 @@ impl View {
         match self {
             Self::All => "ALL".into(),
             Self::One(bank) => bank_label(bank).to_string(),
-        }
-    }
-}
-
-/// The line under the buttons: what just happened, and how loudly to say it.
-enum Note {
-    /// It worked.
-    Good(String),
-    /// It did not fail, and it did not do what was asked either. **The A4's
-    /// answer** — see decision 4, and the hardware session that made this a
-    /// third variant rather than a bool.
-    Warn(String),
-    Bad(String),
-}
-
-impl Note {
-    fn text(&self) -> &str {
-        match self {
-            Self::Good(t) | Self::Warn(t) | Self::Bad(t) => t,
-        }
-    }
-
-    fn colour(&self) -> egui::Color32 {
-        match self {
-            Self::Good(_) => egui::Color32::LIGHT_GREEN,
-            Self::Warn(_) => super::CAUTION,
-            Self::Bad(_) => egui::Color32::LIGHT_RED,
         }
     }
 }

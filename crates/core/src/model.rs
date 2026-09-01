@@ -369,6 +369,15 @@ pub struct Pattern {
     pub source: Option<Source>,
 }
 
+// A `dump_baseline: Option<DumpBaseline>` field lived here for one (uncommitted)
+// day — the A4's received dump, 26 KB of hex per pattern in the project file,
+// carried because "a box that answers no dump request cannot be re-read for its
+// unmapped bytes at write time". It can (2026-08-31, PLAN.md §10 "The A4
+// answers dump requests"), so the A4's write now re-fetches exactly as a digi's
+// does and the pattern carries nothing a slot operation could go stale on.
+// `serde` ignores unknown fields, so a project file written during that day
+// still loads; its baseline is simply dropped.
+
 impl Pattern {
     /// The only way to build a pattern, which is how the track-count invariant
     /// is enforced rather than merely documented.
