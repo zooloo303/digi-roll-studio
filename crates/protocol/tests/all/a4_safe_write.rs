@@ -26,12 +26,13 @@ use std::rc::Rc;
 
 use crate::common::fixture_bytes;
 use digi_protocol::a4_pattern::{
-    parse_pattern, read_track_trigs, track_base, DUMP_A4_PATTERN, SLOT_MARKER, TRACK_STRIDE,
+    parse_pattern, read_track_trigs, track_base, CONDITION_LANE, DUMP_A4_PATTERN, LENGTH_LANE,
+    MICRO_TIMING_LANE, NOTE_LANE, NUM_STEPS, SLOT_MARKER, TRACK_STRIDE, VELOCITY_LANE,
 };
 use digi_protocol::backup_stash::Stash;
 use digi_protocol::device::{identity_from_responses, DeviceIdentity, DeviceResponse};
 use digi_protocol::safe_write::{
-    a4_safe_write_tracks, safe_restore_pattern_kit, safe_write_tracks, A4TrackWrite,
+    a4_safe_write_tracks, safe_restore_pattern_kit, safe_write_tracks, A4Step, A4TrackWrite,
     ConfirmArgs, PatternIo, PatternKitFile, Timestamp, TrackWrite, WriteError, WriteHooks,
 };
 
@@ -157,12 +158,19 @@ fn tmp_stash(tag: &str) -> Stash {
     Stash::at(dir)
 }
 
+/// One authored trig at a plain default — a note at velocity 100, one step
+/// long, on the grid. The shape most of these tests want, so the four-field
+/// [`A4Step`] does not clutter every one of them.
+fn note(pitch: u8) -> Option<A4Step> {
+    Some(A4Step { note: pitch, velocity: 100, length: 0x0e, micro_timing: 0, condition: None })
+}
+
 /// A write of SYN2 (empty in A01): three notes on steps 0, 4 and 63.
 fn syn2_write(index: u8) -> A4TrackWrite {
     let mut steps = vec![None; 64];
-    steps[0] = Some(60);
-    steps[4] = Some(64);
-    steps[63] = Some(48);
+    steps[0] = note(60);
+    steps[4] = note(64);
+    steps[63] = note(48);
     A4TrackWrite { index, track_index: 1, steps }
 }
 
@@ -196,7 +204,7 @@ fn the_whole_ceremony_runs_in_order_and_verifies_byte_identical() {
 
 #[test]
 fn the_write_composes_on_the_destination_and_touches_only_the_named_lanes() {
-    // The RMW promise, byte for byte: everything outside SYN2's trig and note
+    // The RMW promise, byte for byte: everything outside SYN2's four written
     // lanes — the p-lock pool above all, which has no writer — is the
     // destination's own, plus the one slot-marker byte the box itself writes on
     // every save.
@@ -208,10 +216,21 @@ fn the_write_composes_on_the_destination_and_touches_only_the_named_lanes() {
 
     let after = &box_.slots[&0];
     let base = track_base(1);
-    let syn2_lanes = base..base + 192;
+    // Trigs, then the four lanes an `A4Step` names. Written out rather than
+    // taken from `LANES`, because a test that derives its expectation from the
+    // table under test would follow that table wherever it went — including
+    // into the condition lane, which is the thing this asserts stays out of.
+    let written = [
+        base..base + 2 * NUM_STEPS,
+        base + NOTE_LANE..base + NOTE_LANE + NUM_STEPS,
+        base + VELOCITY_LANE..base + VELOCITY_LANE + NUM_STEPS,
+        base + LENGTH_LANE..base + LENGTH_LANE + NUM_STEPS,
+        base + MICRO_TIMING_LANE..base + MICRO_TIMING_LANE + NUM_STEPS,
+        base + CONDITION_LANE..base + CONDITION_LANE + NUM_STEPS,
+    ];
     let differing: Vec<usize> = (0..before.len())
         .filter(|i| before[*i] != after[*i])
-        .filter(|i| !syn2_lanes.contains(i) && *i != SLOT_MARKER)
+        .filter(|i| !written.iter().any(|r| r.contains(i)) && *i != SLOT_MARKER)
         .collect();
     assert!(
         differing.is_empty(),
@@ -232,7 +251,7 @@ fn the_confirm_counts_what_the_box_shows_and_carries_no_gen_2_facts() {
     let stash = tmp_stash("confirm");
     let mut hooks = Recorder::default();
     let mut steps = vec![None; 64];
-    steps[0] = Some(69);
+    steps[0] = note(69);
     let write = A4TrackWrite { index: 0, track_index: 0, steps };
 
     a4_safe_write_tracks(&mut box_, &stash, &[write], &mut hooks, NOW).unwrap();
@@ -433,7 +452,7 @@ fn two_tracks_go_as_one_slot_write_with_one_backup() {
     let stash = tmp_stash("slot");
     let mut hooks = Recorder { log: Some(Rc::clone(&box_.log)), ..Recorder::default() };
     let mut syn1_steps = vec![None; 64];
-    syn1_steps[8] = Some(52);
+    syn1_steps[8] = note(52);
     let writes = [A4TrackWrite { index: 0, track_index: 0, steps: syn1_steps }, syn2_write(0)];
 
     let result = a4_safe_write_tracks(&mut box_, &stash, &writes, &mut hooks, NOW).unwrap();
@@ -455,4 +474,118 @@ fn two_tracks_go_as_one_slot_write_with_one_backup() {
             "track {t} was not named and must not move"
         );
     }
+}
+
+
+/// **A write replaces the condition, and that is the newer of two right
+/// answers.**
+///
+/// For the few hours between `+384` being named and its menu being read, this
+/// test asserted the opposite: that a write left the lane alone. That was
+/// correct *then* — a condition this app could not display would have been
+/// destroyed on every press, with no way to see it beforehand or restore it
+/// after. Once `a4_conditions` could carry one through a round trip, leaving it
+/// alone became the lossy choice instead: a condition removed in the roll would
+/// come straight back off the box on the next write.
+///
+/// The arp note lanes are the case that *did* keep the old answer, and they are
+/// here as the contrast: named, mapped, and still uncarried, because this app's
+/// model has nowhere to put them.
+#[test]
+fn a_write_replaces_conditions_and_still_leaves_the_arp_notes_alone() {
+    use digi_protocol::a4_pattern::{set_trig_condition, ARP_NOTE_LANES, CONDITION_LANE};
+
+    let mut box_ = FakeA4::new();
+    let slot = box_.slots.get_mut(&0).expect("A01");
+    // A condition on a step the write authors a trig on, and one on a step it
+    // clears.
+    set_trig_condition(slot, 1, 0, Some(0x0b)).unwrap();
+    set_trig_condition(slot, 1, 7, Some(0x1f)).unwrap();
+    let base = track_base(1);
+    slot[base + ARP_NOTE_LANES[0]] = 0x3d;
+
+    let stash = tmp_stash("conditions");
+    let mut hooks = Recorder::default();
+    let mut steps = vec![None; 64];
+    steps[0] = Some(A4Step {
+        note: 60,
+        velocity: 100,
+        length: 0x0e,
+        micro_timing: 0,
+        // 0x16 is FILL.
+        condition: Some(0x16),
+    });
+    let write = A4TrackWrite { index: 0, track_index: 1, steps };
+    a4_safe_write_tracks(&mut box_, &stash, &[write], &mut hooks, NOW).unwrap();
+
+    let after = &box_.slots[&0];
+    assert_eq!(after[base + CONDITION_LANE], 0x16, "the authored condition replaced the box's");
+    assert_eq!(
+        after[base + CONDITION_LANE + 7], 0x1f,
+        "a cleared step keeps its lanes — `clear_trig` touches the trig bytes and nothing else"
+    );
+    assert_eq!(after[base + ARP_NOTE_LANES[0]], 0x3d, "the arp note the box had");
+}
+
+/// The four fields an `A4Step` carries arrive on the box as the four lanes,
+/// including the ends of each range — a velocity of 1 is not a velocity of 0,
+/// and micro timing is signed.
+#[test]
+fn an_authored_trig_lands_in_all_four_lanes() {
+    let mut box_ = FakeA4::new();
+    let stash = tmp_stash("four-lanes");
+    let mut hooks = Recorder::default();
+    let mut steps = vec![None; 64];
+    steps[3] =
+        Some(A4Step { note: 64, velocity: 1, length: 0x7f, micro_timing: -23, condition: None });
+    let write = A4TrackWrite { index: 0, track_index: 1, steps };
+
+    a4_safe_write_tracks(&mut box_, &stash, &[write], &mut hooks, NOW).unwrap();
+
+    let trigs = read_track_trigs(&box_.slots[&0], 1).unwrap();
+    assert_eq!(trigs.len(), 1);
+    assert_eq!(trigs[0].note, Some(64));
+    assert_eq!(trigs[0].velocity, Some(1), "the box's floor, not zero");
+    assert_eq!(trigs[0].length, Some(0x7f), "INF");
+    assert_eq!(trigs[0].micro_timing, -23);
+}
+
+
+/// **A write-back keeps a trigless trig it never carried.**
+///
+/// Found on hardware on 2026-09-01: A01 SYN1 step 33 is a trigless trig, this
+/// model holds notes, and an import counts trigless trigs rather than carrying
+/// them — so before this, fetching that pattern and writing it straight back
+/// deleted the trig, and nothing on screen had ever shown it. A user cannot
+/// intend to remove something they were never shown.
+///
+/// The same reasoning that kept the condition lane alone while its menu was
+/// unmapped, and the same boundary: a *note* trig on a step the roll shows as
+/// empty is deleted, because that one was on screen and deleting it is what the
+/// empty step means.
+#[test]
+fn a_write_keeps_a_trigless_trig_and_still_deletes_a_note_trig() {
+    use digi_protocol::a4_pattern::{
+        read_track_states, set_note_trig, set_trigless_trig, TrigState,
+    };
+
+    let mut box_ = FakeA4::new();
+    let slot = box_.slots.get_mut(&0).expect("A01");
+    set_trigless_trig(slot, 1, 32).unwrap();
+    set_note_trig(slot, 1, 40, Some(60)).unwrap();
+
+    let stash = tmp_stash("trigless");
+    let mut hooks = Recorder::default();
+    // A write of SYN2 that says nothing about either step — the roll shows both
+    // as empty, because it cannot show a trigless trig at all.
+    let write = A4TrackWrite { index: 0, track_index: 1, steps: vec![None; 64] };
+    a4_safe_write_tracks(&mut box_, &stash, &[write], &mut hooks, NOW).unwrap();
+
+    let states = read_track_states(&box_.slots[&0], 1).unwrap();
+    assert_eq!(states[32], TrigState::Trigless, "kept: it was never on screen");
+    // `Residue`, not `Empty`: clearing a note trig leaves byte 0's bit set,
+    // which is what the box itself does and which it displays as an empty step.
+    // The assertion that matters is that it no longer plays.
+    assert_eq!(states[40], TrigState::Residue, "deleted: the note was on screen");
+    assert!(!states[40].is_live(), "and the box shows nothing there");
 }

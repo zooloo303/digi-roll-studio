@@ -36,38 +36,38 @@
 //! In both directions this carries **which steps have trigs and what note each
 //! one plays**. That is the whole of the mapped musical content.
 //!
-//! Not velocity, not length, not micro-timing, not PROB/FILL/COND, not p-locks.
-//! Those exist on the box — four of the six unnamed per-step lanes are the
-//! obvious candidates — but "obvious candidate" is not a measurement, and a
-//! writer aimed at a lane by guesswork would corrupt whatever actually lives
-//! there. [`A4ImportReport`] says so in fields and [`a4_track_write`] leaves
-//! the destination's own bytes alone, so a write cannot lose what it never
-//! carried.
+//! In both directions it also carries **velocity, length and micro timing**,
+//! since 2026-09-01 — the three lanes a hand on a knob named, and all three in
+//! the digis' own encodings, so nothing is converted at this boundary that a
+//! gen-2 import does not also convert.
+//!
+//! And the **trig condition**, since the menu behind it was read off the box
+//! the same day ([`digi_protocol::a4_conditions`]). It is one enum where this
+//! app models three fields, so the translation is explicit in both directions:
+//! an A4 percentage becomes `prob`, `FILL`/`!FILL` becomes `fill`, and the
+//! logic and ratio entries become `cond` — exactly one of the three, because
+//! exactly one is what the box can hold.
+//!
+//! Not p-locks. That lane has no writer, so a write leaves the destination's
+//! own bytes alone.
 //!
 //! An A4 step holds **one note**. A session track can hold a chord, so an
 //! export has to drop notes, and the warning counts the steps that lost
 //! something rather than letting them vanish.
 
 use digi_protocol::a4_pattern::{
-    effective_note, read_track_trigs, A4Pattern, NUM_STEPS, NUM_TRACKS, PAYLOAD_LEN, TRACK_NAMES,
+    effective_length, effective_note, effective_velocity, read_track_trigs, A4Pattern, NUM_STEPS,
+    NUM_TRACKS, PAYLOAD_LEN, TRACK_NAMES,
 };
-use digi_protocol::safe_write::A4TrackWrite;
+use digi_protocol::a4_conditions::{self, A4Cond};
+use digi_protocol::pattern::{
+    length_byte_to_steps, micro_byte_to_steps, micro_steps_to_byte, steps_to_length_byte,
+};
+use digi_protocol::safe_write::{A4Step, A4TrackWrite};
 
 use crate::device::{DeviceId, DeviceModel, PatternRoute, A4};
 use crate::model::{Note, Pattern, Source};
 use crate::session::{PatternRef, Session};
-
-/// The velocity an imported A4 trig gets.
-///
-/// The format's velocity lane is unmapped, so this is not read from the box and
-/// is not a default the box has: it is the model's own middle value, chosen so
-/// an imported pattern plays at a sane level. [`A4ImportReport::velocity_guessed`]
-/// is set on every import that uses it, which is every import.
-pub const IMPORTED_VELOCITY: u8 = 100;
-
-/// The length an imported A4 trig gets, in steps. Same reasoning as
-/// [`IMPORTED_VELOCITY`].
-pub const IMPORTED_LENGTH: f64 = 1.0;
 
 // --- IN ----------------------------------------------------------------------
 
@@ -87,13 +87,17 @@ pub struct A4ImportReport {
     /// reporting because no fixture has ever contained one: the first import that
     /// sets this is evidence about the box, not about the import.
     pub notes_from_track_default: usize,
-    /// Always true. Velocity is not in the mapped layout, so every imported note
-    /// carries [`IMPORTED_VELOCITY`] rather than the box's. A field rather than a
-    /// doc line because this has to reach a screen.
-    pub velocity_guessed: bool,
-    /// Always true, same reasoning: length is unmapped and every note is
-    /// [`IMPORTED_LENGTH`].
-    pub length_guessed: bool,
+    /// Trigs that arrived carrying a trig condition — a percentage, a fill, or
+    /// a logic or ratio condition. Not a loss; a count, so the panel can say
+    /// the pattern has conditions in it.
+    pub conditions: usize,
+    /// Condition bytes past the end of the menu, which no box has ever been
+    /// seen to write.
+    ///
+    /// Zero on every capture we hold. A nonzero here means the menu is longer
+    /// than the four labels read on 2026-09-01 imply — evidence about the box,
+    /// not a bad import — so it is counted rather than clamped away.
+    pub conditions_off_the_menu: usize,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -165,8 +169,8 @@ pub fn a4_pattern_to_model(
         tracks_with_notes: 0,
         trigless_dropped: 0,
         notes_from_track_default: 0,
-        velocity_guessed: true,
-        length_guessed: true,
+        conditions: 0,
+        conditions_off_the_menu: 0,
     };
 
     for (t, track_name) in TRACK_NAMES.iter().enumerate().take(NUM_TRACKS.min(model.num_tracks)) {
@@ -186,15 +190,49 @@ pub fn a4_pattern_to_model(
             if trig.note.is_none() {
                 report.notes_from_track_default += 1;
             }
-            notes.push(Note::new(
+            // One A4 byte becomes exactly one of the three fields a gen-2 trig
+            // spreads across three lanes — see `a4_conditions` for why that
+            // asymmetry is the shape of the box rather than of this code.
+            let (prob, fill, cond) = match trig.condition {
+                None => (None, None, None),
+                Some(byte) => match a4_conditions::from_byte(byte) {
+                    Some(c) => {
+                        report.conditions += 1;
+                        match c {
+                            A4Cond::Probability(p) => (Some(p), None, None),
+                            A4Cond::Fill(on) => (None, Some(on), None),
+                            other => (None, None, a4_conditions::digi_cond_key(other)),
+                        }
+                    }
+                    None => {
+                        report.conditions_off_the_menu += 1;
+                        (None, None, None)
+                    }
+                },
+            };
+            // All three resolve the way the note does — an unset lane means
+            // "take the track's" — and all three are then read with the *gen-2*
+            // codecs, because the A4 shares those encodings: length is the same
+            // piecewise curve (0x00 = .125, 0x0e = one step, 0x7f = INF, all
+            // three read off the box's screen), micro timing is the same signed
+            // 1/24-step tick, and velocity is the same 1-127.
+            let velocity = effective_velocity(&dump.payload, t, trig)
+                .map_err(A4ImportError::BadPayload)?;
+            let length = effective_length(&dump.payload, t, trig)
+                .map_err(A4ImportError::BadPayload)?;
+            let mut note = Note::new(
                 // `Trig::step` is one-based, as the box counts; the model is
                 // zero-based, as the roll draws.
                 (trig.step - 1) as f64,
                 pitch,
-                IMPORTED_LENGTH,
-                IMPORTED_VELOCITY,
-                0.0,
-            ));
+                length_byte_to_steps(length),
+                velocity,
+                micro_byte_to_steps(trig.micro_timing as u8),
+            );
+            note.prob = prob;
+            note.fill = fill;
+            note.cond = cond;
+            notes.push(note);
         }
 
         report.notes += notes.len();
@@ -283,10 +321,13 @@ pub fn a4_track_write(
         .filter(|i| usize::from(*i) < A4.wire_slots)
         .ok_or(A4ExportError::NotOnTheWire(into))?;
 
-    let mut steps: Vec<Option<u8>> = vec![None; NUM_STEPS];
+    let mut steps: Vec<Option<A4Step>> = vec![None; NUM_STEPS];
     let mut per_step = vec![0usize; NUM_STEPS];
     let mut past_end = 0usize;
     let mut off_grid = 0usize;
+    let mut rounded_prob = 0usize;
+    let mut crowded = 0usize;
+    let mut dropped_conds: Vec<String> = Vec::new();
     for note in &track.notes {
         let step = note.step.round();
         if !(0.0..NUM_STEPS as f64).contains(&step) {
@@ -298,9 +339,29 @@ pub fn a4_track_write(
         }
         let step = step as usize;
         per_step[step] += 1;
+        // The gen-2 codecs, because the A4 shares the encodings — the same
+        // functions `core::export` hands a Digitakt II note to.
+        let (condition, loss) = a4_condition_for(note);
+        match loss {
+            Some(ConditionLoss::Rounded) => rounded_prob += 1,
+            Some(ConditionLoss::NoEquivalent(key)) => dropped_conds.push(key),
+            Some(ConditionLoss::OnlyOneFits) => crowded += 1,
+            None => {}
+        }
+        let authored = A4Step {
+            note: note.pitch,
+            velocity: note.velocity,
+            length: steps_to_length_byte(note.len),
+            micro_timing: micro_steps_to_byte(note.micro) as i8,
+            condition,
+        };
+        // Chords resolve to the lowest note, and the *whole* trig is that
+        // note's: taking the lowest pitch but some other note's velocity would
+        // author a trig neither note describes.
         steps[step] = Some(match steps[step] {
-            None => note.pitch,
-            Some(existing) => existing.min(note.pitch),
+            None => authored,
+            Some(existing) if authored.note < existing.note => authored,
+            Some(existing) => existing,
         });
     }
 
@@ -326,9 +387,37 @@ pub fn a4_track_write(
     }
     if off_grid > 0 {
         warnings.push(format!(
-            "{off_grid} note{} sat off the step grid and landed on the nearest step — \
-             micro-timing is not in the mapped format",
+            "{off_grid} note{} sat between steps and {} rounded onto the nearest one — the box \
+             stores a trig on a whole step, with micro-timing as its own offset",
             if off_grid == 1 { "" } else { "s" },
+            if off_grid == 1 { "was" } else { "were" },
+        ));
+    }
+    if rounded_prob > 0 {
+        warnings.push(format!(
+            "{rounded_prob} trig{} had a probability the A4's ladder does not hold and {} \
+             rounded to the nearest of its 22 steps",
+            if rounded_prob == 1 { "" } else { "s" },
+            if rounded_prob == 1 { "was" } else { "were" },
+        ));
+    }
+    if !dropped_conds.is_empty() {
+        let mut named: Vec<String> = dropped_conds.clone();
+        named.sort();
+        named.dedup();
+        warnings.push(format!(
+            "{} trig{} carry {}, which the A4's TRC menu does not have — sent without a \
+             condition",
+            dropped_conds.len(),
+            if dropped_conds.len() == 1 { "" } else { "s" },
+            named.join(", "),
+        ));
+    }
+    if crowded > 0 {
+        warnings.push(format!(
+            "{crowded} trig{} set more than one of PROB, FILL and COND — the A4 holds one of \
+             the three per trig, so the condition went and the rest did not",
+            if crowded == 1 { "" } else { "s" },
         ));
     }
     // Lanes drawn in the roll on this track. The A4's p-lock pool is mapped as
@@ -417,6 +506,55 @@ pub fn a4_model() -> &'static DeviceModel {
     &A4
 }
 
+/// What an A4 could not take from one note's trig settings.
+enum ConditionLoss {
+    /// A probability that is not one of the ladder's 22 rungs.
+    Rounded,
+    /// A COND the A4's menu does not contain — `LST`, or any negated ratio.
+    NoEquivalent(String),
+    /// More than one of PROB, FILL and COND was set. The digis keep three
+    /// independent lanes; the A4 has one knob, so two of the three cannot go.
+    OnlyOneFits,
+}
+
+/// One note's trig settings as an A4 condition byte.
+///
+/// **The A4 holds exactly one of PROB, FILL and COND**, so where a gen-2 trig
+/// has set more than one this has to choose. It takes them in order of how
+/// specifically they describe *when* a trig fires — a COND names an exact pass,
+/// a FILL names a mode, a probability names a chance — and reports that it had
+/// to, rather than picking silently.
+fn a4_condition_for(note: &Note) -> (Option<u8>, Option<ConditionLoss>) {
+    let set = usize::from(note.prob.is_some())
+        + usize::from(note.fill.is_some())
+        + usize::from(note.cond.is_some());
+    let crowded = (set > 1).then_some(ConditionLoss::OnlyOneFits);
+
+    if let Some(key) = &note.cond {
+        return match a4_conditions::from_digi_cond_key(key) {
+            // `to_byte` can still refuse — a ratio outside 1:2..8:8 parses as a
+            // ratio and is not on the menu — so both refusals land here.
+            Some(cond) => match a4_conditions::to_byte(cond) {
+                Some(byte) => (Some(byte), crowded),
+                None => (None, Some(ConditionLoss::NoEquivalent(key.clone()))),
+            },
+            None => (None, Some(ConditionLoss::NoEquivalent(key.clone()))),
+        };
+    }
+    if let Some(on) = note.fill {
+        let byte = a4_conditions::to_byte(A4Cond::Fill(on)).expect("FILL is on the menu");
+        return (Some(byte), crowded);
+    }
+    if let Some(prob) = note.prob {
+        let nearest = a4_conditions::nearest_percentage(prob);
+        let byte = a4_conditions::to_byte(A4Cond::Probability(nearest))
+            .expect("the nearest rung is by construction a rung");
+        let loss = if nearest == prob { crowded } else { Some(ConditionLoss::Rounded) };
+        return (Some(byte), loss);
+    }
+    (None, None)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -465,11 +603,128 @@ mod tests {
         assert_eq!(digi_protocol::a4_pattern::note_name(first.pitch), "A4");
     }
 
+    /// A01 SYN1 was played in rather than stepped in, so its velocity and
+    /// length lanes hold what a hand played — and this is the assertion that
+    /// they now *arrive*. Before 2026-09-01 every note of this import came in
+    /// at 100 and one step, and the panel said so in a caution line.
     #[test]
-    fn an_import_says_that_velocity_and_length_are_this_apps_and_not_the_boxs() {
-        let (_, report) = a4_pattern_to_model(&A4, &a01()).unwrap();
-        assert!(report.velocity_guessed);
-        assert!(report.length_guessed);
+    fn an_import_brings_the_boxs_own_velocity_and_length_across() {
+        let (pattern, report) = a4_pattern_to_model(&A4, &a01()).unwrap();
+        let syn1 = pattern.track(0).unwrap();
+        assert!(syn1.notes.iter().all(|n| n.velocity == 127), "recorded at full velocity");
+        // 0x1b and 0x1a on the box: just under two steps, and the seven
+        // shorter ones really are shorter — a sixteenth of a step shorter,
+        // which is the resolution the curve has up there and exactly what a
+        // played-in phrase looks like.
+        let lengths: Vec<f64> = syn1.notes.iter().map(|n| n.len).collect();
+        assert_eq!(lengths.iter().filter(|&&l| l == 1.8125).count(), 25);
+        assert_eq!(lengths.iter().filter(|&&l| l == 1.75).count(), 7);
+
+        // SYN4 was recorded too, and at its own length: 0x3e is eight steps,
+        // which is also the value SYN4's per-track default carries.
+        let syn4 = pattern.track(3).unwrap();
+        assert!(syn4.notes.iter().all(|n| n.velocity == 127), "SYN4 recorded at full too");
+        assert!(syn4.notes.iter().all(|n| n.len == 8.0), "0x3e is eight steps");
+
+        assert_eq!(report.conditions, 0, "A01 has no conditions on it");
+    }
+
+    /// An unset lane is not silence — it is "take the track's", and the import
+    /// has to resolve it or every such trig arrives at the wrong level. No
+    /// fixture contains one, which is exactly why this authors one: a reader
+    /// that returned the raw `FF` would be right about all our captures and
+    /// wrong on the box.
+    #[test]
+    fn a_trig_with_no_velocity_of_its_own_arrives_at_the_tracks() {
+        let mut dump = a01();
+        let base = digi_protocol::a4_pattern::track_base(0);
+        dump.payload[base + digi_protocol::a4_pattern::VELOCITY_LANE] = 0xFF;
+        dump.payload[base + digi_protocol::a4_pattern::LENGTH_LANE] = 0xFF;
+
+        let (pattern, _) = a4_pattern_to_model(&A4, &dump).unwrap();
+        let first = &pattern.track(0).unwrap().notes[0];
+        assert_eq!(first.velocity, 100, "SYN1's default velocity, 0x64");
+        assert_eq!(first.len, 1.0, "SYN1's default length, 0x0e — one step");
+    }
+
+    /// A condition on the box becomes exactly one of the three fields this app
+    /// models, and which one depends on where in the menu it sits. That split
+    /// is the whole asymmetry: the A4 has one knob, a digi has three lanes.
+    #[test]
+    fn each_kind_of_a4_condition_lands_in_the_field_that_holds_it() {
+        for (byte, expected) in [
+            // 0x0d is 75%, 0x16 is FILL, 0x18 is PRE, 0x1e is 1:2.
+            (0x0d, (Some(75), None, None)),
+            (0x16, (None, Some(true), None)),
+            (0x17, (None, Some(false), None)),
+            (0x18, (None, None, Some("PRE".to_string()))),
+            (0x1e, (None, None, Some("1:2".to_string()))),
+        ] {
+            let mut dump = a01();
+            digi_protocol::a4_pattern::set_trig_condition(&mut dump.payload, 0, 0, Some(byte))
+                .unwrap();
+            let (pattern, report) = a4_pattern_to_model(&A4, &dump).unwrap();
+            let first = &pattern.track(0).unwrap().notes[0];
+            assert_eq!(
+                (first.prob, first.fill, first.cond.clone()),
+                expected,
+                "{byte:#04x}"
+            );
+            assert_eq!(report.conditions, 1, "{byte:#04x} counted");
+            assert_eq!(report.conditions_off_the_menu, 0);
+        }
+    }
+
+    /// A byte past the end of the menu is evidence about the box rather than a
+    /// bad import — the menu's length rests on four labels — so it is counted
+    /// and the note comes in without a condition.
+    #[test]
+    fn a_condition_byte_past_the_menu_is_counted_rather_than_guessed_at() {
+        let mut dump = a01();
+        // 0x41, one past 8:8. No box has been seen to write it.
+        digi_protocol::a4_pattern::set_trig_condition(&mut dump.payload, 0, 0, Some(0x41))
+            .unwrap();
+        let (pattern, report) = a4_pattern_to_model(&A4, &dump).unwrap();
+        assert_eq!(report.conditions_off_the_menu, 1);
+        assert_eq!(report.conditions, 0);
+        assert_eq!(pattern.track(0).unwrap().notes[0].prob, None);
+    }
+
+    /// The export's three named losses, each on a trig the A4 cannot fully
+    /// take: a probability off the ladder, a COND the menu lacks, and two
+    /// fields set where one fits.
+    #[test]
+    fn an_export_says_which_conditions_the_a4_could_not_take() {
+        let (mut s, id) = imported();
+        {
+            let d = s.device_mut(id).unwrap();
+            let t = d.pattern_mut(0).unwrap().track_mut(1).unwrap();
+            let mut off_ladder = Note::new(0.0, 60, 1.0, 100, 0.0);
+            off_ladder.prob = Some(55);
+            let mut no_equivalent = Note::new(1.0, 60, 1.0, 100, 0.0);
+            no_equivalent.cond = Some("LST".to_string());
+            let mut crowded = Note::new(2.0, 60, 1.0, 100, 0.0);
+            crowded.prob = Some(50);
+            crowded.cond = Some("PRE".to_string());
+            t.notes.extend([off_ladder, no_equivalent, crowded]);
+        }
+        let export = s.a4_track_write(id, PatternRef::new(0, 0), 1, PatternRef::new(0, 0)).unwrap();
+
+        // 55% rounds up to 59%, the nearest rung.
+        assert_eq!(
+            export.write.steps[0].and_then(|s| s.condition),
+            digi_protocol::a4_conditions::to_byte(
+                digi_protocol::a4_conditions::A4Cond::Probability(59)
+            )
+        );
+        assert_eq!(export.write.steps[1].and_then(|s| s.condition), None, "LST cannot go");
+        // The COND wins where both are set: it names an exact pass.
+        assert_eq!(export.write.steps[2].and_then(|s| s.condition), Some(0x18), "PRE");
+
+        let all = export.warnings.join(" | ");
+        assert!(all.contains("rounded to the nearest"), "{all}");
+        assert!(all.contains("LST"), "{all}");
+        assert!(all.contains("holds one of the three"), "{all}");
     }
 
     #[test]
@@ -548,7 +803,11 @@ mod tests {
             }
         }
         let export = s.a4_track_write(id, PatternRef::new(0, 0), 1, PatternRef::new(0, 0)).unwrap();
-        assert_eq!(export.write.steps[0], Some(60), "the root survives, whatever the edit order");
+        assert_eq!(
+            export.write.steps[0].map(|s| s.note),
+            Some(60),
+            "the root survives, whatever the edit order"
+        );
         assert_eq!(export.warnings.len(), 1);
         assert!(export.warnings[0].contains("1 step holds a chord"), "{}", export.warnings[0]);
     }
@@ -577,7 +836,7 @@ mod tests {
             );
         }
         let export = s.a4_track_write(id, PatternRef::new(0, 0), 1, PatternRef::new(0, 0)).unwrap();
-        assert_eq!(export.write.steps[4], Some(60));
+        assert_eq!(export.write.steps[4].map(|s| s.note), Some(60));
         assert!(export.warnings[0].contains("micro-timing"), "{}", export.warnings[0]);
     }
 
@@ -602,3 +861,4 @@ mod tests {
         assert!(matches!(err, A4ExportError::NotThisBox { .. }));
     }
 }
+

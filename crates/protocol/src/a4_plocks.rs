@@ -110,6 +110,18 @@
 //! [`crate::a4_pattern::build_pattern`] refuses to encode a ragged tail it
 //! cannot measure rather than pick one of two orders. This is the same refusal
 //! one level up: the reader is complete, and the writer waits for the capture.
+//!
+//! **A third fact the writer will want, caught free on 2026-09-01.** The lane
+//! probe was watching when A16 was cleared from the front panel, so the box's
+//! own way of *freeing* a lane is on record: it writes [`FREE`] into both id
+//! bytes and **zeroes all 64 value bytes**, rather than filling them with
+//! [`NO_VALUE`]. An extension lane between two used lanes (`80 80`) is freed the
+//! same way. So a writer removing a lock should zero the values, which is not
+//! what the two opposite fills elsewhere in this format would lead anyone to
+//! guess — and an untouched free lane in a cleared pattern reads the same way,
+//! so the two are indistinguishable afterwards, which is presumably the point.
+//! The capture is `local/a4-check/lanes/a4-working-change002.syx` against
+//! `change001`.
 
 use crate::a4_pattern::{NUM_STEPS, NUM_TRACKS, PAYLOAD_LEN, TRACK_BASE, TRACK_STRIDE};
 

@@ -96,3 +96,17 @@ pub fn a4_pattern(name: &str) -> digi_protocol::a4_pattern::A4Pattern {
     digi_protocol::a4_pattern::parse_pattern(&bytes)
         .unwrap_or_else(|e| panic!("{name}: {e}"))
 }
+
+/// One gen-1 Analog Four **working** pattern — the reply to a `0x6a`, the box's
+/// edit buffer rather than a stored slot.
+///
+/// A separate helper rather than a flag on [`a4_pattern`], because the two must
+/// not be interchangeable: the stored parser refusing a working dump is the
+/// check that keeps a live buffer from being mistaken for a saved slot, and a
+/// helper that accepted either would take that check away from every test that
+/// uses it.
+pub fn a4_working_pattern(name: &str) -> digi_protocol::a4_pattern::A4Pattern {
+    let bytes = fixture_bytes(name);
+    digi_protocol::a4_pattern::parse_working_pattern(&bytes)
+        .unwrap_or_else(|e| panic!("{name}: {e}"))
+}

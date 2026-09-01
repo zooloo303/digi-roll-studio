@@ -29,12 +29,15 @@
 //! of file out.
 
 
-use crate::common::{a4_pattern, fixture_bytes};
+use crate::common::{a4_pattern, a4_working_pattern, fixture_bytes};
 
 use digi_protocol::a4_pattern::{
-    build_pattern, build_trig_probe, note_name, parse_pattern, read_track_states, read_track_trigs,
-    set_note_trig, track_default_note, TrigState, NO_NOTE, NUM_TRACKS, PAYLOAD_LEN, PROBE_NOTE,
-    TRACK_BASE, TRACK_STRIDE, TRIG_BYTE0_POSITIONAL,
+    build_pattern, build_trig_probe, describe_offset, effective_length, effective_velocity, note_name, parse_pattern, read_track_states,
+    read_track_trigs, set_note_trig, set_trig_condition, set_trig_length, set_trig_micro_timing,
+    set_trig_velocity, track_default, track_default_note, LaneEvidence, TrigState, LANES, NO_NOTE,
+    NUM_STEPS, NUM_TRACKS, PAYLOAD_LEN, PROBE_NOTE, TRACK_BASE, TRACK_DEFAULTS,
+    TRACK_DEFAULTS_LEN, TRACK_STRIDE, TRIG_BYTE0_POSITIONAL, VELOCITY_LANE, VELOCITY_MAX,
+    VELOCITY_MIN,
 };
 use digi_protocol::a4_plocks::{
     free_lane_count, is_compacted, orphan_extension_count, read_all_plocks, read_track_plocks,
@@ -51,6 +54,19 @@ const FREQ100: &str = "analogfour-A16-plock-freq100-reso100-2026-08-31.syx";
 const RESO4: &str = "analogfour-A16-plock-reso4-freq64-2026-08-31.syx";
 const A01: &str = "analogfour-A01-2026-08-30.syx";
 const A01_POSTRESET: &str = "analogfour-A01-postreset-2026-08-31.syx";
+
+/// The 2026-09-01 knob session: one field per step on A16 SYN4, each value one
+/// turn of one knob, read back off the *working* pattern so nothing was saved
+/// over. This is the only fixture with a velocity, a length, a micro timing or
+/// a condition somebody watched being made.
+const LANES_FIXTURE: &str = "analogfour-A16-lanes-2026-09-01.syx";
+/// The first frame of the condition walk — `FF -> 0x0b` on step 7 — kept
+/// because it is the moment `+384` stopped being an unnamed lane.
+const COND_FIRST: &str = "analogfour-A16-cond-first-2026-09-01.syx";
+/// The arp session: NO2/NO3/NO4 turned on held trigs of SYN1, SYN3 and SYN4,
+/// which is what named `+532`, `+596` and `+660` — and unnamed them as "chord
+/// notes", since the A4 is monophonic per track.
+const ARP_NOTES: &str = "analogfour-A16-arp-notes-2026-09-01.syx";
 
 const ALL: [&str; 10] = [
     CLEAR, TRIGLESS, FREQ64, FREQ64_RESO100, PLUS_SYN2, BASE, FREQ100, RESO4, A01, A01_POSTRESET,
@@ -745,4 +761,366 @@ fn one_displayed_value_carries_different_fine_bytes() {
     fines.sort_unstable();
     fines.dedup();
     assert_eq!(fines, vec![23, 52, 113, 116], "one display value, four knob positions");
+}
+
+
+// --- The nine per-step lanes -------------------------------------------------
+
+/// The decomposition is only worth anything if it *is* a decomposition: nine
+/// 64-byte lanes, no two overlapping, all of them inside one track's 751 bytes
+/// and none of them straddling the two per-track blocks. A lane offset typed one
+/// digit wrong would still read plausible-looking bytes out of a neighbour, so
+/// this is the assertion that a typo meets instead of the box.
+#[test]
+fn the_nine_lanes_tile_a_track_without_overlapping() {
+    let mut claimed = [false; TRACK_STRIDE];
+    for lane in &LANES {
+        assert!(
+            lane.offset + NUM_STEPS <= TRACK_STRIDE,
+            "lane +{} runs past the {TRACK_STRIDE}-byte stride",
+            lane.offset
+        );
+        for (byte, taken) in claimed.iter_mut().enumerate().skip(lane.offset).take(NUM_STEPS) {
+            assert!(!*taken, "two lanes both claim track byte {byte}");
+            *taken = true;
+        }
+    }
+    // The trig lane and the two per-track blocks are the rest of the track, and
+    // no lane may sit inside any of them.
+    for (byte, taken) in claimed.iter().enumerate().take(2 * NUM_STEPS) {
+        assert!(!taken, "a lane overlaps the trig lane at {byte}");
+    }
+    for (byte, taken) in
+        claimed.iter().enumerate().skip(TRACK_DEFAULTS).take(TRACK_DEFAULTS_LEN)
+    {
+        assert!(!taken, "a lane overlaps the track defaults at {byte}");
+    }
+}
+
+/// Default 1 of the per-track block is `0x64` — 100, the velocity Elektron
+/// ships — in every track of every fixture here.
+///
+/// **It is not `0x64` on every track in the world**, and saying so was a
+/// mistake this file briefly encoded: across the project stream it is `0x64`
+/// 784 times out of 792, and the other eight are a default somebody turned. So
+/// this asserts the fixtures, which is what it can, and [`resolve`] handles the
+/// tail — including the one track whose default is itself `FF`.
+#[test]
+fn the_default_velocity_in_every_fixture_here_is_one_hundred() {
+    for name in ALL {
+        let pattern = a4_pattern(name);
+        for track in 0..NUM_TRACKS {
+            let base = TRACK_BASE + track * TRACK_STRIDE;
+            assert_eq!(
+                pattern.payload[base + TRACK_DEFAULTS + 1], 0x64,
+                "{name} {}: default velocity",
+                digi_protocol::a4_pattern::TRACK_NAMES[track]
+            );
+        }
+    }
+}
+
+/// A01 SYN1 was played in rather than stepped in, and that is what makes it the
+/// only fixture with anything in the velocity and length lanes: 32 trigs at
+/// `0x7f` velocity, and a length that *varies between adjacent notes* — 0x1b on
+/// most, 0x1a on two. A lane that were a per-track setting could not do that,
+/// and a lane that were an index into something would not land on two adjacent
+/// values.
+#[test]
+fn a01_syn1_carries_a_recorded_velocity_and_a_length_that_varies() {
+    let pattern = a4_pattern(A01);
+    let base = TRACK_BASE;
+    let velocity = LANES.iter().find(|l| l.name == "velocity").expect("a velocity lane");
+    let length = LANES.iter().find(|l| l.name == "length").expect("a length lane");
+
+    let trigs = read_track_trigs(&pattern.payload, 0).expect("SYN1");
+    assert_eq!(trigs.len(), 32, "SYN1");
+
+    let velocities: Vec<u8> =
+        trigs.iter().map(|t| pattern.payload[base + velocity.offset + t.step - 1]).collect();
+    assert!(
+        velocities.iter().all(|&v| v == 0x7f),
+        "every recorded trig at full velocity, got {velocities:?}"
+    );
+
+    let lengths: Vec<u8> =
+        trigs.iter().map(|t| pattern.payload[base + length.offset + t.step - 1]).collect();
+    assert_eq!(lengths.iter().filter(|&&l| l == 0x1a).count(), 7, "seven shorter notes");
+    assert_eq!(lengths.iter().filter(|&&l| l == 0x1b).count(), 25, "and twenty-five at 0x1b");
+    assert!(lengths.iter().all(|&l| l <= 0x7f), "no length above 0x7f in this capture");
+}
+
+/// SYN4 is the other half of the same argument, from the default side: its
+/// per-track default length is `0x3e`, and every one of its four trigs carries
+/// `0x3e` in the length lane. The pairing between lane order and default order
+/// is what named these two lanes, and this is it in one fixture.
+#[test]
+fn a01_syn4s_trigs_carry_its_own_default_length() {
+    let pattern = a4_pattern(A01);
+    let base = TRACK_BASE + 3 * TRACK_STRIDE;
+    let length = LANES.iter().find(|l| l.name == "length").expect("a length lane");
+    let default = pattern.payload[base + TRACK_DEFAULTS + 2];
+    assert_eq!(default, 0x3e, "SYN4's default length");
+    for trig in read_track_trigs(&pattern.payload, 3).expect("SYN4") {
+        assert_eq!(
+            pattern.payload[base + length.offset + trig.step - 1], default,
+            "SYN4 step {} length",
+            trig.step
+        );
+    }
+}
+
+/// The two lanes with no name must stay nameless in what the probe prints. A
+/// diff that labelled `+459` "condition" would be the model deciding the
+/// experiment's outcome before the box was asked — which is exactly the shape of
+/// the three refuted trig models.
+#[test]
+fn describe_offset_refuses_to_name_the_unnamed_lanes() {
+    for lane in LANES.iter().filter(|l| l.evidence == LaneEvidence::Shape) {
+        let described = describe_offset(TRACK_BASE + lane.offset);
+        assert!(
+            described.contains("UNNAMED") && described.contains(&format!("+{}", lane.offset)),
+            "lane +{} described as {described:?}",
+            lane.offset
+        );
+    }
+    assert_eq!(describe_offset(TRACK_BASE + 192), "SYN1 step 1 velocity");
+    assert_eq!(describe_offset(TRACK_BASE + 256 + 63), "SYN1 step 64 length");
+    assert_eq!(describe_offset(TRACK_BASE + TRACK_STRIDE + 128), "SYN2 step 1 note");
+    assert_eq!(describe_offset(TRACK_BASE + 5), "SYN1 trig step 3 byte 1");
+    assert_eq!(
+        describe_offset(TRACK_BASE + TRACK_DEFAULTS + 1),
+        "SYN1 track defaults +1 (default velocity)"
+    );
+}
+
+
+// --- The knob session, 2026-09-01 --------------------------------------------
+
+/// **The fixture is the experiment.** Eight steps of A16 SYN4, one field turned
+/// on each, and the assertions below are the knob positions: velocity at both
+/// ends, length at both ends, micro timing at both ends, a condition. If any of
+/// these ever fails, a lane moved — because these bytes did not come from a
+/// model, they came from a hand on a knob and a diff naming the byte it moved.
+#[test]
+fn the_knob_session_put_one_field_on_each_step() {
+    let pattern = a4_working_pattern(LANES_FIXTURE);
+    let trigs = read_track_trigs(&pattern.payload, 3).expect("SYN4");
+    let at = |step: usize| trigs.iter().find(|t| t.step == step).expect("a trig on this step");
+
+    assert_eq!(at(1).velocity, Some(VELOCITY_MIN), "step 1: VEL turned to minimum");
+    assert_eq!(at(2).velocity, Some(VELOCITY_MAX), "step 2: VEL turned to maximum");
+    assert_eq!(at(3).length, Some(0x00), "step 3: LEN at its shortest");
+    assert_eq!(at(4).length, Some(0x7f), "step 4: LEN at the top of the menu");
+    assert_eq!(at(5).micro_timing, -23, "step 5: micro timing hard left");
+    assert_eq!(at(6).micro_timing, 23, "step 6: micro timing hard right");
+    assert_eq!(at(7).condition, Some(0x1f), "step 7: a trig condition");
+
+    // And the fields do not bleed: every step carries exactly the one that was
+    // turned on it. A lane read one step wide of itself would still produce
+    // plausible values, and this is what catches that.
+    assert_eq!(at(1).length, None, "step 1 got no length");
+    assert_eq!(at(3).velocity, None, "step 3 got no velocity");
+    assert_eq!(at(5).condition, None, "step 5 got no condition");
+    assert_eq!(at(7).micro_timing, 0, "step 7 was never nudged");
+}
+
+/// The A4's velocity floor is 1, not 0 — the knob stops there. Anything
+/// mapping a MIDI 0-127 velocity onto this box has to know that, so the setter
+/// clamps rather than refusing, and a 0 lands on the floor the box has.
+#[test]
+fn velocity_clamps_to_the_range_the_knob_stops_at() {
+    let mut payload = a4_pattern(CLEAR).payload;
+    set_note_trig(&mut payload, 0, 0, Some(PROBE_NOTE)).expect("a trig to carry it");
+
+    set_trig_velocity(&mut payload, 0, 0, Some(0)).expect("zero is clamped, not refused");
+    assert_eq!(read_track_trigs(&payload, 0).unwrap()[0].velocity, Some(VELOCITY_MIN));
+
+    set_trig_velocity(&mut payload, 0, 0, Some(200)).expect("and so is 200");
+    assert_eq!(read_track_trigs(&payload, 0).unwrap()[0].velocity, Some(VELOCITY_MAX));
+
+    // None is not silence: it is "take the track's", which is 100.
+    set_trig_velocity(&mut payload, 0, 0, None).expect("clearing");
+    let trig = read_track_trigs(&payload, 0).unwrap()[0].clone();
+    assert_eq!(trig.velocity, None, "the lane reads unset");
+    assert_eq!(effective_velocity(&payload, 0, &trig).unwrap(), 0x64, "and it sounds at 100");
+}
+
+/// Micro timing is the one lane with no "unset": it clears to zero, so a trig
+/// nobody nudged and a trig nudged back to centre are the same byte. Both ends
+/// clamp to the range the knob stops at.
+#[test]
+fn micro_timing_is_signed_and_has_no_unset() {
+    let mut payload = a4_pattern(CLEAR).payload;
+    set_note_trig(&mut payload, 0, 0, Some(PROBE_NOTE)).expect("a trig");
+    assert_eq!(read_track_trigs(&payload, 0).unwrap()[0].micro_timing, 0, "cleared is centred");
+
+    set_trig_micro_timing(&mut payload, 0, 0, -100).expect("clamped");
+    assert_eq!(read_track_trigs(&payload, 0).unwrap()[0].micro_timing, -23);
+    set_trig_micro_timing(&mut payload, 0, 0, 100).expect("clamped");
+    assert_eq!(read_track_trigs(&payload, 0).unwrap()[0].micro_timing, 23);
+}
+
+/// `FF` is how the format says "no condition", so it cannot also be a condition
+/// somebody selects. The setter says so rather than writing a byte that would
+/// read back as nothing.
+#[test]
+fn a_condition_of_ff_is_refused_because_that_is_the_encoding_for_none() {
+    let mut payload = a4_pattern(CLEAR).payload;
+    let refused = set_trig_condition(&mut payload, 0, 0, Some(NO_NOTE));
+    assert!(refused.is_err(), "FF as a condition value");
+    set_trig_condition(&mut payload, 0, 0, None).expect("None is how you clear it");
+}
+
+/// Byte 4 of the default block moved during the condition walk with no trig
+/// held, which looks like a track-level default — and it is `0x00` on a cleared
+/// track, which a *default condition* would not be. So the reading is recorded
+/// and not acted on: an unset condition is no condition, and this test pins
+/// both halves of why.
+#[test]
+fn an_unset_condition_is_no_condition_and_the_default_block_is_not_consulted() {
+    let pattern = a4_working_pattern(LANES_FIXTURE);
+    let trigs = read_track_trigs(&pattern.payload, 3).expect("SYN4");
+    let plain = trigs.iter().find(|t| t.step == 8).expect("step 8");
+    assert_eq!(plain.condition, None, "no condition of its own, and none at all");
+    // Length does have a measured pairing, so the same untouched step resolves
+    // to the track's 0x0e — the contrast is the point.
+    assert_eq!(plain.length, None, "no length of its own");
+    assert_eq!(effective_length(&pattern.payload, 3, plain).unwrap(), 0x0e, "so it takes SYN4's");
+
+    // The byte the session moved, on a track nobody has touched: 0x00, not FF.
+    // A default condition would not sit on menu entry zero for every track.
+    assert_eq!(track_default(&a4_pattern(CLEAR).payload, 0, 4).unwrap(), 0x00);
+    assert_eq!(track_default(&pattern.payload, 3, 4).unwrap(), 0x00);
+}
+
+/// The moment `+384` stopped being nameless: one byte, `FF -> 0x0b`, on the
+/// step the TRC knob was turned on. Kept as its own fixture because a table
+/// entry that says "hardware" should be able to point at the frame.
+#[test]
+fn the_condition_lane_was_named_by_one_byte_moving() {
+    let before = a4_working_pattern(COND_FIRST);
+    let after = a4_working_pattern(LANES_FIXTURE);
+    let step_seven = |p: &digi_protocol::a4_pattern::A4Pattern| {
+        read_track_trigs(&p.payload, 3)
+            .expect("SYN4")
+            .into_iter()
+            .find(|t| t.step == 7)
+            .expect("step 7")
+    };
+    assert_eq!(step_seven(&before).condition, Some(0x0b), "where the walk started");
+    assert_eq!(step_seven(&after).condition, Some(0x1f), "and where it stopped");
+}
+
+/// The working pattern's reply index is the loaded slot, not a constant zero —
+/// which is what a day of captures taken with A01 loaded made it look like.
+/// A16 was loaded for this one.
+#[test]
+fn a_working_pattern_reports_which_slot_the_box_is_sitting_on() {
+    let pattern = a4_working_pattern(LANES_FIXTURE);
+    assert_eq!(pattern.slot, 15, "A16");
+    assert_eq!(pattern.slot_name(), "A16");
+    // And it is not a stored dump: the type byte differs, so the stored-slot
+    // parser must refuse it rather than quietly accept a live buffer.
+    assert!(parse_pattern(&fixture_bytes(LANES_FIXTURE)).is_err());
+}
+
+/// Every setter writes exactly one byte, and writing twice changes nothing —
+/// the property `safe_write` leans on when it composes an edit onto a freshly
+/// re-fetched destination.
+#[test]
+fn each_setter_moves_one_byte_and_is_idempotent() {
+    let original = a4_pattern(CLEAR).payload;
+    for (name, apply) in [
+        ("velocity", &(|p: &mut Vec<u8>| set_trig_velocity(p, 2, 9, Some(64))) as &dyn Fn(&mut Vec<u8>) -> Result<(), String>),
+        ("length", &|p: &mut Vec<u8>| set_trig_length(p, 2, 9, Some(30))),
+        ("micro timing", &|p: &mut Vec<u8>| set_trig_micro_timing(p, 2, 9, -4)),
+        ("condition", &|p: &mut Vec<u8>| set_trig_condition(p, 2, 9, Some(3))),
+    ] {
+        let mut payload = original.clone();
+        apply(&mut payload).expect("the write");
+        let moved: Vec<usize> =
+            (0..payload.len()).filter(|&i| payload[i] != original[i]).collect();
+        assert_eq!(moved.len(), 1, "{name} moved {} bytes", moved.len());
+
+        let once = payload.clone();
+        apply(&mut payload).expect("again");
+        assert_eq!(payload, once, "{name} is not idempotent");
+    }
+}
+
+
+/// **The A4 shares the digis' length scale**, which is the finding that saved
+/// this format a table of its own. Three anchors, two of them read off the A4's
+/// screen on 2026-09-01 and one of them this format's own default:
+///
+/// `0x00` shows `.125`, `0x7e` shows `128`, `0x7f` shows `INF` — and `0x0e`,
+/// the per-track default length in every A4 capture, is exactly one step.
+#[test]
+fn an_a4_length_byte_means_what_a_digi_length_byte_means() {
+    use digi_protocol::pattern::length_byte_to_steps;
+
+    assert_eq!(length_byte_to_steps(0x00), 0.125, "the box showed .125");
+    assert_eq!(length_byte_to_steps(0x7e), 128.0, "the box showed 128");
+    assert!(length_byte_to_steps(0x7f).is_infinite(), "the box showed INF");
+    assert_eq!(length_byte_to_steps(0x0e), 1.0, "and the A4's own default is one step");
+
+    // The default really is 0x0e, on every track of every capture but the one
+    // SYN4 whose own default was raised.
+    let cleared = a4_pattern(CLEAR);
+    for track in 0..NUM_TRACKS {
+        assert_eq!(track_default(&cleared.payload, track, 2).unwrap(), 0x0e);
+    }
+}
+
+/// `+532`/`+596`/`+660` are the ARP menu's NO2/NO3/NO4, turned on the box.
+/// They were "chord notes 2-4" until then — a name derived from a nesting
+/// correlation, which was right about the shape and wrong about the field.
+#[test]
+fn the_arp_note_lanes_were_named_by_the_arp_menu() {
+    let pattern = a4_working_pattern(ARP_NOTES);
+    let named: Vec<&str> = LANES
+        .iter()
+        .filter(|l| l.offset >= 532)
+        .map(|l| l.name)
+        .collect();
+    assert_eq!(named, ["arp note 2", "arp note 3", "arp note 4"]);
+    for lane in LANES.iter().filter(|l| l.offset >= 532) {
+        assert_eq!(lane.evidence, LaneEvidence::Hardware, "+{}", lane.offset);
+    }
+
+    // SYN4 step 1 carries the two that were turned on it, and not the third.
+    let base = TRACK_BASE + 3 * TRACK_STRIDE;
+    assert_eq!(pattern.payload[base + 532], 0x3d, "NO2");
+    assert_eq!(pattern.payload[base + 596], 0x44, "NO3");
+    assert_eq!(pattern.payload[base + 660], NO_NOTE, "NO4 was never turned here");
+}
+
+/// The one lane still without a name, asserted as *not named* — so that giving
+/// it one is a deliberate edit to this test rather than a drive-by rename.
+#[test]
+fn exactly_one_lane_is_still_unnamed() {
+    let unnamed: Vec<usize> = LANES
+        .iter()
+        .filter(|l| l.evidence == LaneEvidence::Shape)
+        .map(|l| l.offset)
+        .collect();
+    assert_eq!(unnamed, [459], "the lane no knob has been found for");
+}
+
+
+/// A track whose *own* default velocity is `FF` — "unset", one of which exists
+/// in the 792 track-instances measured. Resolving it naively hands back 255,
+/// which is not a velocity; it falls back to the value a cleared pattern
+/// carries instead.
+#[test]
+fn a_track_default_that_is_itself_unset_does_not_resolve_to_two_hundred_and_fifty_five() {
+    let mut payload = a4_pattern(A01).payload;
+    let base = TRACK_BASE;
+    payload[base + VELOCITY_LANE] = NO_NOTE;
+    payload[base + TRACK_DEFAULTS + 1] = NO_NOTE;
+
+    let trig = read_track_trigs(&payload, 0).expect("SYN1").remove(0);
+    assert_eq!(trig.velocity, None, "the trig's own lane is unset");
+    assert_eq!(effective_velocity(&payload, 0, &trig).unwrap(), 0x64, "and so is the track's");
 }

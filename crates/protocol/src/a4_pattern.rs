@@ -59,25 +59,40 @@
 //! ```text
 //!   +0     2 × 64     trig bytes
 //!   +128   64         note lane, FF = no note
-//!   +192   64         per-step lane, FF-filled when cleared     unnamed
-//!   +256   64         per-step lane, FF-filled when cleared     unnamed
-//!   +320   64         per-step lane, ZERO-filled when cleared   unnamed
-//!   +384   64         per-step lane, FF-filled when cleared     unnamed
-//!   +448   11         per-track defaults: 30 64 0e 00 00 00 40 00 00 00 01
-//!   +459   64         FF
+//!   +192   64         velocity, 1-127                           hardware
+//!   +256   64         length, 0-127                             hardware
+//!   +320   64         micro timing, signed +-23, ZERO cleared   hardware
+//!   +384   64         trig condition, one enum                  hardware
+//!   +448   11         per-track defaults: 30 64 0e 00 00 00 10 00 00 00 01
+//!   +459   64         per-step lane, FF-filled when cleared     unnamed
 //!   +523   9          per-track, unnamed: 00 05 02 00 0e 64 40 40 40
-//!   +532   64         per-step lane — populated on exactly SYN1's 32 trig
-//!                     steps in A01, so trig-attached                unnamed
-//!   +596   64         per-step lane — populated on 25 of those 32    unnamed
-//!   +660   64         per-step lane, FF in every capture so far      unnamed
-//!   +724   27         per-track tail                                unnamed
+//!   +532   64         one ordered group of three — ARP notes?   unnamed
+//!   +596   64                                                   unnamed
+//!   +660   64                                                   unnamed
+//!   +724   27         per-track tail                            unnamed
 //! ```
 //!
 //! The offsets above sum to 751 exactly, which is the only thing that makes the
-//! decomposition more than a list of places something was seen. Six of the
-//! regions have no name: they are recorded as *shape* — a 64-byte per-step lane
-//! and its fill — because that shape is what a capture can establish and what
-//! the next capture will have to contradict.
+//! decomposition more than a list of places something was seen. [`LANES`] is
+//! that table as data, with the evidence for each name attached — and three of
+//! the nine lanes still have no name at all, recorded as *shape* because that
+//! is what a capture can establish and what the next capture will have to
+//! contradict.
+//!
+//! **Six of those names arrived on 2026-09-01 from the 132 patterns the
+//! `0x60` project stream returned**, which is an order of magnitude more
+//! evidence than the nine fixtures: a lane-alignment scan over 5,307 live
+//! trigs, and a match between lane order and the per-track default block at
+//! `+448`. The working is in PLAN.md §10, "Six lanes get names"; the strength
+//! of each is [`LaneEvidence`], and none of the six has been read off the
+//! box's own screen yet.
+//!
+//! **`+459` is not 64 bytes of `FF`**, which is what this table said until
+//! that scan. It is a per-step lane like the rest, set on 280 of those 5,307
+//! trigs; the nine fixtures simply had nothing in it. Its base is `+459` and
+//! not a neighbour, by the margin an alignment scan gives: 280 of its non-`FF`
+//! bytes land on a step with a trig and 15 do not, where every base from
+//! `+456` to `+462` smears across hundreds of trigless steps.
 //!
 //! **`FF` in a per-step lane means "unset, take the track default".** That is
 //! why a fresh trig inherits its note from `+448`, and it is the opposite of the
@@ -115,6 +130,32 @@ pub const DUMP_A4_PATTERN: u8 = DUMP_PROJECT_SETTINGS;
 /// PLAN.md §10 "The A4 answers dump requests").
 pub const DUMP_A4_PATTERN_REQUEST: u8 = DUMP_PROJECT_SETTINGS_REQUEST;
 
+/// The **working** pattern's reply type — the box's edit buffer rather than a
+/// stored slot.
+///
+/// `0x6a` is [`DUMP_A4_PATTERN_REQUEST`] + 8, and the whole `0x68`-`0x6d` row
+/// answers with the current state of the object `0x60`-`0x65` fetches by slot.
+/// Verified 2026-08-31 by `examples/a4_dump_probe`: the reply is 12,974 bytes
+/// in the same layout, and the one it returned held A01's 32 trigs **plus two
+/// the box had not saved**. That is the property this constant exists for — an
+/// edit shows up here the moment a knob moves, with no save on the box and no
+/// slot overwritten, which is what makes a knob-turn diff a read-only
+/// experiment.
+///
+/// **The request index is ignored; the reply index is not.** The box answered
+/// requests at indices 0, 1 and 5 identically, and the 2026-08-31 sweep read
+/// every reply back as index 0 — which looked like "the box always stamps
+/// zero" and was recorded that way for a day. It is not: A01 was the loaded
+/// pattern, and A01 is slot 0. On 2026-09-01, with A16 loaded, every working
+/// reply came back stamped 15. So [`A4Pattern::slot`] on a working pattern is
+/// **which pattern the box is sitting on**, which is worth more than a
+/// constant: it is how a fetch can tell that somebody changed pattern on the
+/// box mid-session.
+pub const DUMP_A4_PATTERN_WORKING: u8 = 0x5A;
+
+/// The request that fetches [`DUMP_A4_PATTERN_WORKING`].
+pub const DUMP_A4_PATTERN_WORKING_REQUEST: u8 = 0x6A;
+
 pub const NUM_TRACKS: usize = 6;
 pub const NUM_STEPS: usize = 64;
 pub const TRACK_BASE: usize = 4;
@@ -136,6 +177,286 @@ pub const NOTE_LANE: usize = 128;
 pub const DEFAULT_NOTE: usize = 448;
 /// `FF` in the note lane, or in any per-step lane: unset, use the track default.
 pub const NO_NOTE: u8 = 0xFF;
+
+// --- The nine per-step lanes -------------------------------------------------
+
+/// Track-relative offset of the velocity lane.
+pub const VELOCITY_LANE: usize = 192;
+/// Track-relative offset of the note-length lane.
+pub const LENGTH_LANE: usize = 256;
+/// Track-relative offset of the micro-timing lane.
+pub const MICRO_TIMING_LANE: usize = 320;
+/// Track-relative offset of the trig-condition lane.
+pub const CONDITION_LANE: usize = 384;
+/// The ARP menu's NO2/NO3/NO4, one per-step lane each, in menu order.
+pub const ARP_NOTE_LANES: [usize; 3] = [532, 596, 660];
+
+/// The quietest a trig can be, read off the knob at its minimum. **Not zero**:
+/// the box stops at 1, so a velocity of 0 is a value this format cannot hold
+/// and a caller handing one over is asking for silence the box cannot store.
+pub const VELOCITY_MIN: u8 = 0x01;
+/// The loudest, read off the knob at its maximum.
+pub const VELOCITY_MAX: u8 = 0x7F;
+
+/// The shortest note length, read off the knob. Zero, where velocity starts at
+/// one — the two lanes do not share a convention, which is why both ends of
+/// both were turned rather than one end of each.
+pub const LENGTH_MIN: u8 = 0x00;
+/// `INF` — read off the screen 2026-09-01, along with `0x00` showing `.125` and
+/// `0x7e` showing `128`.
+///
+/// **Those two readings say the A4 shares the digis' length scale**, which is
+/// the gen-2 curve [`crate::pattern::length_byte_to_steps`] already ports from
+/// libanalogrytm: piecewise linear, doubling every 16 values, `0x00` = 0.125,
+/// `0x0e` = 1 step, `0x7e` = 128, `0x7f` infinite. Three anchors agree,
+/// including this format's own per-track default of `0x0e` — a default length
+/// of exactly one step, which is what a default length should be. So an A4
+/// length needs no table of its own and no conversion at the boundary: the byte
+/// means on this box what it means on a Digitakt II.
+pub const LENGTH_MAX: u8 = 0x7F;
+
+/// The longest finite length, `128` steps. [`LENGTH_MAX`] is `INF`, which is
+/// not a number and cannot be clamped to.
+pub const LENGTH_LONGEST_FINITE: u8 = 0x7E;
+
+/// Micro timing runs -23..+23, both ends measured: `0xe9` and `0x17`. The lane
+/// is signed and clears to zero, so no separate "unset" exists.
+pub const MICRO_TIMING_RANGE: i8 = 23;
+
+/// The largest condition byte seen, over two sweeps of the TRC knob on
+/// 2026-09-01. **A ceiling that was observed, not one the box stated**, and the
+/// second sweep raised it from `0x1f` to here — which is the argument for not
+/// treating it as the length of the menu.
+///
+/// **The menu behind these indices is not mapped.** The sweeps recorded bytes
+/// and nobody recorded the label on the screen at each stop, so there is no
+/// byte-to-condition table and this crate cannot render an A4 condition or
+/// translate one to a digi's. Two things are known from the box: the A4 spends
+/// one knob where the digis spend three lanes (COND, FILL and PROB), so
+/// probability and condition are one enum here; and **there is no `LST`**, so
+/// [`crate::conditions`]'s 76-entry table is a different menu rather than this
+/// one with entries missing.
+pub const CONDITION_SEEN_MAX: u8 = 0x40;
+
+/// How well a lane's *meaning* is established, as distinct from its shape.
+///
+/// Shape is what a capture settles on its own: a 64-byte run, one byte per
+/// step, written on trig steps and left at a fill value everywhere else. A
+/// *name* needs more, and the two grades of "more" are not the same grade —
+/// which is the distinction this enum exists to keep, because every wrong model
+/// of this format so far was a correlation that nobody had put in front of the
+/// box.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LaneEvidence {
+    /// The box displayed the value, or wrote it in answer to a known knob turn.
+    /// The only grade that settles a *unit*: `0x0e` being the length default
+    /// says nothing about what `0x0e` sounds like.
+    Hardware,
+    /// Named from a measured correlation over the 132 patterns of the `0x60`
+    /// project stream — a lane's position, its fill, its value range, and its
+    /// pairing with the per-track default block at [`TRACK_DEFAULTS`]. Strong
+    /// enough to act on, not strong enough to send to hardware without a check.
+    Correlated,
+    /// Shape only. A per-step lane whose field is unknown.
+    Shape,
+}
+
+/// One 64-byte per-step lane of a track.
+pub struct Lane {
+    /// Track-relative offset of step 1.
+    pub offset: usize,
+    /// What the field is, or `"unnamed"` where [`Lane::evidence`] is
+    /// [`LaneEvidence::Shape`].
+    pub name: &'static str,
+    pub evidence: LaneEvidence,
+    /// What a cleared pattern holds here. `FF` for every lane but micro
+    /// timing, which is signed and clears to zero — so "unset" and "no shift"
+    /// are the same byte there, and a writer cannot tell them apart.
+    pub cleared: u8,
+    /// Index into the 11-byte [`TRACK_DEFAULTS`] block holding this lane's
+    /// per-track default, where a pairing has been measured.
+    ///
+    /// The pairing is the argument for three of the names: over 792
+    /// track-instances the mode of each lane's set values matches default 0,
+    /// 1 and 2 respectively for the note, velocity and length lanes, and no
+    /// other index. Default 1 is `0x64` — 100, Elektron's documented default
+    /// velocity — in **784 of those 792**; the other eight are `0x6e`, `0x7f`,
+    /// `0x68` and one `0xFF`, which is what a per-track default that somebody
+    /// can turn looks like. (This doc said "every one of those 792" for a few
+    /// hours, from reading the top of a histogram instead of its tail. The
+    /// pairing argument never needed the stronger claim, and velocity is
+    /// hardware-confirmed now regardless.)
+    pub default_index: Option<usize>,
+}
+
+/// The nine per-step lanes, in offset order.
+///
+/// **Five are hardware-measured, one still has no name.** The 2026-09-01 knob
+/// session (`examples/a4_lane_probe` against the working pattern) isolated one
+/// field per step on A16 SYN4 and read the lane each knob wrote; the capture is
+/// the `A16-lanes` fixture, and every value in it is one turn of one knob:
+///
+/// ```text
+///   step 1  velocity  0x01   step 5  micro timing  0xe9 (-23)
+///   step 2  velocity  0x7f   step 6  micro timing  0x17 (+23)
+///   step 3  length    0x00 (.125)    step 7  condition  swept to 0x40
+///   step 4  length    0x7f (INF)
+/// ```
+///
+/// A second session turned the ARP menu's NO2/NO3/NO4 on a held trig and lit
+/// `+532`, `+596` and `+660`, in that order.
+///
+/// **`+459` is the one lane nothing wrote.** It is set on 280 trigs of the
+/// project stream, so it is a real field somebody has used — no knob has been
+/// found for it, and naming it from its value distribution alone is the mistake
+/// this table exists to avoid. It is **not** retrig, which was the first guess:
+/// the A4 does not have retrig at all. `+724` is not a lane but the 27-byte
+/// track tail, and is not in here.
+///
+/// **The default block indices are the lane order**, for the first four at
+/// least: note, velocity, length, micro timing. Index 4
+/// moved on its own during the session — `00 -> ff -> 00` with no trig held —
+/// which is what a *track-level* condition default does.
+pub const LANES: [Lane; 9] = [
+    Lane {
+        offset: NOTE_LANE,
+        name: "note",
+        // The one lane the box has confirmed in both directions: `0x30`
+        // written here displayed as C4, and a fresh trig read its pitch from
+        // the track default when this lane held `FF`.
+        evidence: LaneEvidence::Hardware,
+        cleared: NO_NOTE,
+        default_index: Some(0),
+    },
+    Lane {
+        // VEL, turned to each end on 2026-09-01: 0x01 at minimum, 0x7f at
+        // maximum, on a lane that read FF before the knob moved.
+        offset: VELOCITY_LANE,
+        name: "velocity",
+        evidence: LaneEvidence::Hardware,
+        cleared: NO_NOTE,
+        default_index: Some(1),
+    },
+    Lane {
+        // LEN, the same way: 0x00 showing `.125` and 0x7f showing `INF`, on
+        // the digis' own length curve.
+        offset: LENGTH_LANE,
+        name: "length",
+        evidence: LaneEvidence::Hardware,
+        cleared: NO_NOTE,
+        default_index: Some(2),
+    },
+    Lane {
+        // Signed, and the ends are exactly Elektron's: 0xe9 is -23 and 0x17 is
+        // +23, both read off the knob. Clears to zero, not FF, so "no shift"
+        // and "unset" are the same byte and a writer need not tell them apart.
+        offset: MICRO_TIMING_LANE,
+        name: "micro timing",
+        evidence: LaneEvidence::Hardware,
+        cleared: 0x00,
+        default_index: Some(3),
+    },
+    Lane {
+        // The condition — and the surprise of the run. `+384` is FF on all
+        // 5,307 trigs of the project stream, so the correlation had it as the
+        // *less* likely of the two unnamed lanes; it is the one the TRC knob
+        // writes. `+459`, set on 280 trigs there, was never touched by any knob
+        // in the session and stays nameless.
+        offset: CONDITION_LANE,
+        name: "condition",
+        evidence: LaneEvidence::Hardware,
+        cleared: NO_NOTE,
+        // **No default pairing, on purpose.** Byte 4 of the block moved
+        // `00 -> ff -> 00` during the condition part of the session with no
+        // trig held, which is what a track-level default would do — but it is
+        // `0x00` on a cleared track and on most tracks of the project stream,
+        // and a *default condition of menu entry 0 on every track* is not a
+        // thing a box would ship. One of those two readings is wrong and a
+        // coincidence in time is not enough to pick, so this stays unpaired
+        // and `condition: None` means no condition rather than "ask the
+        // track".
+        default_index: None,
+    },
+    Lane { offset: 459, name: "unnamed", evidence: LaneEvidence::Shape, cleared: NO_NOTE, default_index: None },
+    // The ARP menu's NO2/NO3/NO4, per trig — **turned on the box 2026-09-01**,
+    // which is what closed a name this app had got wrong twice over. The
+    // nesting argument (only twice in 5,307 trigs is a later one set without
+    // its predecessor) said correctly that they are one ordered group; the name
+    // "chord notes 2-4" did not survive contact with the box, because the A4 is
+    // monophonic per track and its chords come from the arpeggiator.
+    //
+    // The first value a fresh one takes is `0x40`, which reads as the centre of
+    // an offset range rather than a note — but no screen was read at that
+    // moment, so the *unit* is unmapped and these stay unresolved values.
+    Lane { offset: 532, name: "arp note 2", evidence: LaneEvidence::Hardware, cleared: NO_NOTE, default_index: None },
+    Lane { offset: 596, name: "arp note 3", evidence: LaneEvidence::Hardware, cleared: NO_NOTE, default_index: None },
+    Lane { offset: 660, name: "arp note 4", evidence: LaneEvidence::Hardware, cleared: NO_NOTE, default_index: None },
+];
+
+/// The 11-byte per-track default block. Its first three bytes are the note,
+/// velocity and length a trig takes when its own lane byte is [`NO_NOTE`] —
+/// [`DEFAULT_NOTE`] is byte 0 of it, established before the block was.
+pub const TRACK_DEFAULTS: usize = DEFAULT_NOTE;
+
+/// How many bytes of [`TRACK_DEFAULTS`] belong to the block.
+pub const TRACK_DEFAULTS_LEN: usize = 11;
+
+/// Read one lane's byte for one step.
+pub fn lane_byte(payload: &[u8], track: usize, lane: &Lane, step: usize) -> Result<u8, String> {
+    check_payload(payload)?;
+    check_track(track)?;
+    check_step(step)?;
+    Ok(payload[track_base(track) + lane.offset + step])
+}
+
+/// Name a payload offset, for a probe or a diff.
+///
+/// Says plainly where a byte is *not* named: an offset inside an unnamed lane
+/// reports the lane and the step, which is what a knob-turn diff needs in order
+/// to say "this knob writes that lane" without anyone having decided in advance
+/// what the lane is.
+pub fn describe_offset(off: usize) -> String {
+    if off < TRACK_BASE {
+        return format!("header +{off}");
+    }
+    let tracks_end = TRACK_BASE + NUM_TRACKS * TRACK_STRIDE;
+    if off >= tracks_end {
+        if off == SLOT_MARKER {
+            return "pattern: slot marker".to_owned();
+        }
+        let rel = off - tracks_end;
+        if rel < crate::a4_plocks::NUM_LANES * crate::a4_plocks::LANE_SIZE {
+            return format!("p-lock pool +{rel}");
+        }
+        return format!("pattern tail +{rel}");
+    }
+    let track = (off - TRACK_BASE) / TRACK_STRIDE;
+    let rel = (off - TRACK_BASE) % TRACK_STRIDE;
+    let name = TRACK_NAMES[track];
+    if rel < 2 * NUM_STEPS {
+        return format!("{name} trig step {} byte {}", rel / 2 + 1, rel % 2);
+    }
+    for lane in &LANES {
+        if (lane.offset..lane.offset + NUM_STEPS).contains(&rel) {
+            let step = rel - lane.offset + 1;
+            return match lane.evidence {
+                LaneEvidence::Shape => format!("{name} step {step} lane +{} (UNNAMED)", lane.offset),
+                _ => format!("{name} step {step} {}", lane.name),
+            };
+        }
+    }
+    if (TRACK_DEFAULTS..TRACK_DEFAULTS + TRACK_DEFAULTS_LEN).contains(&rel) {
+        let i = rel - TRACK_DEFAULTS;
+        let field = match i {
+            0 => " (default note)",
+            1 => " (default velocity)",
+            2 => " (default length)",
+            _ => "",
+        };
+        return format!("{name} track defaults +{i}{field}");
+    }
+    format!("{name} +{rel} (per-track, unnamed)")
+}
 
 /// Byte 12,962 tracks the slot index — `FF` in a pattern the box has never
 /// saved, the zero-based slot in every dump taken after a save.
@@ -236,6 +557,25 @@ pub struct Trig {
     /// [`TrigState::Trigless`] trig has no note; a [`TrigState::Note`] trig
     /// whose lane reads `FF` takes the track's [`DEFAULT_NOTE`].
     pub note: Option<u8>,
+    /// [`VELOCITY_MIN`]..=[`VELOCITY_MAX`], or `None` where the lane reads
+    /// `FF` — which is not "silent" but "this trig has no velocity of its own,
+    /// use the track's", the same rule the note lane runs on.
+    /// [`effective_velocity`] resolves it.
+    pub velocity: Option<u8>,
+    /// [`LENGTH_MIN`]..=[`LENGTH_MAX`], `None` where unset. Same fallback.
+    pub length: Option<u8>,
+    /// -[`MICRO_TIMING_RANGE`]..=[`MICRO_TIMING_RANGE`]. **Not optional**: the
+    /// lane clears to zero rather than `FF`, so an unshifted trig and a trig
+    /// nobody has touched are the same byte, and there is nothing for a
+    /// fallback to resolve.
+    pub micro_timing: i8,
+    /// The trig-condition menu index, `None` where the trig has no condition.
+    ///
+    /// One field where the digis use three: the A4 puts probability and
+    /// condition on one knob, so `PROB`, `FILL` and `COND` all have to come out
+    /// of this single byte. **The menu order behind the index is not mapped** —
+    /// see [`CONDITION_SEEN_MAX`].
+    pub condition: Option<u8>,
     /// The two bytes as stored. Kept because the `0xC0` half of byte 1 is
     /// unexplained and a round trip has to reproduce it.
     pub bytes: (u8, u8),
@@ -268,11 +608,20 @@ pub fn slot_name(slot: u8) -> String {
 /// would hand a DT2 project-settings payload to [`read_track_trigs`], which
 /// would find trigs in it.
 pub fn is_a4_pattern(parsed: &crate::protocol::ParsedSysEx) -> bool {
+    is_a4_pattern_of(parsed, DUMP_A4_PATTERN)
+}
+
+/// Is this parsed dump the A4's *working* pattern — its edit buffer?
+pub fn is_a4_working_pattern(parsed: &crate::protocol::ParsedSysEx) -> bool {
+    is_a4_pattern_of(parsed, DUMP_A4_PATTERN_WORKING)
+}
+
+fn is_a4_pattern_of(parsed: &crate::protocol::ParsedSysEx, dump_type: u8) -> bool {
     parsed.kind == SysExKind::Dump
         && parsed
             .dump
             .as_ref()
-            .is_some_and(|d| d.family == FAMILY_ANALOG_FOUR && d.dump_type == DUMP_A4_PATTERN)
+            .is_some_and(|d| d.family == FAMILY_ANALOG_FOUR && d.dump_type == dump_type)
 }
 
 /// Parse one `F0 … F7` message as a gen-1 pattern dump.
@@ -281,8 +630,23 @@ pub fn is_a4_pattern(parsed: &crate::protocol::ParsedSysEx) -> bool {
 /// capture that does not verify is not evidence of anything, and every
 /// expectation downstream of here assumes all three.
 pub fn parse_pattern(message: &[u8]) -> Result<A4Pattern, String> {
+    parse_pattern_of(message, DUMP_A4_PATTERN)
+}
+
+/// Parse one message as the A4's **working** pattern —
+/// [`DUMP_A4_PATTERN_WORKING`], the reply to a `0x6a` request.
+///
+/// Identical to [`parse_pattern`] but for the type byte, because the payload is
+/// identical: same 12,974 bytes, same tracks, same lanes. The returned
+/// [`A4Pattern::slot`] is the reply's index byte, which the box always sets to
+/// zero here — see [`DUMP_A4_PATTERN_WORKING`].
+pub fn parse_working_pattern(message: &[u8]) -> Result<A4Pattern, String> {
+    parse_pattern_of(message, DUMP_A4_PATTERN_WORKING)
+}
+
+fn parse_pattern_of(message: &[u8], dump_type: u8) -> Result<A4Pattern, String> {
     let parsed = parse_sysex(message);
-    if !is_a4_pattern(&parsed) {
+    if !is_a4_pattern_of(&parsed, dump_type) {
         return Err(match parsed.dump.as_ref() {
             Some(d) => format!(
                 "not an A4 pattern dump: family {:#04x}, type {:#04x}",
@@ -387,10 +751,16 @@ pub fn read_track_trigs(payload: &[u8], track: usize) -> Result<Vec<Trig>, Strin
             let state = trig_state(b0, b1);
             state.is_live().then(|| {
                 let note = payload[note_offset(track, step)];
+                let at = |lane: usize| payload[track_base(track) + lane + step];
+                let unless_unset = |v: u8| (v != NO_NOTE).then_some(v);
                 Trig {
                     step: step + 1,
                     state,
-                    note: (note != NO_NOTE).then_some(note),
+                    note: unless_unset(note),
+                    velocity: unless_unset(at(VELOCITY_LANE)),
+                    length: unless_unset(at(LENGTH_LANE)),
+                    micro_timing: at(MICRO_TIMING_LANE) as i8,
+                    condition: unless_unset(at(CONDITION_LANE)),
                     bytes: (b0, b1),
                 }
             })
@@ -419,6 +789,71 @@ pub fn effective_note(payload: &[u8], track: usize, trig: &Trig) -> Result<Optio
         })),
         _ => Ok(None),
     }
+}
+
+/// The velocity this trig actually plays at, resolving the track default.
+///
+/// The sibling of [`effective_note`], and it exists for the same reason: `FF`
+/// in a per-step lane means "unset, take the track's", so a reader that handed
+/// back `None` would be right about the bytes and wrong about the sound. The
+/// default is byte 1 of [`TRACK_DEFAULTS`], which is `0x64` — 100 — in every
+/// one of the 792 track-instances measured.
+pub fn effective_velocity(payload: &[u8], track: usize, trig: &Trig) -> Result<u8, String> {
+    resolve(payload, track, trig.velocity, 1)
+}
+
+/// The length this trig actually plays for, resolving the track default —
+/// byte 2 of [`TRACK_DEFAULTS`].
+pub fn effective_length(payload: &[u8], track: usize, trig: &Trig) -> Result<u8, String> {
+    resolve(payload, track, trig.length, 2)
+}
+
+// **There is deliberately no `effective_condition`.** Velocity and length
+// resolve through the track default because the pairing between lane and
+// default byte is measured; the condition's is not — see the note on its
+// `Lane` entry — so a trig whose condition byte is `FF` has no condition, full
+// stop. Inventing a fallback would put a condition on trigs the box plays
+// unconditionally.
+
+/// **A track default can itself be `FF`.** One track in the 792 measured has
+/// `FF` as its default velocity, and `FF` in this format means "unset" — so
+/// resolving it would hand back 255, which is not a velocity, not a length, and
+/// would clamp to the top of the range on the way out rather than to something
+/// anybody chose.
+///
+/// What the box does with a trig in that state is unmeasured. So this falls
+/// back to the value the format itself defaults to — the cleared pattern's own
+/// `0x64` velocity and `0x0e` length — which is at least a value the box ships
+/// with, and says so here rather than letting a 255 travel.
+fn resolve(
+    payload: &[u8],
+    track: usize,
+    value: Option<u8>,
+    default_index: usize,
+) -> Result<u8, String> {
+    if let Some(v) = value {
+        return Ok(v);
+    }
+    let default = track_default(payload, track, default_index)?;
+    if default != NO_NOTE {
+        return Ok(default);
+    }
+    Ok(CLEARED_TRACK_DEFAULTS[default_index])
+}
+
+/// The 11-byte default block of a pattern the box has just cleared. The
+/// fallback for a track whose own default reads `FF` — see [`resolve`].
+pub const CLEARED_TRACK_DEFAULTS: [u8; TRACK_DEFAULTS_LEN] =
+    [0x30, 0x64, 0x0e, 0x00, 0x00, 0x00, 0x10, 0x00, 0x00, 0x00, 0x01];
+
+/// One byte of a track's 11-byte default block.
+pub fn track_default(payload: &[u8], track: usize, index: usize) -> Result<u8, String> {
+    check_payload(payload)?;
+    check_track(track)?;
+    if index >= TRACK_DEFAULTS_LEN {
+        return Err(format!("no default {index}; the block is {TRACK_DEFAULTS_LEN} bytes"));
+    }
+    Ok(payload[track_base(track) + TRACK_DEFAULTS + index])
 }
 
 /// Every step's state, including the ones that display as nothing — the
@@ -481,6 +916,83 @@ pub fn set_trigless_trig(payload: &mut [u8], track: usize, step: usize) -> Resul
     check_step(step)?;
     let o = trig_offset(track, step);
     payload[o + 1] = TRIG_TRIGLESS;
+    Ok(())
+}
+
+/// Set or clear one step's velocity, in place.
+///
+/// `None` writes [`NO_NOTE`], which puts the step back on the track default
+/// rather than silencing it. **Values are clamped to
+/// [`VELOCITY_MIN`]..=[`VELOCITY_MAX`]** rather than rejected: the box's own
+/// knob stops at both ends, and a caller mapping a 0-127 MIDI velocity onto a
+/// box whose floor is 1 should get the box's floor, not an error.
+pub fn set_trig_velocity(
+    payload: &mut [u8],
+    track: usize,
+    step: usize,
+    velocity: Option<u8>,
+) -> Result<(), String> {
+    let byte = velocity.map(|v| v.clamp(VELOCITY_MIN, VELOCITY_MAX));
+    set_lane_byte(payload, track, step, VELOCITY_LANE, byte.unwrap_or(NO_NOTE))
+}
+
+/// Set or clear one step's note length, in place. Clamped to
+/// [`LENGTH_MIN`]..=[`LENGTH_MAX`]; `None` restores the track default.
+pub fn set_trig_length(
+    payload: &mut [u8],
+    track: usize,
+    step: usize,
+    length: Option<u8>,
+) -> Result<(), String> {
+    let byte = length.map(|v| v.clamp(LENGTH_MIN, LENGTH_MAX));
+    set_lane_byte(payload, track, step, LENGTH_LANE, byte.unwrap_or(NO_NOTE))
+}
+
+/// Set one step's micro timing, in place. Clamped to ±[`MICRO_TIMING_RANGE`].
+///
+/// Takes no `Option`: the lane clears to zero, so "no shift" is the only thing
+/// "unset" could mean here.
+pub fn set_trig_micro_timing(
+    payload: &mut [u8],
+    track: usize,
+    step: usize,
+    ticks: i8,
+) -> Result<(), String> {
+    let clamped = ticks.clamp(-MICRO_TIMING_RANGE, MICRO_TIMING_RANGE);
+    set_lane_byte(payload, track, step, MICRO_TIMING_LANE, clamped as u8)
+}
+
+/// Set or clear one step's trig condition, in place.
+///
+/// **Takes the raw menu index, because the menu is not mapped.** Every other
+/// setter here clamps to a measured range; this one cannot, since the walk that
+/// produced [`CONDITION_SEEN_MAX`] stopped where a hand stopped rather than
+/// where the menu ends. It refuses `FF` as a *value* — that is the encoding for
+/// "no condition", which is what `None` is for — and otherwise writes what it
+/// is given.
+pub fn set_trig_condition(
+    payload: &mut [u8],
+    track: usize,
+    step: usize,
+    condition: Option<u8>,
+) -> Result<(), String> {
+    if condition == Some(NO_NOTE) {
+        return Err("FF is the encoding for no condition; pass None".into());
+    }
+    set_lane_byte(payload, track, step, CONDITION_LANE, condition.unwrap_or(NO_NOTE))
+}
+
+fn set_lane_byte(
+    payload: &mut [u8],
+    track: usize,
+    step: usize,
+    lane: usize,
+    byte: u8,
+) -> Result<(), String> {
+    check_payload(payload)?;
+    check_track(track)?;
+    check_step(step)?;
+    payload[track_base(track) + lane + step] = byte;
     Ok(())
 }
 

@@ -799,25 +799,55 @@ pub fn safe_write_tracks(
 
 // --- the Analog Four's write ----------------------------------------------------
 
+/// One authored trig: everything about a step this format can carry.
+///
+/// Four fields where there was one until 2026-09-01, when the per-step lanes
+/// were measured on the box — see [`crate::a4_pattern::LANES`]. Every one is
+/// written explicitly rather than left at `FF`, for the reason the note lane
+/// already was: `FF` means "follow the track default", so a trig left unset
+/// would drift the day somebody turns that default on the box.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct A4Step {
+    pub note: u8,
+    /// Clamped into the box's 1–127 by the writer; the A4's floor is one, not
+    /// zero.
+    pub velocity: u8,
+    /// The Elektron length byte — the *digis'* length byte, which is the same
+    /// scale: `0x00` is .125 of a step, `0x0e` is one, `0x7f` is INF.
+    pub length: u8,
+    /// Ticks of 1/24 of a step, -23..=23.
+    pub micro_timing: i8,
+    /// The TRC menu index, or `None` for a trig with no condition.
+    ///
+    /// **Written either way**, unlike the note lane's `FF`: `None` clears the
+    /// lane, because since the menu was mapped this app can carry an A4
+    /// condition through a round trip, so "no condition here" is now something
+    /// a caller can actually mean rather than something it cannot express.
+    pub condition: Option<u8>,
+}
+
 /// One track's worth of gen-1 write, as `core` describes it.
 ///
-/// The A4 twin of [`TrackWrite`], and smaller for the format's own reason: the
-/// mapped musical content of an A4 track is which steps have trigs and what
-/// note each plays ([`crate::a4_pattern`]'s module doc has the census), so that
-/// is everything a caller can say. Chords and notes past step 64 were resolved
-/// by the caller, whose warnings ride beside the write — the same split
-/// `core::export` makes for a gen-2 track.
+/// The A4 twin of [`TrackWrite`]. It carries note, velocity, length, micro
+/// timing and trig condition per step — the five lanes hardware named on
+/// 2026-09-01. Not the ARP note lanes, which are named and have no
+/// representation in this app's model, and not the p-lock pool, which has no
+/// writer; both keep the destination's own bytes.
+///
+/// Chords and notes past step 64 were resolved by the caller, whose warnings
+/// ride beside the write — the same split `core::export` makes for a gen-2
+/// track.
 #[derive(Debug, Clone)]
 pub struct A4TrackWrite {
     /// Destination slot, 0–127 — the box's eight banks of sixteen.
     pub index: u8,
     /// 0–5: SYN1–SYN4, FX, CV.
     pub track_index: usize,
-    /// One entry per step, always all 64. `Some(pitch)` authors a note trig;
-    /// `None` clears the step — so this write is the track's whole trig lane,
-    /// exactly as a gen-2 [`TrackWrite`]'s notes are the track's whole contents,
-    /// and an empty track is a deliberate clear rather than a no-op.
-    pub steps: Vec<Option<u8>>,
+    /// One entry per step, always all 64. `Some` authors a note trig; `None`
+    /// clears the step — so this write is the track's whole trig lane, exactly
+    /// as a gen-2 [`TrackWrite`]'s notes are the track's whole contents, and an
+    /// empty track is a deliberate clear rather than a no-op.
+    pub steps: Vec<Option<A4Step>>,
 }
 
 /// Replace several tracks of **one** pattern on an Analog Four, safely, in one
@@ -854,7 +884,9 @@ pub fn a4_safe_write_tracks(
     now: Timestamp,
 ) -> Result<WriteResult, WriteError> {
     use crate::a4_pattern::{
-        clear_trig, read_track_trigs, set_note_trig, slot_name, NUM_STEPS, NUM_TRACKS,
+        clear_trig, read_track_trigs, set_note_trig, set_trig_condition, set_trig_length,
+    set_trig_micro_timing, set_trig_velocity, slot_name, trig_offset, trig_state, TrigState,
+    NUM_STEPS, NUM_TRACKS,
         PAYLOAD_LEN, SLOT_MARKER,
     };
 
@@ -996,18 +1028,54 @@ pub fn a4_safe_write_tracks(
     let mut payload = original.clone();
     let mut written = 0usize;
     for write in writes {
-        for (step, pitch) in write.steps.iter().enumerate() {
-            match pitch {
-                Some(p) => {
+        for (step, authored) in write.steps.iter().enumerate() {
+            match authored {
+                Some(trig) => {
+                    let track = write.track_index;
                     // Written explicitly even when it equals the track default:
-                    // leaving the note lane at FF would make the trig follow a
-                    // default somebody may change on the box later.
-                    set_note_trig(&mut payload, write.track_index, step, Some(*p))
+                    // leaving a lane at FF would make the trig follow a default
+                    // somebody may change on the box later.
+                    set_note_trig(&mut payload, track, step, Some(trig.note))
+                        .map_err(WriteError::Encode)?;
+                    set_trig_velocity(&mut payload, track, step, Some(trig.velocity))
+                        .map_err(WriteError::Encode)?;
+                    set_trig_length(&mut payload, track, step, Some(trig.length))
+                        .map_err(WriteError::Encode)?;
+                    set_trig_micro_timing(&mut payload, track, step, trig.micro_timing)
+                        .map_err(WriteError::Encode)?;
+                    // The condition is written even when it is `None`, which
+                    // clears the lane. That is a deliberate reversal of what
+                    // this loop did for the few hours between the lane being
+                    // named and its menu being read: while the byte could not
+                    // be *shown*, clearing it would have destroyed on every
+                    // press a field the user could neither see beforehand nor
+                    // restore after, so the lane was left alone. Now that a
+                    // condition survives the round trip, leaving it alone would
+                    // be the lossy choice — a condition removed in the roll
+                    // would come straight back off the box.
+                    set_trig_condition(&mut payload, track, step, trig.condition)
                         .map_err(WriteError::Encode)?;
                     written += 1;
                 }
-                None => clear_trig(&mut payload, write.track_index, step)
-                    .map_err(WriteError::Encode)?,
+                // **A step this app calls empty may hold a trigless trig, and
+                // clearing it would be destroying something nobody could see.**
+                // This model holds notes; a trigless trig is a trig with no
+                // note, so it has no representation here and an import counts
+                // it rather than carrying it. A user therefore cannot have
+                // *intended* to remove one — there was nothing on screen to
+                // remove — and until 2026-09-01 a write-back deleted every one
+                // of them silently.
+                //
+                // A note trig on the same step is a different matter: that one
+                // was on screen, and clearing it is exactly what deleting the
+                // note meant.
+                None => {
+                    let o = trig_offset(write.track_index, step);
+                    if trig_state(payload[o], payload[o + 1]) != TrigState::Trigless {
+                        clear_trig(&mut payload, write.track_index, step)
+                            .map_err(WriteError::Encode)?;
+                    }
+                }
             }
         }
     }

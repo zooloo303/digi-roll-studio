@@ -403,16 +403,37 @@ impl TransferPanel {
                         report.trigless_dropped
                     ));
                 }
-                // Louder than the gen-2 caveats above, because it is a bigger
-                // claim: these two lanes are not in the mapped format, so every
-                // note's velocity and length are this app's defaults, not the
-                // box's. A green line alone would say the pattern came across
-                // whole.
-                ui.colored_label(
-                    super::CAUTION,
-                    "Velocity and length are not in the A4's mapped format — every note came \
-                     in at a default.",
-                );
+                // Velocity, length, micro timing and the trig condition were
+                // all a CAUTION line here on the morning of 2026-09-01: none of
+                // them was in the mapped format, and every note came in at this
+                // app's default. All four were measured on the box that day, so
+                // the line is gone rather than softened — there is nothing left
+                // for it to warn about.
+                //
+                // What replaces it is not a warning at all. A pattern with
+                // conditions on it is worth *mentioning*, because the roll draws
+                // them in the trig lanes rather than on the notes and a person
+                // may not look there.
+                if report.conditions > 0 {
+                    ui.weak(format!(
+                        "{} trig(s) carry a probability, fill or condition — shown in the trig \
+                         lanes under the roll",
+                        report.conditions
+                    ));
+                }
+                // This one *is* a caution, and it is about the format rather
+                // than the pattern: the menu's length rests on four labels read
+                // off the box, so a byte past its end means the table is short.
+                if report.conditions_off_the_menu > 0 {
+                    ui.colored_label(
+                        super::CAUTION,
+                        format!(
+                            "{} trig(s) carry a condition past the end of the A4's mapped TRC \
+                             menu — they came in without one, and the menu needs re-measuring.",
+                            report.conditions_off_the_menu
+                        ),
+                    );
+                }
                 // The answer to "why did nothing change in the roll" — the same
                 // line the gen-2 arm draws.
                 let playing = session.slot_in_scene(session.current_scene, id);

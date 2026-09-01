@@ -3060,8 +3060,16 @@ dialog). Screenshots of the running panel with three live boxes: the A4's rows
 sit between the digis' with the same pickers, and its send button reads "Write
 back to A01 · 2 tracks > A01" off provenance.
 
-**What no test here can claim: the box.** No A4 write has gone through the new
-path on hardware. Its pieces have (the round trip and the `0x64` read-back of a
+**Closed on 2026-09-01: the box.** A full round trip ran through the panels —
+fetch DT2 A01 (11 notes, 4 tracks) and A4 A01 (39 notes, 2 tracks), edit SYN4's
+notes in the roll, write back — and the verify line read "Wrote 39 notes to 2
+tracks of A01 — verified byte-identical", with the pre-write backup at
+`analogfour-A01-backup-2026-09-01T16-04-17.syx`. So the DIN-paced send, the
+settle before the verify re-read, and the per-family backup framing all hold on
+a cable, and the paragraph below is what was owed before that run.
+
+**What no test here could claim, before that run: the box.** No A4 write had
+gone through the new path on hardware. Its pieces have (the round trip and the `0x64` read-back of a
 written slot, above) — that is why `0195` is in the allowlist — but the full
 cycle as one flow, and the settle between the DIN-paced send and the verify
 re-read, meet an A4 for the first time on the first press. The verify is the
@@ -3069,6 +3077,409 @@ net: a send the box ignored comes back as a loud byte-diff failure with the
 backup named, not as a quiet "sent". On Windows that is the *expected* outcome —
 `CAN_PACE` is false there, the send collapses to the one unpaced call that has
 never worked, and the verify will say so.
+
+### Six lanes get names — 2026-09-01, 132 patterns off the project stream
+
+**The A4 import was honest about a real hole: velocity and length arrived at
+this app's defaults, and the CAUTION line said so on every A4 fetch.** Closing
+it needs the per-step lanes named, and the evidence that names six of the nine
+came from a capture set nobody had mined — the 128 patterns the `0x60` project
+stream returned on 2026-08-31, saved under `local/a4-check/dump-probe/`. That is
+132 patterns and **5,307 live trigs** against the nine fixtures' 18
+track-instances, and it is free: already on disk, no box, no knob.
+
+Two measurements did the work.
+
+**One — lane alignment.** For each candidate base, count the non-fill bytes that
+land on a step with a trig against those that land on a bare step. A lane
+aligned to the trig lane scores almost everything on trigs; a base one byte off
+smears across both. The margins are not close:
+
+```text
+   base 456  478 on trigs / 2181 not      base 460  137 / 942
+   base 457  371 / 1500                   base 461  297 / 1574
+   base 458  281 /  804                   base 462  371 / 2288
+   base 459  280 /   15   <-- the lane
+```
+
+That settles the shape of `+459`, which this table recorded as "64 bytes of
+`FF`" — a claim built on nine captures that happened to have nothing in it. It
+is a per-step lane like the rest, set on 280 trigs. The same scan confirms
+`+320`, `+384`, `+532`, `+596` and `+660` on their documented bases, and shows
+`+384` is `FF` on all 5,307 trigs: nothing in this project has ever written it.
+
+**Two — the per-track default block at `+448`.** Its 11 bytes read
+`30 64 0e 00 00 00 10 00 00 00 01`, and byte 0 was already known to be the
+default note. Take the mode of each lane's set values, per track, across 792
+track-instances, and ask which default it matches:
+
+| lane | matches default | and no other |
+|---|---|---|
+| `+128` note | 0 — 44 times | yes |
+| `+192` | 1 — 129 times | yes |
+| `+256` | 2 — 48 times | yes |
+
+Default 1 is `0x64` in **784 of those 792 track-instances**: 100, the velocity
+Elektron ships. (This paragraph said *every* one of the 792 for a few hours, off
+the top of a histogram rather than its tail. The other eight are a per-track
+default somebody turned — `0x6e`, `0x7f`, `0x68`, and one `0xFF`, which is a
+default that is itself unset and which `resolve` now has a case for. The pairing
+argument never needed the stronger claim, and A07 on the box is one of the
+eight.) Default 2 is `0x0e` in all but one. So the block is the
+track's trig defaults in lane order — note, velocity, length — and the lanes at
+`+192` and `+256` are velocity and length. The value ranges agree from the other
+side: `+192` never exceeds `0x7f` in 3,959 set bytes and peaks at `0x64` (2,626)
+then `0x7f` (646); `+256` clusters on short values with `0x0e` the mode and
+`0x7f` a distinct spike of 139, which is what an INF entry at the top of a
+length menu looks like.
+
+Three more names come from a structural argument rather than a correlation.
+`+532`, `+596` and `+660` hold note-range values, they are set on 167, 58 and 2
+trigs, and **they nest**: only twice in 5,307 trigs is a later one set without
+its predecessor. Independent fields do not nest. They are notes 2, 3 and 4 of a
+trig — which this app currently drops on the floor, silently, on any A4 pattern
+with a chord in it.
+
+**What is still unnamed, and why the box has to say.** `+384` (never written in
+this project) and `+459` (280 trigs, values clustered under `0x14` with
+occasional larger ones). The A4's per-trig **condition is one of those two**:
+unlike the digis, which spend three lanes on COND, FILL and PROB, the A4 puts
+probability and trig condition on a single knob, so it is one enum and it fits
+in one lane. A correlation cannot say which lane, cannot order the enum, and
+cannot say what a `0x0e` length *sounds* like. Only the front panel can.
+
+`a4_pattern::LANES` is this table as data, with `LaneEvidence` on each entry —
+`Hardware` for the note lane, `Correlated` for the six named here, `Shape` for
+the two that are not. `describe_offset` refuses to print a name for a `Shape`
+lane, and a test enforces that: a diff that labelled `+459` "condition" would be
+the model deciding the experiment before the box was asked, which is precisely
+how the three refuted trig models happened.
+
+### The knob protocol — what the box is being asked, and how
+
+`examples/a4_lane_probe` makes each measurement one line of output. It polls the
+**working** pattern (`0x6a`, reply `0x5a`, 12,974 bytes in the same layout) and
+prints a named diff whenever a byte moves. Two properties make it the right
+instrument:
+
+- **It is read-only and needs no save.** `0x64` reads a stored slot, so mapping
+  a field that way costs a save per measurement — and a save is the one step
+  that can lose somebody's work. The edit buffer answers immediately: the
+  2026-08-31 sweep got A01's 32 saved trigs *plus two the box had not saved*.
+- **It names the lane, not the field.** The line is `SYN1 step 3 lane +459
+  (UNNAMED): ff -> 06`. What was turned is the knob; what it wrote is the lane;
+  nothing in the tool decides which is which.
+
+The run, on A16 so nothing musical is at risk:
+
+1. `cargo run -p digi_roll_studio --example a4_lane_probe -- --save local/a4-check/lanes`
+2. Trigs on SYN1 steps 1-8. Then, one at a time, holding the trig:
+   **step 1 VEL to minimum, step 2 VEL to maximum** — pins the velocity range
+   and its ends against `+192`.
+   **step 3 LEN to its shortest, step 4 LEN to INF** — pins the unit and the INF
+   byte against `+256`, which is the one thing no capture can supply.
+   **step 5 micro timing hard left, step 6 hard right** — pins the sign and the
+   range of `+320`.
+   **step 7 to 1% probability, then walk it: 50%, 99%, FILL, the inverse FILL,
+   PRE, NEI, 1ST, LST, 1:2, 2:2** — every stop prints its own byte, and that
+   list *is* the enum in the box's own order. Whichever lane the first turn
+   writes is the condition lane, and the other of `+384`/`+459` stays nameless.
+3. Anything left over: RETRIG on step 8, and a chord held on step 1, which
+   should light `+532` and confirm the nesting argument from the write side.
+
+Every captured payload lands in `local/a4-check/lanes/` as a `.syx`, so the
+session leaves behind the fixtures the tests will need and no measurement has to
+be repeated to be committed.
+
+### The knobs answer — 2026-09-01, A4 0195
+
+**Four lanes are hardware-measured now, and the condition lane is the one the
+correlation had backwards.** Neil ran the probe against A16 and isolated one
+field per step on SYN4; the fixture `analogfour-A16-lanes-2026-09-01.syx` is the
+final state of that session and every byte in it is one turn of one knob.
+
+| step | knob | lane | bytes |
+|---|---|---|---|
+| 1, 2 | VEL, min then max | `+192` | `0x01`, `0x7f` |
+| 3, 4 | LEN, shortest then top | `+256` | `0x00`, `0x7f` |
+| 5, 6 | micro timing, both ends | `+320` | `0xe9` (-23), `0x17` (+23) |
+| 7 | TRC | **`+384`** | walked `0x00`-`0x1f` |
+
+So velocity is 1-127 with a floor of **one, not zero**; length is 0-127 from
+zero; micro timing is signed ±23, exactly Elektron's range, in a lane that
+clears to zero rather than `FF` — so it has no "unset" and needs no fallback.
+
+**The condition is `+384`.** That is the lane which is `FF` on all 5,307 trigs
+of the project stream, and the value-distribution argument had therefore made it
+the *less* likely of the two candidates: `+459` looked far more like a used
+field. It was a good argument and it was wrong, which is the fourth time on this
+format that a correlation nobody had put in front of the box pointed the wrong
+way (DEVELOPMENT.md lessons 14, 16, 17). `+459` is still nameless and still set
+on 280 trigs somewhere in this project — a real field with no knob found for it.
+
+**What the walk does not give: the menu.** The bytes are an index into the TRC
+list and the walk covered `0x00`-`0x1f`, but nobody recorded which label was on
+the screen at which stop, so the byte-to-condition table is unmapped and
+`CONDITION_SEEN_MAX` is where a hand stopped rather than where the menu ends.
+Three things are known about the list from the box itself: it is one knob, so
+probability and condition are one enum — the digis spend three lanes on COND,
+FILL and PROB and this format spends one — and **there is no `LST`**, so
+`conditions.rs`'s 76-entry gen-2 table is not this menu with entries missing,
+it is a different menu. Whatever maps between them is a real translation, not a
+subset.
+
+**Two corrections the session forced.**
+
+- **The working reply's index is the loaded slot.** The 2026-08-31 sweep read
+  every `0x6a` reply back as index 0 and recorded "the box stamps zero" — but
+  A01 was loaded, and A01 *is* slot 0. With A16 loaded every reply came back
+  stamped 15. The request index is ignored; the reply index tells you which
+  pattern the box is sitting on, which is how a session can notice somebody
+  changed pattern under it.
+- **Byte 4 of the default block is not the track's default condition**, or at
+  least not on the evidence available. It moved `00 -> ff -> 00` with no trig
+  held, which is exactly what a track-level default does — but it reads `0x00`
+  on a cleared track, and a box does not ship every track defaulted to menu
+  entry zero. One of those two readings is wrong. Recorded, not acted on: an
+  unset condition byte means *no condition*, and there is deliberately no
+  `effective_condition` to invent one.
+
+**And a name that has to come off.** `+532`/`+596`/`+660` were called notes 2-4
+of a chord from the nesting argument. The A4 is not polyphonic — chords come
+from the ARP menu, and NO2/NO3/NO4 are its p-lockable note parameters. The
+nesting is still real and still says these three lanes are one ordered group,
+but "chord notes" was this app's word for it, not the box's.
+
+### The second session — the length scale, the arp, and what retrig is not
+
+**The A4 shares the digis' note-length scale, and two screen readings proved
+it.** `0x00` shows `.125`, and the value below `INF` shows `128`. Those are the
+two ends of the gen-2 curve `pattern::length_byte_to_steps` already ports from
+libanalogrytm — piecewise linear, doubling every 16 values — and this format's
+own per-track default falls on its third anchor: `0x0e`, which that curve puts
+at exactly one step, is the default length in every A4 capture we hold. So an A4
+length byte means on this box what it means on a Digitakt II, no table of its
+own and no conversion at the boundary. `0x7f` is `INF`, which is why
+`LENGTH_LONGEST_FINITE` exists separately: a clamp cannot target infinity.
+
+**`+532`/`+596`/`+660` are the ARP menu's NO2/NO3/NO4, per trig.** Turned on
+held trigs of SYN1, SYN3 and SYN4 and lit in that order. They had been called
+"chord notes 2-4", from the nesting correlation — right about the shape, wrong
+about the field, because the A4 is monophonic per track and its chords come from
+the arpeggiator. The unit is still open: a fresh one takes `0x40` first, which
+reads like the centre of an offset range rather than a note, and no screen was
+read at that moment.
+
+**There is no retrig on the A4.** The first guess for the last unnamed lane was
+retrig; the box does not have it, and neither the DT2 nor the DN2 path in this
+app carries retrig either, so nothing is owed on that side. `+459` is set on 280
+trigs of the project stream and still has no knob — a real field with no name,
+and the honest state of it is `LaneEvidence::Shape`.
+
+**Two more things the second session recorded, neither acted on yet.**
+
+- **Re-adding a trig clears its condition.** The box was watched removing the
+  trig on step 7 (condition survived, at `0x1f`) and putting it back
+  (condition went to `FF` in the same frame). `set_note_trig` here does not do
+  that, so an authored trig landing on a step that once had a condition would
+  inherit it where the box would not — a fidelity difference the write path has
+  to decide on, not a primitive's business.
+- **The second TRC sweep reached `0x40`**, where the first stopped at `0x1f`.
+  Which is the argument for `CONDITION_SEEN_MAX` being documented as a ceiling
+  somebody's hand stopped at rather than the length of the menu — the first
+  sweep would have supported a 32-entry table, and it would have been wrong.
+
+**And the menu is still the one thing outstanding.** Both sweeps recorded bytes;
+neither recorded the label on the screen at each stop, so there is no
+byte-to-condition table. Until there is, this crate can carry an A4 condition
+through a round trip byte-exactly and cannot render one, name one, or translate
+one to a digi's — and it says so rather than guessing.
+
+### Three of the four fields now travel — 2026-09-01
+
+**Velocity, length and micro timing go both ways, and the CAUTION line is
+gone.** The import reads each lane, resolves an unset one through the track
+default the way the note lane already did, and decodes it with the *gen-2*
+codecs — `length_byte_to_steps`, `micro_byte_to_steps` — because the A4 shares
+those encodings. The export runs the same functions backwards into a new
+`A4Step`, which is what `A4TrackWrite::steps` now carries instead of a bare
+pitch.
+
+A01 is the test: its SYN1 was played in rather than stepped in, so it arrives at
+velocity 127 with 25 notes at 1.8125 steps and seven at 1.75 — a phrase whose
+note lengths *vary*, which is what a recorded take looks like and what a
+1.0-for-everything import could never show.
+
+**The trig condition is deliberately not carried, and that is what protects
+it.** The lane is mapped; the menu behind it is not, so there is nothing to
+render. The write therefore leaves those bytes alone, and because it composes
+onto a freshly re-fetched destination, every condition on the box survives a
+round trip untouched. **The box itself would not do that** — it zeroes a step's
+condition when a trig is re-added there, watched on 2026-09-01 — and matching it
+would be more faithful and strictly worse: this app can neither show the value
+beforehand nor put it back after. The cost of not matching is narrow and
+recorded: a newly authored trig on a step that once had a condition inherits it.
+
+So the panel's caution line changed rather than vanished. It now appears only
+when the pattern actually has conditions on it, counts them, and says both
+halves — that they cannot be shown, and that writing back leaves them alone. A
+line that said only the first half would read as damage.
+
+Six new tests hold the two edges that matter: that a write lands in all four
+lanes including their ends (velocity 1 is not velocity 0, micro timing is
+signed), and that a write leaves the conditions and arp notes already on the
+box. The containment test spells its allowed ranges out by hand rather than
+deriving them from `LANES` — a test that took its expectation from the table
+under test would follow that table into the condition lane, which is the thing
+it exists to keep the writer out of.
+
+### The TRC menu, from four labels — 2026-09-01, A4 0195
+
+**The condition table is mapped, and four labels were enough because they
+over-determine it.** Neil described the front panel first: from a trig with no
+lock the knob lands on `100`, turning left walks down the percentages to `1%` at
+the far left, turning right goes to `FILL` and on to `8:8` at the far right.
+Then he set four trigs of A16 SYN1 to named values, and the probe read the
+bytes:
+
+```text
+   step 1    1%     0x00
+   step 5    75%    0x0d
+   step 9    FILL   0x16
+   step 13   8:8    0x40
+```
+
+Three separate things fall out, and each one could have contradicted the others:
+
+- **`FILL` at `0x16` puts exactly 22 entries before it**, and Elektron's
+  probability ladder is 22 values long. So the percentages are `0x00`-`0x15`,
+  and `100%` — the value the knob lands on first — is `0x15`, immediately before
+  `FILL`. That is the front panel's own description, reached from the byte end.
+- **`75%` at `0x0d` is index 13**, and 75 is the fourteenth rung of that same
+  ladder. A different ladder would have had to put 75 in the same place by
+  coincidence.
+- **`8:8` at `0x40` is index 64**, which only lands if the ratios carry **no
+  negations**. With the digis' `!A:B` interleaved the menu would run to 97.
+
+So the A4's TRC menu is 65 entries: 22 percentages, then `FILL`/`!FILL`,
+`PRE`/`!PRE`, `NEI`/`!NEI`, `1ST`/`!1ST`, then 35 ratios from `1:2` to `8:8`.
+`digi_protocol::a4_conditions` is the codec.
+
+**It differs from the digis' menu in three ways at once**, which is why it is a
+second module rather than a table added to `conditions.rs`:
+
+| | digis | A4 |
+|---|---|---|
+| PROB | its own lane, 1-100 | *inside* the menu, 22 rungs |
+| FILL | its own lane, ON/OFF | *inside* the menu |
+| `LST`/`!LST` | present | **absent** |
+| `!A:B` | present, 33 of them | **absent** |
+| entries | 76 | 65 |
+
+A gen-2 trig can set PROB *and* FILL *and* COND; an A4 trig holds one of the
+three. So the translation loses in named ways and says which: a probability off
+the ladder rounds to the nearest rung, an `LST` or a negated ratio has no
+equivalent and is dropped, and a trig with more than one field set keeps the
+one that most specifically names *when* it fires — COND, then FILL, then PROB.
+
+**And the write path reversed itself, deliberately.** For the few hours between
+`+384` being named and its menu being read, `a4_safe_write_tracks` left the
+condition lane alone: a value this app could not display would have been
+destroyed on every press, with no way to see it first or restore it after. Once
+a condition could survive a round trip, leaving it alone became the lossy
+choice instead — a condition removed in the roll would come straight back off
+the box. The test that asserted the old behaviour now asserts the new one and
+carries the reason both were right in turn. The ARP note lanes are the case that
+kept the old answer: named, mapped, and still uncarried, because the model has
+nowhere to put them.
+
+**What is fitted rather than measured.** Four labels are hardware; the other 61
+are arithmetic from them plus a percentage ladder taken from Elektron's other
+boxes. The three structural facts above do not depend on that ladder — but
+`41%` at `0x09` and `PRE` at `0x18` are predictions, and if a reading ever
+disagrees it is the percentages that move.
+
+### Parity, verified on the box — 2026-09-01, A4 0195
+
+**A pattern built in the studio arrived on the A4 with every mapped field
+intact, and a pattern read off the box went back unchanged in everything this
+app does not carry.** Two write-backs, and between them they close the parity
+claim.
+
+**One — a studio pattern onto A01.** Ten notes, written and verified
+byte-identical, then read back through `a4_lane_probe --slot 0` in the box's own
+units:
+
+```text
+   step  note      VEL        LEN            micro     TRC
+      1  A#4      127  (0x7f)         1  (0x0e)   +0     -
+      9  A#4      109  (0x6d)    1.5625  (0x17)   +0     -
+     13  B4        50  (0x32)         1  (0x0e)   -3     -
+     15  C5       109  (0x6d)         1  (0x0e)   +0     75% (0x0d)
+     31  C5       109  (0x6d)         1  (0x0e)   +0     1:2 (0x1e)
+```
+
+Per-note velocity, per-note length, micro timing and both kinds of condition, on
+a pattern the box had never seen. The trig that carried both a PROB and a COND
+came through as the COND with the write's warning naming the loss, which is the
+one-of-three rule working on hardware.
+
+**And the front panel confirmed a fitted label.** Step 31 reads `1:2` on the
+box. `0x1e` is not one of the four anchors — it is where the arithmetic put the
+first ratio — so the box agreeing is an independent check of the derived half of
+the table, in the direction that matters: this app chose the byte and the box
+named it. Step 15's `75%` is the control, and it reads `75%`.
+
+**Two — A07 read off the box and written straight back.** A07 is the pattern
+that uses `+459`, the lane nobody has a name for, on 20 trigs. Fifty-six of
+12,974 bytes moved:
+
+```text
+   36  SYN1 length     FF -> 0x0e
+   20  SYN1 velocity   FF -> 0x6e
+   +459, arp notes 2-4, the condition lane, the whole p-lock pool: unchanged
+```
+
+Every byte that moved is the `FF`-to-explicit conversion, and nothing else moved
+at all. So the read-modify-write bargain holds on hardware for four lanes this
+app cannot read and an 8.4 KB pool it cannot write — which is the case where a
+bug would have been silent and destructive.
+
+**The `FF`-to-explicit conversion is real and is the cost of the model.** A
+per-step lane reading `FF` means "follow the track default"; `Note::velocity` is
+a `u8` with no way to say "unset", so a write states every lane. Those 56 trigs
+sound identical today and no longer track the default if somebody turns it on
+the box. Deliberate, and worth a person knowing before they write back a pattern
+they did not build here.
+
+**Two losses found by testing rather than by reading, one fixed.**
+
+- **A trigless trig used to be deleted by a write-back.** A01 SYN1 step 33 is
+  one; this model holds notes, so an import counts trigless trigs rather than
+  carrying them, and the roll had nothing on screen to show. A write-back
+  cleared it silently. **A user cannot intend to remove something they were
+  never shown** — the same reasoning that kept the condition lane alone while
+  its menu was unmapped — so a write now leaves a trigless trig where it finds
+  one, and still deletes a note trig on a step the roll shows as empty, because
+  that one *was* on screen.
+- **A cross-slot copy does not carry the unmapped lanes.** "A07 to B01" composes
+  onto B01, so the result has B01's p-locks, arp notes and `+459`. Same-slot
+  write-back preserves them; a copy cannot. Inherent to the design rather than a
+  bug, and it will surprise somebody.
+
+### What the p-lock writer still needs — 2026-09-01
+
+Two blockers were on record and one of them is still open. **Whether the box
+*requires* the compacted `(param_id, track)` order it produces** is unmeasured;
+that it produces that order is not in doubt. A pool written in another order is
+a guess delivered to hardware, which is why there is no writer yet.
+
+Caught free while the probe was watching A16 being cleared: **the box frees a
+lane by writing `FF FF` into both id bytes and zeroing all 64 values**, not by
+filling them with `NO_VALUE`. An extension lane (`80 80`) sitting between two
+used lanes is freed the same way. That is the third thing a writer needs, and it
+is the opposite of what this format's two opposite fills would lead anyone to
+guess.
 
 ### 10.5 What saving a kit will cost, when it comes
 
