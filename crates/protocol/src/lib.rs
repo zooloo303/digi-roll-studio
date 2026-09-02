@@ -2,6 +2,7 @@
 pub mod sevenbit;
 pub mod protocol;
 pub mod a4_conditions;
+pub mod a4_kit;
 pub mod a4_pattern;
 pub mod a4_plocks;
 pub mod backup_stash;

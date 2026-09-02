@@ -108,17 +108,32 @@ pub fn now_unix_seconds() -> i64 {
 /// call this rather than building the struct by hand, so a MIDI track and an
 /// unnamed track get the same treatment whichever path fetched them.
 pub fn patch_for_track(kit: &PatternKit, track_index: usize, from: &Source, seen_at: i64) -> TrackPatch {
-    let sound = match kit_track_name(kit, track_index) {
-        KitTrackName::Midi => PatchSound::Midi,
-        KitTrackName::Sound(name) => PatchSound::Named(name.to_owned()),
-        KitTrackName::Unnamed => PatchSound::Unnamed,
-    };
     TrackPatch {
-        sound,
+        sound: patch_sound_for_track(kit, track_index),
         kit_name: kit.kit.name.clone(),
         kit_index: kit.kit_index,
         from: from.clone(),
         seen_at,
+        // A gen-2 read always names a stored slot; there is no edit-buffer
+        // request in that protocol to set this. See `TrackPatch::live`.
+        live: false,
+    }
+}
+
+/// Just the sound half of [`patch_for_track`].
+///
+/// Split out 2026-09-01 so the gen-1 path can reach the same three answers
+/// without a [`PatternKit`] to hand — the A4 has no gen-2 `Spec` to decode one
+/// with, and `a4_transfer::a4_patch_sounds` builds this enum straight off the
+/// kit dump instead. Everything downstream of here — the record's shape, the
+/// tooltip's wording, the staleness rule — is then shared rather than written
+/// twice, which is the whole reason `Session::apply_patch_sounds` takes a slice
+/// of these rather than a kit.
+pub fn patch_sound_for_track(kit: &PatternKit, track_index: usize) -> PatchSound {
+    match kit_track_name(kit, track_index) {
+        KitTrackName::Midi => PatchSound::Midi,
+        KitTrackName::Sound(name) => PatchSound::Named(name.to_owned()),
+        KitTrackName::Unnamed => PatchSound::Unnamed,
     }
 }
 
@@ -526,19 +541,71 @@ impl Session {
         from: &Source,
         seen_at: i64,
     ) -> Result<usize, PatchReadError> {
+        let sounds: Vec<PatchSound> =
+            (0..kit.tracks.len()).map(|t| patch_sound_for_track(kit, t)).collect();
+        self.apply_patch_sounds(
+            device,
+            at,
+            &sounds,
+            &kit.kit.name,
+            kit.kit_index,
+            from,
+            seen_at,
+            false,
+        )
+    }
+
+    /// The same write, from sounds already resolved rather than from a gen-2
+    /// [`PatternKit`].
+    ///
+    /// **The generation-free half of [`Session::apply_patch_read`]**, split out
+    /// 2026-09-01 when the Analog Four gained a patch-names read. That box has
+    /// no `Spec` and so no `PatternKit`; what it has is a 2,410-byte kit dump
+    /// carrying four sounds (`protocol::a4_kit`), which `a4_transfer` turns into
+    /// this slice. Everything a patch record means — one per track, written
+    /// wholesale or not at all, touching `Track.patch` and nothing else — is
+    /// decided here once for both boxes.
+    ///
+    /// `sounds` must be exactly the model's track count long. That is the same
+    /// refusal the kit-shaped entry point makes, moved to where both paths pass
+    /// through it: a short slice would leave the tail of the tracks carrying a
+    /// record from an older read, silently, which is worse than not reading.
+    ///
+    /// `live` says the names came off the box's **edit buffer** rather than a
+    /// stored slot — see [`crate::model::TrackPatch::live`]. Only the A4's
+    /// `0x68` read sets it, and when it does, `from` names the session slot the
+    /// records land on and nothing about where they were read.
+    pub fn apply_patch_sounds(
+        &mut self,
+        device: DeviceId,
+        at: PatternRef,
+        sounds: &[PatchSound],
+        kit_name: &str,
+        kit_index: u8,
+        from: &Source,
+        seen_at: i64,
+        live: bool,
+    ) -> Result<usize, PatchReadError> {
         let model = self.device(device).ok_or(PatchReadError::NoSuchDevice(device))?.model;
-        if kit.tracks.len() != model.num_tracks {
+        if sounds.len() != model.num_tracks {
             return Err(PatchReadError::TrackCountMismatch {
                 expected: model.num_tracks,
-                found: kit.tracks.len(),
+                found: sounds.len(),
             });
         }
         let d = self.device_mut(device).expect("checked just above");
         let pattern =
             d.pattern_mut(at.slot()).ok_or(PatchReadError::NoSuchSlot { device, slot: at })?;
-        for t in 0..model.num_tracks {
+        for (t, sound) in sounds.iter().enumerate() {
             let track = pattern.track_mut(t).expect("checked against this model's track count");
-            track.patch = Some(patch_for_track(kit, t, from, seen_at));
+            track.patch = Some(TrackPatch {
+                sound: sound.clone(),
+                kit_name: kit_name.to_owned(),
+                kit_index,
+                from: from.clone(),
+                seen_at,
+                live,
+            });
         }
         Ok(model.num_tracks)
     }

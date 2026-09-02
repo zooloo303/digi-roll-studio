@@ -405,69 +405,97 @@ pub static A4_PARAMS: &[Param] = &[
     Param {
         name: "filter.cutoff", label: "FLTR1 FREQ", short: "CUTOFF", bipolar: false,
         midi: MidiMap { cc: Some(18), cc_lsb: Some(50), nrpn: Some((1, 40)) },
-        plock: None,
+        // Measured 2026-09-01: screen 0..=127 across coarse 0..=127.
+        plock: Some(scaled_plock(0x22, 256)),
     },
     Param {
         name: "filter.resonance", label: "FLTR1 RESO", short: "RESO", bipolar: false,
         midi: MidiMap { cc: Some(89), cc_lsb: None, nrpn: Some((1, 41)) },
-        plock: None,
+        // Measured 2026-09-01: screen 0..=127 across coarse 0..=127.
+        plock: Some(scaled_plock(0x23, 256)),
     },
     Param {
         name: "filter.envDepth", label: "FLTR1 ENV DEPTH", short: "ENV D", bipolar: true,
         midi: MidiMap { cc: Some(102), cc_lsb: None, nrpn: Some((1, 44)) },
-        plock: None,
+        // Measured 2026-09-01: the box's screen reads -64..=63 across coarse
+        // 0..=127 — bipolar, as the appendix says. **No offset in the scaling**:
+        // this app's display axis is the raw byte on every box (`Param::describe`
+        // gives every curated parameter MIDI_MIN..MIDI_MAX), and a DT2's own
+        // ENV DEPTH screen reads -64..+63 against `scaled_plock(46, 256)` too.
+        plock: Some(scaled_plock(0x26, 256)),
     },
     Param {
         name: "amp.pan", label: "PAN", short: "PAN", bipolar: true,
         midi: MidiMap { cc: Some(10), cc_lsb: None, nrpn: Some((1, 58)) },
-        plock: None,
+        // Measured 2026-09-01: the screen reads L64..CEN..R63 across coarse
+        // 0..=127. Bipolar, and no offset in the scaling for the reason
+        // `filter.envDepth` gives.
+        plock: Some(scaled_plock(0x30, 256)),
     },
     // No CC at all — the appendix's CC column is blank for overdrive, keytrack
     // and filter2's type, so NRPN is the only way to hear this one.
     Param {
         name: "fx.overdrive", label: "FLTR OVERDRIVE", short: "DRIVE", bipolar: true,
         midi: MidiMap { cc: None, cc_lsb: None, nrpn: Some((1, 42)) },
-        plock: None,
+        // Measured 2026-09-01, and the run was set up expecting this flag to be
+        // *wrong*: the appendix says bipolar and the box agreed, -64..=63 across
+        // coarse 0..=127. See `filter.envDepth` for why that is still no offset.
+        plock: Some(scaled_plock(0x24, 256)),
     },
     Param {
         name: "fx.delaySend", label: "DELAY SEND", short: "DELAY", bipolar: false,
         midi: MidiMap { cc: Some(92), cc_lsb: None, nrpn: Some((1, 56)) },
-        plock: None,
+        // Measured 2026-09-01: screen OFF..=127 across coarse 0..=127.
+        plock: Some(scaled_plock(0x2e, 256)),
     },
     Param {
         name: "fx.reverbSend", label: "REVERB SEND", short: "REVERB", bipolar: false,
         midi: MidiMap { cc: Some(93), cc_lsb: None, nrpn: Some((1, 57)) },
-        plock: None,
+        // Measured 2026-09-01: screen OFF..=127 across coarse 0..=127.
+        plock: Some(scaled_plock(0x2f, 256)),
     },
     Param {
         name: "fx.chorusSend", label: "CHORUS SEND", short: "CHORUS", bipolar: false,
         midi: MidiMap { cc: Some(91), cc_lsb: None, nrpn: Some((1, 55)) },
-        plock: None,
+        // Measured 2026-09-01: screen OFF..=127 across coarse 0..=127. It took
+        // three runs, and the last two failures were the probe's rather than the
+        // box's — see PLAN.md for both, and for the rule they produced: a knob
+        // already sitting at the end-stop being asked for allocates no lane and
+        // moves no byte, so it has to be nudged off it first.
+        plock: Some(scaled_plock(0x2d, 256)),
     },
     Param {
         name: "lfo1.depth", label: "LFO1 DEPTH A", short: "LFO1", bipolar: true,
         midi: MidiMap { cc: Some(24), cc_lsb: Some(56), nrpn: Some((1, 87)) },
-        plock: None,
+        // Measured 2026-09-01: coarse 0..=127 across a screen of -128..=127, so
+        // the box shows **two display units per coarse count** and this app
+        // addresses every other one. Not a defect and not new — the digis' own
+        // LFO depths have the same screen and the same `scaled_plock(_, 256)`.
+        plock: Some(scaled_plock(0x5c, 256)),
     },
     Param {
         name: "lfo2.depth", label: "LFO2 DEPTH A", short: "LFO2", bipolar: true,
         midi: MidiMap { cc: Some(26), cc_lsb: Some(58), nrpn: Some((1, 97)) },
-        plock: None,
+        // As `lfo1.depth` — coarse 0..=127, screen -128..=127.
+        plock: Some(scaled_plock(0x5e, 256)),
     },
     Param {
         name: "osc1.level", label: "OSC1 LEVEL", short: "OSC1", bipolar: false,
         midi: MidiMap { cc: Some(69), cc_lsb: None, nrpn: Some((1, 4)) },
-        plock: None,
+        // Measured 2026-09-01: screen 0..=127 across coarse 0..=127.
+        plock: Some(scaled_plock(0x06, 256)),
     },
     Param {
         name: "osc2.level", label: "OSC2 LEVEL", short: "OSC2", bipolar: false,
         midi: MidiMap { cc: Some(78), cc_lsb: None, nrpn: Some((1, 24)) },
-        plock: None,
+        // Measured 2026-09-01: screen 0..=127 across coarse 0..=127.
+        plock: Some(scaled_plock(0x07, 256)),
     },
     Param {
         name: "amp.volume", label: "AMP VOLUME", short: "VOL", bipolar: false,
         midi: MidiMap { cc: Some(7), cc_lsb: None, nrpn: Some((1, 59)) },
-        plock: None,
+        // Measured 2026-09-01: screen 0..=127 across coarse 0..=127.
+        plock: Some(scaled_plock(0x31, 256)),
     },
 ];
 
@@ -751,6 +779,25 @@ pub fn param_table_for(kind: &str) -> &'static [Param] {
     }
 }
 
+/// **Does a bare `param_id` say which parameter a lane automates?**
+///
+/// True on the digis and **false on the Analog Four**, where the id space is per
+/// *track kind*: measured 2026-09-01, an FX-track lock landed on `0x1a` and
+/// `0x29`, both of which name synth parameters in [`A4_SYNTH_PLOCKS`]. A
+/// `PLockLane` does not carry its track, so on that box an id alone is not
+/// evidence — and once [`A4_PARAMS`] gained measured `plock` ids on 2026-09-01,
+/// letting [`param_by_plock_id`] answer for an A4 lane would have made every
+/// FX-track lane on `0x22` resolve to `filter.cutoff`: curated, editable, drawn
+/// on the 0..127 axis instead of the raw one, and **written back as a corrupted
+/// FX lane**. That is the concrete bug this function exists to prevent.
+///
+/// The import knows the track kind (`a4_transfer::a4_lane_to_model`) and records
+/// the answer as the lane's canonical `name`. Name is admissible evidence on
+/// every box; id is admissible on all but this one.
+pub fn plock_id_identifies_parameter(kind: &str) -> bool {
+    kind != "A4"
+}
+
 /// The `'static` spelling of a device kind, or `None` for one with no table.
 ///
 /// [`param_table_for`] takes any `&str` and answers with an empty table, but
@@ -920,7 +967,19 @@ pub fn describe_param(
     if let Some(p) = curated_param(table, name, param_id) {
         return p.describe(device_kind);
     }
+    raw_param_desc(param_id, device_kind)
+}
 
+/// The descriptor a lane gets when it matched nothing in a curated table: drawn
+/// over the whole uint16 range, never auditioned, and passed through byte-exact.
+///
+/// Split out of [`describe_param`] on 2026-09-01 so a caller that resolves
+/// curation on its own terms can still land on *this* descriptor rather than
+/// building a second one. `PLockLane::param` is that caller: on the A4 it
+/// refuses to curate from a bare id (see [`plock_id_identifies_parameter`]) and
+/// then needs exactly the fallback below — including the hex stand-in, which is
+/// the only thing a person can act on for a lane nothing has named.
+pub fn raw_param_desc(param_id: Option<u16>, device_kind: Option<&'static str>) -> ParamDesc {
     let hex = match param_id {
         Some(id) => format!("0x{id:02x}"),
         None => "??".to_string(),
@@ -1071,12 +1130,14 @@ lfo3.depth|LFO3 DEPTH|LFO3|true|||[1,72]|31|256|0|127|1|true|true"
             assert_eq!(auditable_params_for(kind).len(), 11, "{kind}");
             assert_eq!(writable_params_for(kind).len(), 11, "{kind}");
         }
-        // The A4's thirteen are chart-only — hearable, none of them measured,
-        // so none writable. The day a paramId is captured on the box, this
-        // count is the assertion to move.
+        // **All thirteen of the A4's are hearable and all thirteen are
+        // writable**, closed 2026-09-01 — the box now stands with the digis
+        // rather than beside them. This said "none writable" that morning;
+        // `a4_scale_probe` read every scaling off the box against its own
+        // screen, four runs, one knob at a time.
         assert_eq!(param_table_for("A4").len(), 13);
         assert_eq!(auditable_params_for("A4").len(), 13);
-        assert_eq!(writable_params_for("A4").len(), 0, "no A4 paramId has ever been measured");
+        assert_eq!(writable_params_for("A4").len(), 13);
         assert!(any_writable_params());
     }
 
@@ -1440,12 +1501,45 @@ lfo3.depth|LFO3 DEPTH|LFO3|true|||[1,72]|31|256|0|127|1|true|true"
         assert_eq!(a4_synth_plock_full_label(0x5e).unwrap(), "LFO2 DEP1");
     }
 
-    /// **These are ids, not scalings**, and [`A4_PARAMS`] must stay unable to
-    /// write one. Every entry there is still `plock: None` because what a stored
-    /// word means on screen is a second measurement that only OSC TUNE has had.
+    /// **These are ids, not scalings**, and the two are still measured
+    /// separately — which is why [`A4_SYNTH_PLOCKS`] has 92 entries and
+    /// [`A4_PARAMS`] has five writable ones.
+    ///
+    /// This asserted that naming a parameter made *none* of them writable.
+    /// Five scalings were then read off the box (`a4_scale_probe`, 2026-09-01),
+    /// so the rule it protects has to be stated the other way round: an id in
+    /// this table does **not** put a `plock` on a `Param`, and the 87 ids with
+    /// no measured scaling are still unwritable.
     #[test]
-    fn naming_a_parameter_did_not_make_it_writable() {
-        assert_eq!(writable_params_for("A4").len(), 0);
-        assert!(param_table_for("A4").iter().all(|p| p.plock.is_none()));
+    fn an_id_alone_still_does_not_make_a_parameter_writable() {
+        // 0x25 is FLTR1 TRK — measured as an id, never as a scaling.
+        assert_eq!(a4_synth_plock_full_label(0x25).unwrap(), "FLTR1 TRK");
+        assert!(
+            param_by_plock_id(param_table_for("A4"), 0x25).is_none(),
+            "an id in A4_SYNTH_PLOCKS is not a curated parameter",
+        );
+        assert!(
+            writable_params_for("A4").len() < A4_SYNTH_PLOCKS.len(),
+            "the two tables measure different things and are not converging by accident",
+        );
+    }
+
+    /// **A bare id must not identify a parameter on the A4**, because its id
+    /// space is per track kind. With five `A4_PARAMS` entries now carrying
+    /// measured ids, `param_by_plock_id` would otherwise answer for an FX-track
+    /// lane on `0x22` and hand it `filter.cutoff` — curated, editable, and
+    /// written back on the wrong axis.
+    #[test]
+    fn an_a4_id_is_not_admissible_evidence_on_its_own() {
+        assert!(!plock_id_identifies_parameter("A4"));
+        for kind in ["DT2", "DN2"] {
+            assert!(plock_id_identifies_parameter(kind), "{kind}");
+        }
+        // The table lookup itself still works — it is the *caller* that must
+        // decline to use it, which is `PLockLane::param`'s job.
+        assert_eq!(
+            param_by_plock_id(param_table_for("A4"), 0x22).map(|p| p.name),
+            Some("filter.cutoff"),
+        );
     }
 }

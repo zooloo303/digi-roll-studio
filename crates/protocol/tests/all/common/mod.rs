@@ -8,12 +8,18 @@
 //! the tests pin digi-roll's behaviour rather than the port's.
 //!
 //! **The `analogfour-*.syx` fixtures are different in one way that matters.**
-//! They are gen-1 pattern dumps from an Analog Four mk1 (OS 1.55B), taken off
-//! the box's own front-panel SysEx Dump menu on 2026-08-30 and 2026-08-31, and
-//! there is **no JS original for this format at all** — elk-herd documents only
-//! gen-2. Every expectation in `a4.rs` was measured from these nine files and
-//! nothing else, so those tests pin the captures rather than a second
-//! implementation. Two of the findings they carry could not have come from the
+//! They are gen-1 dumps from an Analog Four mk1 (OS 1.55B), taken off the box
+//! on 2026-08-30, 2026-08-31 and 2026-09-01, and there is **no JS original for
+//! this format at all** — elk-herd documents only gen-2. Every expectation in
+//! `a4.rs` and `a4_kit.rs` was measured from these files and nothing else, so
+//! those tests pin the captures rather than a second implementation.
+//!
+//! Most are patterns, off the box's own front-panel SysEx Dump menu. The three
+//! `analogfour-kit-*` files are **kits**, and they arrived a different way: two
+//! are replies to `0x62`/`0x68` dump requests and one was lifted out of the
+//! 417-frame `0x60` project stream. `a4_kit.rs`'s header says why the pair that
+//! share a payload are both kept, which is the one place this set breaks
+//! `a4.rs`'s "no duplicate captures" rule on purpose. Two of the findings they carry could not have come from the
 //! files either way: the trig-state model and the octave numbering were settled
 //! by looking at the box's screen (DEVELOPMENT.md lesson 16), and what the
 //! fixtures do is hold the exact bytes that observation was made against.

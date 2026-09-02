@@ -33,16 +33,15 @@ use std::collections::HashMap;
 use std::sync::mpsc::{channel, Receiver};
 use std::sync::{LazyLock, Mutex};
 
-use digi_core::device::{DeviceModel, PortEnd, MODELS};
+use digi_core::device::{DeviceModel, PatternRoute, PortEnd, MODELS};
 use digi_core::session::PatternRef;
 use digi_core::{Device, DeviceId, PortRef, Session};
 use digi_midi::{ElektronDevice, PortInfo};
-use digi_protocol::pattern::PatternKit;
 use digi_protocol::safe_write::PatternIo;
 use eframe::egui::{self, Ui};
 
 use crate::engine::EngineLink;
-use crate::ui::sync::{patch_read_blocker, patch_read_job, read_patch_kit, PatchJob};
+use crate::ui::sync::{patch_read_blocker, patch_read_job, read_patch_kit, PatchJob, PatchKit};
 use crate::ui::write::PortsPresent;
 
 /// Whether this box's output is a port the engine actually holds **and the OS
@@ -449,7 +448,7 @@ struct PatchRead {
 /// kit or the reason it could not get one.
 struct PatchReadOutcome {
     job: PatchJob,
-    result: Result<PatternKit, String>,
+    result: Result<PatchKit, String>,
 }
 
 /// Keyed on the box rather than threaded through this function's arguments —
@@ -484,13 +483,18 @@ fn spawn_patch_read<D: PatternIo + Send + 'static>(
 
 /// "Read 16 track names from A01 on DT2" — the three facts a success owes:
 /// how many tracks, which slot, which box.
-fn patch_read_success(job: &PatchJob, count: usize) -> String {
-    format!(
-        "Read {count} track name{} from {} on {}",
-        if count == 1 { "" } else { "s" },
-        job.from().label(),
-        job.name,
-    )
+///
+/// **A live read has no slot to name**, so it says what it actually read
+/// instead of borrowing one. See [`digi_core::model::TrackPatch::live`]: on the
+/// A4 the names come off the edit buffer, and "from A01" would be provenance
+/// this read never established.
+fn patch_read_success(job: &PatchJob, count: usize, live: bool) -> String {
+    let plural = if count == 1 { "" } else { "s" };
+    if live {
+        format!("Read {count} track name{plural} from the kit {} has loaded", job.name)
+    } else {
+        format!("Read {count} track name{plural} from {} on {}", job.from().label(), job.name)
+    }
 }
 
 /// What the slot picker shows until the user says otherwise: the slot the
@@ -535,8 +539,38 @@ fn poll_patch_read(session: &mut Session, id: DeviceId) -> bool {
     let (message, is_error, applied) = match outcome.result {
         Ok(kit) => {
             let seen_at = digi_core::import::now_unix_seconds();
-            match session.apply_patch_read(outcome.job.device, outcome.job.at, &kit, &outcome.job.source, seen_at) {
-                Ok(count) => (patch_read_success(&outcome.job, count), false, true),
+            let job = &outcome.job;
+            // **Two shapes, one write.** The gen-2 kit goes through
+            // `apply_patch_read`, which knows how to walk a `PatternKit`; the
+            // A4's four sounds are resolved by `a4_patch_sounds` and both land
+            // in `apply_patch_sounds`, so what a patch record *is* — one per
+            // track, written wholesale or not at all — is decided once.
+            let applied = match &kit {
+                PatchKit::Gen2(k) => {
+                    session.apply_patch_read(job.device, job.at, k, &job.source, seen_at)
+                }
+                PatchKit::Gen1(k) => {
+                    let model = session.device(job.device).map(|d| d.model);
+                    match model {
+                        Some(model) => {
+                            let sounds = digi_core::a4_transfer::a4_patch_sounds(model, k);
+                            session.apply_patch_sounds(
+                                job.device,
+                                job.at,
+                                &sounds,
+                                &k.name,
+                                k.index,
+                                &job.source,
+                                seen_at,
+                                true,
+                            )
+                        }
+                        None => Err(digi_core::import::PatchReadError::NoSuchDevice(job.device)),
+                    }
+                }
+            };
+            match applied {
+                Ok(count) => (patch_read_success(&outcome.job, count, kit.is_live()), false, true),
                 Err(e) => (e.to_string(), true, false),
             }
         }
@@ -586,16 +620,40 @@ fn patch_read_row<D: PatternIo + Send + 'static>(
     // `horizontal_wrapped` rather than `horizontal`, for `ui::transfer`'s
     // reason: the Setup panel is resizable and at its narrow end this folds
     // onto two lines instead of pushing the picker off the edge.
+    // **A gen-1 box reads its edit buffer, so it has no slot to pick.** The A4
+    // answers `0x68` with the kit it currently has loaded, which is a better
+    // answer than any slot request can give — and a picker beside a read that
+    // ignores it would be a control that does nothing. See
+    // `ui::sync::read_patch_kit`.
+    let live = session
+        .device(id)
+        .is_some_and(|d| d.model.pattern_route() == PatternRoute::RequestGen1);
+
     let button = ui
         .horizontal_wrapped(|ui| {
             let button = ui
                 .add_enabled(enabled, egui::Button::new("Read patch names").small())
-                .on_hover_text(
+                .on_hover_text(if live {
+                    "Ask the box for the kit it has loaded right now and fill in every \
+                     track's patch — what sound each one is named after, not its notes.\n\n\
+                     Read-only, and narrower than a fetch: it touches the patch names \
+                     and nothing else. No notes, no lengths, no swing.\n\n\
+                     This box answers for its edit buffer, so unsaved kit edits are \
+                     included and there is no slot to name."
+                } else {
                     "Fetch the kit in the slot beside this and fill in every track's \
                      patch — what sound each one is named after, not its notes.\n\n\
                      Read-only, and narrower than a fetch: it touches the patch names \
-                     and nothing else. No notes, no lengths, no swing.",
-                );
+                     and nothing else. No notes, no lengths, no swing."
+                });
+            if live {
+                ui.weak("the box's loaded kit")
+                    .on_hover_text(
+                        "No slot to choose: this box is asked for its edit buffer, which is \
+                         whatever kit it has up — including edits nobody has saved yet.",
+                    );
+                return button;
+            }
             ui.weak("from");
             egui::ComboBox::from_id_salt(("patch-read-from", id.0))
                 .selected_text(egui::RichText::new(shown.label()).color(super::TEXT_DIMMER))

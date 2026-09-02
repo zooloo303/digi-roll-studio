@@ -509,12 +509,17 @@ impl Library {
 /// Why this box's +Drive cannot be read, or `None` if it can.
 ///
 /// **This deliberately does not ask `Device::can_sysex`,** and that is the whole
-/// trap §10 was written around. `can_sysex` is false for the A4, because it has
-/// no `Spec` and no pattern dumps — and its +Drive was read on 2026-08-28
-/// anyway: it lists, opens and reads like the digis do. Gating a browse on the
-/// dump protocol would hide a working feature behind an unrelated capability,
-/// which is the exact shape of §9's level bug. The +Drive needs ports and
-/// nothing else.
+/// trap §10 was written around. `can_sysex` is false for the A4, because that
+/// field means "has a gen-2 `Spec`" and this box has none — and its +Drive was
+/// read on 2026-08-28 anyway: it lists, opens and reads like the digis do.
+/// Gating a browse on the dump protocol would hide a working feature behind an
+/// unrelated capability, which is the exact shape of §9's level bug. The +Drive
+/// needs ports and nothing else.
+///
+/// The comment here said "no `Spec` **and no pattern dumps**" until 2026-09-01.
+/// The second half stopped being true on 2026-08-31, when the box answered
+/// `0x60`-`0x6d` — and it was never the reason this function ignores
+/// `can_sysex`, so it was a wrong fact propping up a right decision.
 pub fn blocker(device: &Device) -> Option<String> {
     match (&device.io.input, &device.io.output) {
         (Some(_), Some(_)) => None,
@@ -613,12 +618,13 @@ pub fn load_blocker(device: &Device) -> Option<String> {
     match device.model.pattern_route() {
         digi_core::device::PatternRoute::Request => None,
         _ => Some(format!(
-            "The {} answers no dump request for a kit track's sound — its 0x6b is a \
-             different message — so there is no way to read a track back or store a sound \
-             onto one. Its presets browse, search and tag here like any other box's, and \
-             its patterns fetch and write from Setup; loading a preset onto a track is the \
-             one thing this protocol does not give it, and no cable or OS build changes \
-             that.",
+            "The {} has no message that puts a sound on one of its tracks. It answers \
+             dump requests perfectly well — its patterns fetch and write from Setup, and \
+             its presets browse, search and tag here like any other box's — but the \
+             kit-track sound a load reads before it writes is not among them: this box's \
+             0x6b returns its current pattern, and no store path for a sound has been \
+             found. Loading a preset onto a track is the one thing this protocol does not \
+             give it, and no cable or OS build changes that.",
             device.model.display
         )),
     }

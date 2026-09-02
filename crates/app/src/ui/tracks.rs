@@ -133,12 +133,21 @@ pub fn patch_line(track: &Track, pattern_source: Option<&Source>) -> String {
         Some(patch) => {
             let ts = digi_protocol::safe_write::Timestamp::from_unix_seconds(patch.seen_at);
             let date = format!("{:04}-{:02}-{:02}", ts.year, ts.month, ts.day);
+            // **Where the names came from, said once.** A stored-slot read
+            // names the slot; an edit-buffer read (the A4's `0x68`) has no slot
+            // behind it and must not borrow one — see `TrackPatch::live`. Both
+            // branches below that need to say where a name came from take this
+            // rather than formatting `patch.from` themselves, so the two cannot
+            // drift into disagreeing about what was read.
+            let origin = if patch.live {
+                "the kit the box had loaded".to_string()
+            } else {
+                format!("from {}", patch.from.label())
+            };
             let base = match &patch.sound {
-                PatchSound::Named(name) => format!(
-                    "SOUND: {name} — kit {}, from {}, read {date}",
-                    patch.kit_name,
-                    patch.from.label(),
-                ),
+                PatchSound::Named(name) => {
+                    format!("SOUND: {name} — kit {}, {origin}, read {date}", patch.kit_name)
+                }
                 // Neil's wording, approved verbatim 2026-08-20: a fetched MIDI
                 // track was genuinely read, it simply has nothing to be named
                 // after, and the sentence has to say that rather than fall
@@ -151,12 +160,26 @@ pub fn patch_line(track: &Track, pattern_source: Option<&Source>) -> String {
                 // never gave it one — so the kit and slot it was read from are
                 // still worth saying.
                 PatchSound::Unnamed => format!(
-                    "No sound name on the box for this track — kit {}, from {}, read {date}",
+                    "No sound name on the box for this track — kit {}, {origin}, read {date}",
                     patch.kit_name,
-                    patch.from.label(),
                 ),
+                // The fifth case, 2026-09-01: the Analog Four's FX and CV
+                // tracks, which its kit holds no sound for at all. Shaped like
+                // the MIDI line rather than the `Unnamed` one — there is no kit
+                // slot worth pointing at, because no read of any kit will ever
+                // put a name here — and it says *why* rather than only that,
+                // since "no sound" on its own reads like a fault.
+                PatchSound::NoSound => {
+                    format!("No sound on this track — the box's kit holds none for it (read {date})")
+                }
             };
-            if pattern_source == Some(&patch.from) {
+            // **Staleness is a claim about a slot, so a live read cannot be
+            // stale in this sense.** The suffix means "the pattern on screen is
+            // no longer the one this kit was read beside"; an edit-buffer read
+            // never named a slot to disagree with, and printing the warning
+            // against `from` — which for a live read is only where the records
+            // landed — would flag every one of them.
+            if patch.live || pattern_source == Some(&patch.from) {
                 base
             } else {
                 format!("{base} — stale: this pattern no longer matches that fetch")
@@ -1067,6 +1090,7 @@ mod tests {
             kit_index: 1,
             from,
             seen_at: 1_787_184_000, // 2026-08-20T00:00:00Z
+            live: false,
         }
     }
 
@@ -1110,6 +1134,45 @@ mod tests {
         );
     }
 
+    /// **A live read names no slot and can never be stale.** The Analog Four's
+    /// patch names come off its edit buffer (`0x68`), so there is no slot
+    /// behind them to print or to disagree with the pattern on screen — and
+    /// `TrackPatch::from` on such a record only says where the records landed.
+    /// Printing "from A01" there would be inventing provenance, and flagging it
+    /// stale would flag every one of them.
+    #[test]
+    fn patch_line_for_a_live_read_names_the_loaded_kit_and_is_never_stale() {
+        let mut track = Track::new(0, TrackKind::Audio);
+        let mut patch = a_patch(a01());
+        patch.live = true;
+        track.patch = Some(patch);
+
+        let line = patch_line(&track, None);
+        assert_eq!(line, "SOUND: BD HARD — kit KIT 1, the kit the box had loaded, read 2026-08-20");
+        assert!(!line.contains("from A01"), "a live read never named a slot: {line}");
+        assert!(!line.contains("stale"), "and cannot go stale against one: {line}");
+
+        // Same record beside a pattern fetched from somewhere else entirely —
+        // still not stale, because staleness is a claim about a slot.
+        let b03 = Source { device_slug: "digitakt2".into(), bank: 1, index: 2 };
+        assert!(!patch_line(&track, Some(&b03)).contains("stale"));
+    }
+
+    /// The A4's FX and CV tracks: the kit holds no sound for them, and the line
+    /// says why rather than reading as a fault or as a slot nobody has named.
+    #[test]
+    fn patch_line_for_a_track_the_kit_holds_no_sound_for() {
+        let mut track = Track::new(4, TrackKind::Audio);
+        let mut patch = a_patch(a01());
+        patch.sound = PatchSound::NoSound;
+        patch.live = true;
+        track.patch = Some(patch);
+        assert_eq!(
+            patch_line(&track, None),
+            "No sound on this track — the box's kit holds none for it (read 2026-08-20)"
+        );
+    }
+
     #[test]
     fn patch_line_when_the_pattern_has_no_source_at_all() {
         // A pattern written here from scratch, never fetched: any patch record
@@ -1131,6 +1194,7 @@ mod tests {
             kit_index: 1,
             from: a01(),
             seen_at: 1_787_184_000, // 2026-08-20T00:00:00Z
+            live: false,
         });
         assert_eq!(
             patch_line(&track, Some(&a01())),
@@ -1150,6 +1214,7 @@ mod tests {
             kit_index: 1,
             from: a01(),
             seen_at: 1_787_184_000, // 2026-08-20T00:00:00Z
+            live: false,
         });
         assert_eq!(
             patch_line(&track, Some(&a01())),

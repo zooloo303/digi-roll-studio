@@ -11,6 +11,7 @@
 mod common;
 mod a4;
 mod a4_conditions;
+mod a4_kit;
 mod a4_safe_write;
 mod copy_track;
 mod dn2;

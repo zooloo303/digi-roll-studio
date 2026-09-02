@@ -655,6 +655,60 @@ assumptions were by being wrong about them twice in one day.
 It is also the second release written down before it was tagged, which v0.1.2
 asked for and v0.1.3 started.
 
+**v0.3.0 (2026-09-01) is the release that finishes the third box**, and the
+minor bump is the same argument v0.2.0 made from the other end: that one put an
+Analog Four on the desk as a box the digis' assumptions did not fit, and this one
+is where it stops being a special case. Its patterns fetch and write, its p-locks
+read, draw, edit and travel, and its tracks name their sounds — through the same
+panels, the same ceremony and the same model as a Digitakt's.
+
+- **A4 p-lock lanes are editable**, all thirteen parameters. The ids were
+  measured on 2026-09-01 morning and the *scalings* the same afternoon —
+  `examples/a4_scale_probe`, one knob to each end-stop, the number read off the
+  box's own screen. `writable_params_for("A4")` returned nothing that morning
+  and returns thirteen now, which makes the A4's picker exactly as full as a
+  digi's.
+- **The Edit panel lists them**, which it had refused to do for a reason that
+  was never about listing: the section was gated on `model.spec()`, `None` on
+  this box forever, so a track carrying sixty-one named lanes showed none of
+  them while the strip under the roll drew all sixty-one correctly. Listing and
+  authoring are separate questions now and each is asked on its own terms.
+- **The FX and CV tracks are read-only and byte-exact**, by decision rather than
+  by omission. Their p-lock id space has never been swept, so nothing here can
+  name their knobs; what the box has is carried back exactly as it came.
+- **Patch names, off the box's edit buffer.** The A4's kit was mapped from
+  captures that had been on disk for a day — 128 of them, checked before a
+  single offset was written down — and `0x68` reads the kit the box has *loaded*,
+  unsaved edits included. That is something no digi can answer: `ui::sync`'s own
+  header says a dump request names a stored slot and nothing asks a box what it
+  is playing. On this box something does.
+- **Four sounds against six tracks**, so `PatchSound` gained a fourth shape.
+  `NoSound` is not `Unnamed` — an unnamed slot is one a later read might fill,
+  and the FX and CV tracks never will be.
+- **Two sentences the app was telling users, both false.** "Analog Four plays
+  over MIDI but has no patch names to read" was wrong in both halves; the
+  Presets panel's "answers no dump request for a kit track's sound" was
+  *strictly true* and still had to go, because it opened with the six words that
+  had been the headline wrong claim about this box. One `grep` for the phrase
+  found both plus four stale doc comments — and a green test that had been
+  holding the first one in place.
+
+**What this release cost in probe bugs is the part worth carrying forward**, and
+there were four. A scaling probe that assumed every parameter's screen shows a
+decimal (`OFF` and `L64` do not). One that read a knob's *change* rather than its
+*value*, so a knob already at the end-stop being asked for looked like a knob
+nobody touched. One that rejected two correct measurements for a slope the app
+does not model anyway. And a target list built from eleven parameters against a
+table of thirteen, which let three consecutive runs report themselves complete
+over a table they were not covering.
+
+The last is the one to remember: **a list that is a subset of what it measures
+cannot say so.** The run looks clean and the gap only surfaces when somebody
+counts. It is now asserted before a port is opened. The other three share a
+shape too — each was an assumption about the *box* that the probe encoded as if
+it were an assumption about the *format*, and the box is the thing the probe
+exists to ask.
+
 **The decisions worth carrying forward**, each of which changed the shape of the
 thing rather than a line of it:
 
@@ -3662,6 +3716,279 @@ one.
 
 Nine ids inside the range are unmapped and stay that way rather than being
 interpolated: `0x12`–`0x14`, `0x2c`, `0x32`, `0x60`–`0x63`.
+
+### The A4 reads its patch names, off captures that were already on disk — 2026-09-01
+
+**"Analog Four plays over MIDI but has no patch names to read" was wrong in both
+halves, and the evidence to prove it had been committed for a day.**
+
+`ui::sync::patch_read_blocker` asked `Device::can_sysex`. That field means "has a
+gen-2 `Spec`", it is false on this box and always will be, and it had already
+been the wrong question twice — `ui::presets` carries a paragraph explaining why
+it does *not* ask it, and `PatternRoute` exists because `sysex.is_some()` had
+stopped answering "can this box transfer a pattern". This is the third instance
+of one field standing in for a capability it does not name, and DEVELOPMENT.md
+lesson 3's fourth: a panel stating, in a sentence a person reads and believes, a
+limitation the box does not have.
+
+The box has not been live-only since 2026-08-31. And its kit has carried the
+four synth tracks' sound names all along.
+
+#### The layout, from 128 kits rather than one
+
+`0x60` returns the whole project as a 417-frame stream, and 128 of those frames
+are kits. The offsets were read off one capture and then **checked against all
+128 before any of them was written down**:
+
+```text
+  2,410 bytes, the reply to 0x62 (stored) or 0x68 (working):
+    +0     u32be    struct version — 11 in all 128
+    +4     16 × u8  the kit's name — POLYTRON, STEPPA, DAWN …
+    +20    12 × u8  unidentified; six u16be, plausibly the six track levels
+    +32             sound 1  ┐ 350 bytes each, back to back — the same
+    +382            sound 2  │ 0xBEEFBABA container the 0x53 pool-sound
+    +732            sound 3  │ dump returns whole and `decode_a4_sound`
+    +1082           sound 4  ┘ already reads
+    +1432   978 × u8 unidentified — FX and CV live in here, and neither has
+                     a sound to name
+```
+
+All four offsets carry the head magic in all 128 kits — **512 containers, no
+exceptions**, which is what makes the 350-byte stride a structure rather than an
+average. Every embedded sound's own version field is `6`, matching the pool
+sound. Every name is printable ASCII, NUL-terminated inside its sixteen bytes.
+
+`protocol::a4_kit` is seventy lines of offsets and `tests/a4_kit.rs` is eight
+tests against three committed fixtures. **No cable was involved at any point.**
+
+#### It reads the edit buffer, which is more than a digi can offer
+
+`ui::sync`'s own section header says a dump request names a *stored* slot and
+that nothing in the Elektron dump protocol as implemented here asks a box what
+it is currently playing — so a digi's read gets A01's *saved* kit, true only
+while the box sits on A01 with nothing unsaved.
+
+**On this box something does ask.** `0x68` returns the working kit, unsaved
+edits included. So the A4's read takes no slot at all, and Neil chose that over
+mirroring the digis' shape.
+
+That decision is not free, and the cost is provenance. A patch record's `from`
+names a slot; an edit-buffer read never established one. Rather than let the
+tooltip print "from A01" over bytes that said nothing of the kind,
+`TrackPatch::live` records which kind of read it was, and three things key off
+it: the origin phrase ("the kit the box had loaded"), the success line, and
+**the staleness suffix, which is suppressed** — staleness is a claim about a
+slot, and flagging every live read against a slot it never named would have made
+the warning meaningless.
+
+#### Why a pattern-to-kit link was looked for and not used
+
+The obvious alternative — mirror the digis, ask for the kit belonging to the
+slot the picker names — needs the pattern to say which kit it uses. **No byte in
+the A4's 12,974-byte pattern payload does.** Scanned across all 128 patterns of
+the project stream: no offset equals the pattern index, and no offset carries
+128 distinct values. The only identity-like byte is the slot marker at 12,962,
+which is the pattern's own slot.
+
+Whether the link lives somewhere else (the 16 × `0x55` object is unidentified)
+or whether the mk1 simply pairs pattern *n* with kit *n* is untested, and
+guessing either would have made every A4 patch name conditional on an unproven
+mapping. The edit-buffer read needs no mapping at all.
+
+#### Four sounds, six tracks — a fourth `PatchSound`
+
+The A4 sequences six tracks and its kit holds four. FX and CV are the
+sequencer's, not the kit's, and none of `PatchSound`'s three shapes fits:
+`Midi` is a gen-2 mask bit over a track that would otherwise hold a sound and
+this box has no such mask, and `Unnamed` is a slot a later read might name,
+which these two never will be. `PatchSound::NoSound` is the fourth, added for
+exactly this. Three shapes were three because each answers a different question
+(packet E, 2026-08-20, which deleted an `empty string means no sound` sentinel);
+collapsing this into one of them would have been that mistake at one remove.
+
+### The A4's p-lock lanes reach the Edit panel — 2026-09-01
+
+**A gated section can hide a working feature as completely as an unbuilt one.**
+`ui::edit::plock_group` opened by resolving `model.spec()` and, on `None`,
+printing "This box has no SysEx spec, so there is no parameter table to author a
+lane against" and returning. On the A4 that meant a track carrying sixty-one
+named lanes off the box listed **none of them** — while the strip under the roll,
+which is generic over `Track`, drew all sixty-one correctly the whole time.
+
+The sentence was answering a question nobody had asked there. *Listing* a lane
+needs only `PLockLane::param`, which resolves against the lane's own recorded
+`device_kind`; a `Spec` is the *authoring* half's business, and it is not even
+the right test for that. So the two are now separate:
+
+- the list is ungated and keys off `model.key`, which every box has;
+- authoring keys off `writable_params_for`, which asks the question that
+  actually matters — has this parameter's p-lock slot been measured — rather
+  than `auditable_params_for`, which asks whether it can be heard.
+
+The switch costs the digis nothing: all eleven of each box's parameters are both
+auditable and writable, and a test asserts that so the picker cannot quietly
+lose an entry. It empties on the A4, which is correct — offering one there would
+produce a lane `a4_lanes_for_write` then refuses by name.
+
+**Two emptinesses, two sentences.** "Every parameter already has a lane here" in
+front of an empty list is a flat contradiction, and the A4 is the first box able
+to reach that state, so a box with nothing to author from says that instead.
+
+### Five A4 p-lock scalings, read off the box's own screen — 2026-09-01
+
+`a4_scale_probe` is the run, and it took four interactions per parameter: hold a
+trig, turn one knob to each end-stop, type what the screen says. **End-stops
+rather than mid-range values**, because a knob turned fully left is at its
+minimum whatever the minimum is, where "about 64" is a reading with an unstated
+error bar. Two points fix a line, and the range comes off the box rather than out
+of `A4_PARAMS`.
+
+| parameter | id | screen | coarse |
+|---|---|---|---|
+| `filter.cutoff` | `0x22` | 0..127 | 0..127 |
+| `filter.resonance` | `0x23` | 0..127 | 0..127 |
+| `osc1.level` | `0x06` | 0..127 | 0..127 |
+| `fx.overdrive` | `0x24` | −64..63 | 0..127 |
+| `filter.envDepth` | `0x26` | −64..63 | 0..127 |
+
+**Every id the label join predicted was the id the box moved** — seven for seven,
+including the two LFO depths below. That join was made by matching `A4_PARAMS`'
+"FLTR1 FREQ" against `A4_SYNTH_PLOCKS`' "FLTR1 FRQ" *by eye*, which is not a
+measurement, so the probe reports the lane that actually moved on every line and
+the run is what turned it into one.
+
+#### The bipolar result is not an offset in the scaling, and the probe said it was
+
+The run's first version concluded that `fx.overdrive` and `filter.envDepth`
+"need a new `PLockScaling` variant" because their screens read −64..63 against a
+coarse byte of 0..127.
+
+**They do not, and the reason is that this app already declines to mirror that
+offset on two other boxes.** `Param::describe` gives *every* curated parameter
+`min: MIDI_MIN, max: MIDI_MAX` — the display axis is the raw byte everywhere —
+and all ten bipolar parameters the digis carry (`filter.envDepth`, `amp.pan`,
+three LFO depths, on both DT2 and DN2) are `scaled_plock(id, 256)` with no
+offset anywhere. A DT2's own ENV DEPTH screen reads −64..+63 too. The offset is
+the gap between a box's *label* and its byte, and a third box is not the place
+to start modelling it.
+
+So all five take `scaled_plock(id, 256)`, unchanged machinery. The probe's
+verdict was corrected in the same change, because a diagnostic that reaches the
+wrong conclusion is worse than one that reaches none.
+
+`fx.overdrive` is also the one place the appendix was doubted and held: the run
+was set up expecting that flag to be wrong, and the box agreed with Elektron.
+
+#### What curating actually cost, which was not the table edit
+
+Adding five `plock` fields is four lines. Two things had to happen around them.
+
+**The FX and CV tracks would have been corrupted.** `0x22` is now a curated id,
+so `param_by_plock_id` answers for it — and the A4's id space is **per track
+kind** (measured 2026-09-01: an FX lock landed on `0x1a` and `0x29`, both synth
+parameters). A `PLockLane` does not carry its track. So an FX-track lane on
+`0x22` would have resolved to `filter.cutoff`, become editable, had its stored
+word `0x4000` read as a display value and clamped to 127, and been written back
+as `0x7f00` — a lane nobody touched, changed and wrong.
+
+The rule that prevents it: **on this box a bare id is not admissible evidence.**
+`params::plock_id_identifies_parameter` is false for the A4, `PLockLane::param`
+resolves by canonical *name* only, and `a4_lane_to_model` — the one place that
+knows the track — is what sets that name, for synth tracks and nothing else.
+
+**Neil's call for the first A4 release: FX and CV stay read-only**, their trigs
+and locks preserved exactly as fetched, and nobody goes down the sweep rabbit
+hole for them. That falls out of the rule above rather than needing a second
+mechanism, and
+`an_fx_lane_is_read_only_and_survives_the_round_trip_unchanged` is the test.
+
+**A curated lane loses the box's fine byte**, which is the same accepted loss
+`display_from_stored` already documents for the digis: the box records
+sub-display-unit resolution from a knob landing between integers and this app's
+axis is integers. It is 1/128 of one display unit, on a lane being edited. An
+*uncurated* lane is still passed through untouched, which is why the FX/CV
+promise above is byte-exact and this one is not.
+
+#### The second run, and the same category error a third time
+
+A second pass closed five more: `fx.delaySend` `0x2e`, `fx.reverbSend` `0x2f`,
+`amp.pan` `0x30`, `lfo1.depth` `0x5c`, `lfo2.depth` `0x5e`. **Ten of thirteen
+`A4_PARAMS` entries are now writable**, and the three left are named below rather
+than counted.
+
+Two probe bugs came out of that run, and both are worth keeping because they are
+the same mistake at different depths.
+
+**The screen's resolution is not the scaling either.** The first run rejected
+both LFO depths for a slope other than 1: they read −128..127 across a coarse
+byte of 0..127, so the box shows *two* display units per count. That was recorded
+above as "a genuinely third shape ... nothing in `PLockScaling` expresses it",
+and it was wrong for the reason the offset was wrong one paragraph earlier — a
+DT2's LFO DEPTH has the identical screen and ships as plain
+`scaled_plock(29, 256)`. The app addresses every other value of that screen on
+every box, and always has. Having just corrected the offset case, the same error
+was left standing in the slope case; what the probe now checks is that the coarse
+byte spans **0..=127**, which is the property that would actually break
+`scaled_plock` — an axis addressing words the box has no value for.
+
+**A knob already at the end-stop does not move, and that defeated two different
+mechanisms in turn.** `fx.chorusSend` was skipped in both of the first two runs
+and took a third.
+
+In run two its lane was sitting at coarse 0 from the previous session, so "turn
+it fully left" changed nothing, the pool diff was empty, and the probe reported
+the trig as unheld and moved on — never reaching the maximum prompt. The fix was
+to read the expected id's lock **where it is** rather than infer it from what
+changed, keeping the diff for what it is good for: naming a lane that moved when
+the expected one did not, which is how a bad label join announces itself.
+
+**That fix alone would not have closed it**, which is the part worth keeping.
+Run three started from a cleared pattern, and a cleared pattern has no `0x2d`
+lane at all — so turning a knob that is already at OFF generates no encoder
+movement, the box allocates nothing, and there is no lock to read where it is.
+Two different failures, one cause, and only one of them was in this repo. The
+working procedure is to **nudge the knob off the end-stop first** so the box
+allocates the lane, then turn to each end; it is written into the entry for
+`fx.chorusSend` in `A4_PARAMS`, next to the measurement it cost.
+
+`OFF` and `L64`/`CEN`/`R63` also had to be accepted: the probe assumed every
+parameter's screen is a parseable decimal, which is why the three sends and pan
+dropped out of the first run. That assumption was never checked before it was
+shipped to a person with a box in front of them.
+
+#### Closed: all thirteen, in four runs
+
+**Every `A4_PARAMS` entry has a measured scaling**, so the A4's p-lock picker is
+now exactly as full as a digi's and `writable_params_for` returns thirteen where
+it returned nothing that morning. The last four:
+
+| parameter | id | screen | coarse |
+|---|---|---|---|
+| `fx.chorusSend` | `0x2d` | OFF..127 | 0..127 |
+| `osc2.level` | `0x07` | 0..127 | 0..127 |
+| `amp.volume` | `0x31` | 0..127 | 0..127 |
+
+**Thirteen for thirteen on the id, too.** Every parameter's lane was the one the
+label join between `A4_PARAMS` and `A4_SYNTH_PLOCKS` predicted — a join made by
+eye, which the probe reports against on every line precisely because matching
+"FLTR1 FREQ" to "FLTR1 FRQ" is not a measurement.
+
+**A fourth probe bug, and the worst kind.** `TARGETS` was built from eleven
+parameters when `A4_PARAMS` holds thirteen: `osc2.level` and `amp.volume` were
+dropped in the writing and never prompted for, so three consecutive runs reported
+themselves complete over a table they were not covering. A list that is a subset
+of the table it measures cannot say so — the run looks clean, and the gap only
+surfaces when somebody counts. The probe now asserts `TARGETS` covers
+`A4_PARAMS` before it opens a port. That is DEVELOPMENT.md lesson 11's shape
+again: **the absence was never reported, so it was never suspected.**
+
+What is left, and it is not blocking anything:
+
+- The other 81 named ids have no `Param` entry to hang a scaling on and stay
+  named-and-read-only. Giving one an entry means a `Param` — label, short name,
+  bipolar flag, CC/NRPN — and only then a probe run.
+- The FX and CV tracks are untouched by all of this: read-only, byte-exact, by
+  the decision recorded above.
 
 ### 10.5 What saving a kit will cost, when it comes
 

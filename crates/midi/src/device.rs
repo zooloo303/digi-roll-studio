@@ -54,6 +54,7 @@ use digi_protocol::drive::{
     API_FILE_WRITE, API_FILE_WRITE_CLOSE, API_FILE_WRITE_OPEN, READ_CHUNK,
 };
 use digi_protocol::query::{parse_query_reply, query_args, QueryValue, API_QUERY};
+use digi_protocol::a4_kit::{DUMP_A4_KIT_REQUEST, DUMP_A4_KIT_WORKING_REQUEST};
 use digi_protocol::a4_pattern::{build_pattern, DUMP_A4_PATTERN_REQUEST};
 use digi_protocol::protocol::{
     build_api_message, build_dump_message, parse_sysex, API_DEVICE, API_RESPONSE, API_VERSION,
@@ -676,6 +677,42 @@ impl ElektronDevice {
         Ok(self.fetch_dump(family, request, index)?.payload)
     }
 
+    /// One **kit** off an Analog Four, by kit slot — `0x62` → `0x52`.
+    ///
+    /// **Only the A4 has this call, and that is not an oversight.** A digi's
+    /// kit arrives inside the combined pattern-kit dump
+    /// [`ElektronDevice::fetch_pattern_kit`] already fetches, so asking for one
+    /// separately would be a second round trip for bytes the app is holding.
+    /// The A4 splits the two objects — a pattern is `0x54` and a kit is `0x52`,
+    /// 12,974 bytes and 2,410 — so its kit has to be asked for by name.
+    ///
+    /// Refuses a non-A4 box rather than sending `0x62` to a digi. The digis do
+    /// answer it, and what comes back is a gen-2 kit struct this crate has no
+    /// standalone reader for; a call that half-works is worse than one that
+    /// says which box it is for.
+    pub fn fetch_a4_kit(&mut self, index: u8) -> Result<Vec<u8>, MidiError> {
+        self.fetch_a4_kit_of(DUMP_A4_KIT_REQUEST, index)
+    }
+
+    /// The A4's **working** kit — its edit buffer, `0x68` → `0x58`, with the
+    /// index ignored and echoed as zero.
+    ///
+    /// This is the one thing the gen-2 dump protocol as implemented here cannot
+    /// do: `ui::sync`'s patch-names read says out loud that a dump request names
+    /// a *stored* slot and that nothing can ask a box what it is playing right
+    /// now. On this box something can, and unsaved kit edits are included.
+    pub fn fetch_a4_working_kit(&mut self) -> Result<Vec<u8>, MidiError> {
+        self.fetch_a4_kit_of(DUMP_A4_KIT_WORKING_REQUEST, 0)
+    }
+
+    fn fetch_a4_kit_of(&mut self, request: u8, index: u8) -> Result<Vec<u8>, MidiError> {
+        let family = self.family()?;
+        if family != FAMILY_ANALOG_FOUR {
+            return Err(MidiError::Protocol(DeviceError::NotAnAnalogFour(family)));
+        }
+        Ok(self.fetch_dump(family, request, index)?.payload)
+    }
+
     /// List one +Drive directory (`0x10` request → `0x90` response).
     ///
     /// The API path, not the dump path: this is how anything beyond the
@@ -1204,6 +1241,10 @@ impl PatternIo for ElektronDevice {
 
     fn send_pattern_kit(&mut self, index: u8, payload: &[u8]) -> Result<(), String> {
         self.store_pattern_kit(index, payload).map_err(|e| e.to_string())
+    }
+
+    fn fetch_a4_working_kit(&mut self) -> Result<Vec<u8>, String> {
+        ElektronDevice::fetch_a4_working_kit(self).map_err(|e| e.to_string())
     }
 }
 

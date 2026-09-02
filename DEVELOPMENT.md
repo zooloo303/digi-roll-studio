@@ -185,6 +185,46 @@ you deliberately want one, and they are ordered by what they can do to it.
   slot on the box. The validation deliberately repeats what the Python builder
   already did: the thing that must hold is not "the builder was correct" but
   "these bytes are well-formed", and a file can change between the two.
+- **The Analog Four's probes**, which were absent from this list until
+  2026-09-01 — a gap worth naming, since this list is where someone looks
+  *before* touching a box and eight A4 examples had grown up outside it.
+
+  Read-only, and none of them ever makes the box save:
+
+  - `a4_plock_extension_check <file.syx>` — **opens no port.** Reads a pool out
+    of a file on disk.
+  - `cargo run -p digi_roll_studio --example a4_dump_probe` — sweeps the dump
+    *request* namespace `0x60`–`0x6e`, every opcode through
+    `assert_request_opcode`, asking `0x01` Device after each so a wedge names
+    its culprit. This is the run that disproved "the A4 answers no dump
+    request".
+  - `a4_lane_probe`, `a4_param_probe`, `a4_scale_probe` — all three watch the
+    **working pattern** (`0x6a`) while a hand turns knobs on the box. Nothing is
+    saved, no slot is written, and `FUNC`+`NO` undoes a whole session. They
+    measure the per-step lanes, the p-lock parameter ids, and the p-lock
+    scalings respectively.
+
+    `a4_scale_probe` is the newest and it is the one that asks a *human* for a
+    number: it prints the id it expects, you turn the knob to each end-stop and
+    type what the box shows, and it reports what the two points fit. **It
+    refuses to fit anything with a slope other than 1**, and it names three
+    kinds of disagreement rather than smoothing them — a lane that is not the
+    id the label join predicted, a `bipolar` flag the appendix got wrong, and
+    two lanes moving in one turn. It prints the `params.rs` line each parameter
+    earns and edits nothing, so "the box agreed" and "somebody read the run"
+    stay two events.
+  - `a4_param_check` — **sends channel-voice messages**, so the box makes sound
+    and its parameters move. It stores nothing.
+
+  These write to the box, and are the reason the group is not simply "read-only":
+
+  - `a4_trig_probe`, `a4_plock_order_probe`, `a4_plock_containment` — each
+    **overwrites a pattern slot** to settle a question a dump could not answer.
+    The last two were what closed the p-lock writer's open items. Treat them as
+    `safe_write_track --write`: a throwaway slot, and a backup you took
+    yourself.
+  - `a4_test_sessions` — **writes project files on this machine**, not to a box.
+
 - `cargo run -p digi_engine --example jitter --release -- "<DT2>" "<DN2>"` —
   **sends** clock and notes for ten seconds, so a box on external clock will start
   playing. `--release` matters: a debug build measures the debug build.
@@ -290,6 +330,48 @@ Three things generalise, and only the first is lesson 3 as already written:
   `grep` and found it. The habit worth having is to grep for a *hardware fact*
   before restating it, the same way one greps for a function before writing a
   second copy.
+
+**The fourth instance, 2026-09-01: the panel was not lying about our code, it
+was lying about the *box* — and it was doing it by asking the wrong field.**
+Setup's patch-read row said "Analog Four plays over MIDI but has no patch names
+to read". Both halves were false. The box had moved patterns since 2026-08-31,
+and its kit had carried the four synth tracks' sound names all along. The
+sentence came out of `patch_read_blocker` asking `Device::can_sysex`, which
+means "has a gen-2 `Spec`" and had already been the wrong question twice
+elsewhere — `ui::presets` carries a paragraph about not asking it, and
+`PatternRoute` exists because the same field had stopped answering "can this box
+transfer a pattern".
+
+The Presets panel's sibling sentence was subtler and worth the contrast. It read
+"The Analog Four answers no dump request for a kit track's sound", which is
+**strictly true** — the qualifier is doing real work. But it opens with the six
+words that had been the headline wrong claim about this box, and a person reads
+the head of a sentence before its tail. It now leads with the narrow fact ("has
+no message that puts a sound on one of its tracks") and lists what does work.
+
+- **A refusal keyed on the wrong field goes stale silently, where a hardcoded
+  string at least looks like something someone wrote.** `!device.can_sysex()`
+  reads like a capability check and was never revisited when the capability
+  arrived, because nothing about it looked like a claim. `!device.pattern_route()
+  .transfers()` is the same shape and asks the question the sentence is about.
+- **Grep for the phrase, not the field.** The two wrong sentences were in
+  different crates and shared no code. What they shared was six words, and one
+  `grep "no dump request"` across the workspace found both plus four stale doc
+  comments — including one that had a *right* decision propped up by a wrong
+  fact ("no `Spec` **and no pattern dumps**").
+- **A test can pin a lie.** `an_a4_browses_and_has_no_load_path` asserted the
+  message contained `"no dump request"`, so the false claim had a green test
+  holding it in place for a day. An assertion on message *wording* has to be an
+  assertion about the claim, not the string: it now checks the box's actual
+  limitation is named and that the retired claim is **absent**.
+
+The same day produced the mirror image, and it belongs here: a panel that hid a
+feature that *was* built. `ui::edit`'s P-LOCK LANES section gated itself on
+`model.spec()` and printed "this box has no SysEx spec" on the A4 — so a track
+carrying sixty-one named lanes off the box listed none of them, while the strip
+under the roll drew all sixty-one correctly the whole time. **Lesson 3 in both
+directions: the panel's sentence and the panel's gate are the same kind of claim,
+and only one of them looks like prose.**
 
 ### 4. Check a test's body against its name
 

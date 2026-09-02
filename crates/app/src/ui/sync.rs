@@ -97,7 +97,9 @@ use digi_protocol::a4_pattern::{
 };
 use digi_protocol::backup_stash::Stash;
 use digi_protocol::device::DeviceIdentity;
+use digi_protocol::a4_kit::{parse_working_kit, A4Kit, DUMP_A4_KIT_WORKING};
 use digi_protocol::pattern::{decode_pattern_kit, track_trig_count, PatternKit, Spec};
+use digi_protocol::protocol::{build_dump_message, FAMILY_ANALOG_FOUR};
 use digi_protocol::plocks::{free_lane_count, read_track_plocks, PoolLane};
 use digi_protocol::safe_write::{
     a4_safe_write_tracks, safe_write_tracks, write_gate, write_impact_lines,
@@ -1486,7 +1488,14 @@ impl SyncPanel {
 /// discovered by actually asking the box, so they belong to [`read_patch_kit`]
 /// instead.
 pub fn patch_read_blocker(device: &Device, present: PortsPresent<'_>) -> Option<String> {
-    if !device.can_sysex() {
+    // **The route, not `can_sysex`.** This asked `can_sysex` until 2026-09-01,
+    // and that field means "has a gen-2 `Spec`" — so it refused the Analog Four
+    // with a sentence that was wrong in both halves. The box has not been
+    // live-only since 2026-08-31, and its kit carries the four synth tracks'
+    // sound names all along (`protocol::a4_kit`, mapped from captures that were
+    // already on disk). What actually cannot be read is a box whose patterns do
+    // not move at all, and `PatternRoute::LiveOnly` is the row that says so.
+    if !device.pattern_route().transfers() {
         return Some(format!(
             "{} plays over MIDI but has no patch names to read",
             device.model.display
@@ -1521,7 +1530,12 @@ pub struct PatchJob {
     pub name: String,
     pub display: &'static str,
     pub slug: Option<&'static str>,
-    pub spec: &'static Spec,
+    /// How this box's patterns move, which is also what decides which kit
+    /// request [`read_patch_kit`] sends. See [`PatchKit`].
+    pub route: PatternRoute,
+    /// `None` on a gen-1 box: the A4 has no gen-2 `Spec` and never will, and it
+    /// does not need one to name its sounds.
+    pub spec: Option<&'static Spec>,
     pub input: PortBinding,
     pub output: PortBinding,
     /// The session slot whose tracks get the patch records — the pattern on
@@ -1566,11 +1580,15 @@ pub fn patch_read_job(
     if let Some(why) = patch_read_blocker(d, present) {
         return Err(why);
     }
-    let (Some(input), Some(output), Some(spec)) =
-        (d.io.input.clone(), d.io.output.clone(), d.model.spec())
-    else {
-        return Err("this box has no ports or no pattern format".into());
+    let (Some(input), Some(output)) = (d.io.input.clone(), d.io.output.clone()) else {
+        return Err("this box has no ports set".into());
     };
+    // **A `Spec` is no longer required to get here.** It was, until 2026-09-01,
+    // and that is the same `can_sysex` mistake one layer down: the spec is how a
+    // *gen-2* kit is decoded, not what says a box has kit names. A gen-1 box
+    // carries `None` and [`read_patch_kit`] dispatches on the route instead.
+    let spec = d.model.spec();
+    let route = d.model.pattern_route();
     let at = session.slot_in_scene(session.current_scene, device).unwrap_or_else(|| PatternRef::new(0, 0));
     let pattern = d.pattern(at.slot());
     let source = match asked {
@@ -1592,6 +1610,7 @@ pub fn patch_read_job(
         name: d.name.clone(),
         display: d.model.display,
         slug: d.model.slug,
+        route,
         spec,
         input: binding(&input),
         output: binding(&output),
@@ -1628,7 +1647,7 @@ fn patch_wrong_box(job: &PatchJob, identity: &DeviceIdentity) -> Option<String> 
 /// [`Session::apply_patch_read`][digi_core::Session::apply_patch_read] only on
 /// `Ok`, so a failure at any point — including the decode — leaves every
 /// existing patch record exactly as it was.
-pub fn read_patch_kit(device: &mut impl PatternIo, job: &PatchJob) -> Result<PatternKit, String> {
+pub fn read_patch_kit(device: &mut impl PatternIo, job: &PatchJob) -> Result<PatchKit, String> {
     let identity = device
         .identity()
         .cloned()
@@ -1636,12 +1655,65 @@ pub fn read_patch_kit(device: &mut impl PatternIo, job: &PatchJob) -> Result<Pat
     if let Some(refusal) = patch_wrong_box(job, &identity) {
         return Err(refusal);
     }
-    let index = job
-        .from()
-        .wire_index()
-        .ok_or_else(|| format!("{} is past the last slot a dump request can name", job.from().label()))?;
-    let bytes = device.fetch_pattern_kit(index)?;
-    decode_pattern_kit(job.spec, &bytes)
+    match job.route {
+        // **The A4 asks a different question, and gets a better answer.** The
+        // paragraph above this function's section says a dump request can only
+        // name a *stored* slot and that nothing in this protocol asks a box what
+        // it is playing. On this box something does: `0x68` returns the edit
+        // buffer, unsaved kit edits included. So the gen-1 read takes no slot at
+        // all — see `PatchKit::Gen1` and `TrackPatch::live`.
+        PatternRoute::RequestGen1 => {
+            let bytes = device.fetch_a4_working_kit()?;
+            parse_working_kit(&build_dump_message(
+                FAMILY_ANALOG_FOUR,
+                DUMP_A4_KIT_WORKING,
+                0,
+                &bytes,
+            ))
+            .map(PatchKit::Gen1)
+        }
+        _ => {
+            let spec = job.spec.ok_or_else(|| {
+                format!("{} has no pattern format this build can decode", job.display)
+            })?;
+            let index = job.from().wire_index().ok_or_else(|| {
+                format!("{} is past the last slot a dump request can name", job.from().label())
+            })?;
+            let bytes = device.fetch_pattern_kit(index)?;
+            decode_pattern_kit(spec, &bytes).map(PatchKit::Gen2)
+        }
+    }
+}
+
+/// A kit read for its patch names, in whichever shape its box speaks.
+///
+/// **Two variants rather than one normalised struct**, because what a caller
+/// does with them differs beyond the names: a gen-2 kit names a stored slot and
+/// can go stale against the pattern on screen, and a gen-1 one is the box's edit
+/// buffer and cannot. Flattening them here would push that distinction into a
+/// boolean beside a struct that had already lost it.
+#[derive(Debug, Clone)]
+pub enum PatchKit {
+    /// A digi's kit, out of the combined pattern-kit dump at a named slot.
+    Gen2(PatternKit),
+    /// The Analog Four's working kit — `protocol::a4_kit`, four sounds, no slot.
+    Gen1(A4Kit),
+}
+
+impl PatchKit {
+    /// Was this read off the box's edit buffer rather than a stored slot?
+    /// [`digi_core::model::TrackPatch::live`] is what this becomes.
+    pub fn is_live(&self) -> bool {
+        matches!(self, Self::Gen1(_))
+    }
+
+    /// The kit's own name, which both shapes have.
+    pub fn name(&self) -> &str {
+        match self {
+            Self::Gen2(k) => &k.kit.name,
+            Self::Gen1(k) => &k.name,
+        }
+    }
 }
 
 #[cfg(test)]
@@ -1732,7 +1804,24 @@ mod patch_read_tests {
         fn send_pattern_kit(&mut self, _index: u8, _payload: &[u8]) -> Result<(), String> {
             unreachable!("a patch-names read never sends")
         }
+
+        /// The A4's edit buffer, keyed off the same map under a sentinel that
+        /// is not a slot — because the whole point of `0x68` is that it names
+        /// no slot, and a fake that served it out of index 0 would let a read
+        /// that wrongly asked for slot 0 pass.
+        fn fetch_a4_working_kit(&mut self) -> Result<Vec<u8>, String> {
+            *self.fetches.borrow_mut() += 1;
+            self.slots
+                .borrow()
+                .get(&WORKING_KIT)
+                .cloned()
+                .ok_or_else(|| "this fake holds no working kit".to_string())
+        }
     }
+
+    /// Not a wire index: the key `FakeBox` files its edit buffer under. `0xFF`
+    /// is past the last slot any dump request can name.
+    const WORKING_KIT: u8 = 0xFF;
 
     /// A session with one DT2, the A01 fixture imported into slot A01 — so the
     /// pattern's own `source` names A01, exactly what a real fetch-then-read
@@ -1774,7 +1863,7 @@ mod patch_read_tests {
         // Force track 2 to read as MIDI, and leave track 3's sound name blank,
         // so one read exercises all three `PatchSound` shapes at once — the
         // requirement this packet names by name: "including MIDI tracks".
-        let spec = job.spec;
+        let spec = job.spec.expect("a DT2 has a gen-2 spec");
         let mut kit = decode_pattern_kit(spec, &payload(DT2_FIXTURE)).unwrap();
         kit.kit.midi_mask |= 1 << 1;
         kit.kit.sound_names[2] = String::new();
@@ -1794,6 +1883,9 @@ mod patch_read_tests {
         // would only be re-deriving `decode_pattern_kit`. The two are checked
         // against each other below so this substitution cannot quietly drift
         // from what a real decode produces.
+        let PatchKit::Gen2(fetched_kit) = fetched_kit else {
+            panic!("a DT2 reads as a gen-2 kit");
+        };
         assert_eq!(fetched_kit.tracks.len(), kit.tracks.len());
         let count = session
             .apply_patch_read(id, job.at, &kit, &job.source, 1_787_184_000)
@@ -1819,6 +1911,155 @@ mod patch_read_tests {
             pattern.track(0).unwrap().patch.as_ref().unwrap().sound,
             digi_core::model::PatchSound::Named(_)
         ));
+    }
+
+    // --- the Analog Four reads its edit buffer ----------------------------------
+    //
+    // The last thing this box could not do that both digis could, closed
+    // 2026-09-01. Everything here runs against a real `0x58` capture off the
+    // box; nothing is hand-built but the session around it.
+
+    const A4_KIT_FIXTURE: &str = "analogfour-kit-00-working-2026-08-31.syx";
+
+    fn a4_working_kit_message() -> Vec<u8> {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../protocol/tests/fixtures")
+            .join(A4_KIT_FIXTURE);
+        std::fs::read(&path).unwrap_or_else(|e| panic!("{}: {e}", path.display()))
+    }
+
+    /// The payload inside that message, which is what a real `fetch_dump`
+    /// hands back and therefore what the fake must serve.
+    fn a4_working_kit_payload() -> Vec<u8> {
+        digi_protocol::protocol::parse_sysex(&a4_working_kit_message())
+            .dump
+            .expect("a dump message")
+            .payload
+    }
+
+    fn a4_session() -> (Session, DeviceId) {
+        let mut session = Session::default();
+        let id = session.add_device(CoreDevice::new("A4", &digi_core::device::A4, 16));
+        let device = session.device_mut(id).expect("just added");
+        device.io = DeviceIo {
+            input: Some(port("a4-in")),
+            output: Some(port("a4-out")),
+            ..DeviceIo::default()
+        };
+        (session, id)
+    }
+
+    fn a4_identity() -> DeviceIdentity {
+        identity_from_responses(
+            &DeviceResponse {
+                product_id: 4,
+                supported_ids: vec![0x60],
+                reported_name: "Analog Four".into(),
+            },
+            "0195".into(),
+            "1.55B".into(),
+        )
+    }
+
+    /// **The refusal that was wrong in both halves.** `patch_read_blocker`
+    /// asked `can_sysex`, which means "has a gen-2 `Spec`", and told anyone
+    /// with an A4 that it "plays over MIDI but has no patch names to read".
+    /// The box has moved patterns since 2026-08-31 and its kit carries the
+    /// names; what the blocker is actually about is a box whose patterns do not
+    /// move at all.
+    #[test]
+    fn an_a4_is_no_longer_refused_a_patch_names_read() {
+        let (session, id) = a4_session();
+        let d = session.device(id).unwrap();
+        assert!(!d.can_sysex(), "and it still has no gen-2 spec — that was never the question");
+        assert_eq!(patch_read_blocker(d, PortsPresent::unknown()), None);
+
+        let job = patch_read_job(&session, id, PortsPresent::unknown(), Some(Slot::new(0, 0)))
+            .expect("a gen-1 box resolves a job without a spec");
+        assert_eq!(job.route, PatternRoute::RequestGen1);
+        assert!(job.spec.is_none(), "and needs none");
+    }
+
+    /// The read itself: one `0x68`, four sound names off the box's own capture,
+    /// and no slot request at all.
+    #[test]
+    fn an_a4_read_asks_for_the_edit_buffer_and_names_four_sounds() {
+        let (session, id) = a4_session();
+        let job = patch_read_job(&session, id, PortsPresent::unknown(), Some(Slot::new(0, 0)))
+            .expect("a job");
+
+        let mut fake = FakeBox::new(a4_identity(), WORKING_KIT, a4_working_kit_payload());
+        let kit = read_patch_kit(&mut fake, &job).expect("the fake answers");
+        assert_eq!(fake.fetches(), 1, "one round trip");
+
+        let PatchKit::Gen1(kit) = kit else { panic!("an A4 reads as a gen-1 kit") };
+        assert_eq!(kit.name, "POLYTRON");
+        assert_eq!(
+            (0..4).map(|t| kit.sound_name(t).unwrap()).collect::<Vec<_>>(),
+            ["ARPME", "WAVE MOD LEAD", "ALONE", "BRE"],
+        );
+        assert!(PatchKit::Gen1(kit).is_live(), "the edit buffer is not a stored slot");
+    }
+
+    /// **A gen-1 read never asks for a slot**, which is what makes hiding the
+    /// picker honest rather than cosmetic. The fake holds a payload at slot 0
+    /// *as well as* its edit buffer; a read that fell through to
+    /// `fetch_pattern_kit` would find it and quietly succeed with the wrong
+    /// bytes, so the slot map is loaded on purpose here.
+    #[test]
+    fn an_a4_read_never_reaches_the_slot_request() {
+        let (session, id) = a4_session();
+        let job = patch_read_job(&session, id, PortsPresent::unknown(), Some(Slot::new(0, 0)))
+            .expect("a job");
+
+        let mut fake = FakeBox::new(a4_identity(), 0, payload(DT2_FIXTURE));
+        let err = read_patch_kit(&mut fake, &job).unwrap_err();
+        assert!(err.contains("no working kit"), "it asked the slot map instead: {err}");
+    }
+
+    /// The four sounds land on six tracks, and the two the kit holds nothing
+    /// for say so rather than reading as unnamed slots a later read might fill.
+    #[test]
+    fn an_a4_patches_six_tracks_and_the_last_two_have_no_sound() {
+        use digi_core::model::PatchSound;
+
+        let (mut session, id) = a4_session();
+        let job = patch_read_job(&session, id, PortsPresent::unknown(), Some(Slot::new(0, 0)))
+            .expect("a job");
+        let mut fake = FakeBox::new(a4_identity(), WORKING_KIT, a4_working_kit_payload());
+        let PatchKit::Gen1(kit) = read_patch_kit(&mut fake, &job).unwrap() else {
+            panic!("gen-1")
+        };
+
+        let model = session.device(id).unwrap().model;
+        let sounds = digi_core::a4_transfer::a4_patch_sounds(model, &kit);
+        let count = session
+            .apply_patch_sounds(
+                id,
+                job.at,
+                &sounds,
+                &kit.name,
+                kit.index,
+                &job.source,
+                1_787_184_000,
+                true,
+            )
+            .expect("six tracks patch");
+        assert_eq!(count, 6, "SYN1-4, FX, CV");
+
+        let pattern = session.device(id).unwrap().pattern(0).unwrap();
+        let sound = |t: usize| pattern.track(t).unwrap().patch.as_ref().unwrap().sound.clone();
+        assert_eq!(sound(0), PatchSound::Named("ARPME".into()));
+        assert_eq!(sound(3), PatchSound::Named("BRE".into()));
+        assert_eq!(sound(4), PatchSound::NoSound, "FX is the sequencer's track, not the kit's");
+        assert_eq!(sound(5), PatchSound::NoSound, "and so is CV");
+
+        for t in 0..6 {
+            assert!(
+                pattern.track(t).unwrap().patch.as_ref().unwrap().live,
+                "track {t}: read off the edit buffer, so it claims no slot",
+            );
+        }
     }
 
     // --- the "ask rather than assume" refusal -----------------------------------

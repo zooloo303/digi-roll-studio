@@ -98,8 +98,14 @@ pub struct PLockLane {
     ///
     /// Display rather than stored, and `js/state.js` gives the reason: a lane can
     /// be authored and auditioned before anyone knows what its uint16 would be.
-    /// The stored word (display × 256, per the Phase 0 measurements) appears only
-    /// at the pattern's lane pool, which is unported.
+    /// The stored word appears only at the pattern's lane pool, and the two pools
+    /// do not agree about what it is: gen-2 stores display × 256 inline
+    /// (`digi_protocol::plocks`), and gen-1 splits it into a coarse byte plus an
+    /// optional extension lane carrying **128ths** of a display unit
+    /// (`digi_protocol::a4_plocks`). Both are ported and both are written.
+    ///
+    /// This said "at the pattern's lane pool, which is unported" until
+    /// 2026-09-01, and named 256ths for both generations.
     #[serde(default)]
     pub values: Vec<Option<u16>>,
     /// What the box's own screen calls this knob, when we know — `FLTR1 FRQ`.
@@ -178,13 +184,27 @@ impl PLockLane {
     }
 
     pub fn param(&self) -> digi_protocol::params::ParamDesc {
+        use digi_protocol::params;
         let kind = self.device_kind.as_deref().unwrap_or_default();
-        let mut desc = digi_protocol::params::describe_param(
-            digi_protocol::params::param_table_for(kind),
+        let key = params::device_kind_key(kind);
+        // **A bare id is not admissible on every box.** On the A4 the p-lock id
+        // space is per track kind, and a lane does not carry its track — so an
+        // FX-track lane on `0x22` must not resolve to the synth table's
+        // `filter.cutoff`. See `params::plock_id_identifies_parameter` for the
+        // corruption that would follow. The A4's import puts the answer in
+        // `name`, which is admissible everywhere.
+        let by_id = self.param_id.filter(|_| params::plock_id_identifies_parameter(kind));
+        let mut desc = match params::curated_param(
+            params::param_table_for(kind),
             self.name.as_deref(),
-            self.param_id,
-            digi_protocol::params::device_kind_key(kind),
-        );
+            by_id,
+        ) {
+            Some(p) => p.describe(key),
+            // Not `describe_param`: that would try the id again. The raw
+            // descriptor still names the byte, so an unnamed A4 lane reads
+            // "A4 param 0x22" exactly as it did before curation existed.
+            None => params::raw_param_desc(self.param_id, key),
+        };
         // A measured name replaces the `param 0x22` stand-in and changes nothing
         // else. `curated` stays as `describe_param` left it, so a lane named
         // this way is still read-only — see [`PLockLane::label`].
@@ -312,6 +332,18 @@ pub enum PatchSound {
     Midi,
     /// An audio track slot the kit has never named.
     Unnamed,
+    /// **The kit holds no sound for this track at all** — a fourth shape, added
+    /// 2026-09-01 for the Analog Four, whose kit carries four sounds against a
+    /// sequencer of six tracks. FX and CV are the sequencer's, not the kit's.
+    ///
+    /// Not [`PatchSound::Unnamed`], which is a slot that *could* carry a sound
+    /// and does not, so a later read might name it; nothing will ever name
+    /// these two. Not [`PatchSound::Midi`] either — that is a mask bit in a
+    /// gen-2 kit over a track that would otherwise hold a sound, and the A4 has
+    /// no such mask. Three shapes were three because each answers a different
+    /// question, and collapsing this into one of them would have been the same
+    /// mistake at one remove.
+    NoSound,
 }
 
 /// Provenance for a track's sound: what a fetch last saw, and where it came
@@ -335,6 +367,23 @@ pub struct TrackPatch {
     /// rather than a dependency: nothing in this crate needs calendar
     /// arithmetic on it, only a caller formatting one for a tooltip.
     pub seen_at: i64,
+    /// **This came off the box's edit buffer, not a stored slot** — so
+    /// [`TrackPatch::from`] names where the records were *applied* and makes no
+    /// claim about where the names were read.
+    ///
+    /// Added 2026-09-01 with the Analog Four's patch-names read. Every gen-2
+    /// read names a stored slot, and `ui::sync`'s own header says why that can
+    /// never claim to be live: a dump request addresses a saved pattern and
+    /// nothing in the protocol asks a box what it is playing. The A4's `0x68`
+    /// does exactly that, unsaved kit edits included, so this read is *more*
+    /// current than a digi's and has no slot behind it — and the two facts
+    /// travel together, because a UI that printed "from A01" over an edit-buffer
+    /// read would be inventing provenance.
+    ///
+    /// False on every record written before this existed, which is correct:
+    /// they were all stored-slot reads.
+    #[serde(default)]
+    pub live: bool,
 }
 
 impl Track {

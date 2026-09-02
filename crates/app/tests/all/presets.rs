@@ -644,7 +644,19 @@ fn an_a4_browses_and_has_no_load_path() {
     assert_eq!(blocker(&a4), None, "browsing needs ports and it has them");
 
     let why = load_blocker(&a4).expect("an A4 cannot be loaded onto");
-    assert!(why.contains("no dump request"), "it must say which half is missing: {why}");
+    // **This asserted `why.contains("no dump request")` until 2026-09-01.** The
+    // box has answered dump requests since 2026-08-31, so the sentence led with
+    // a claim that was flatly false and the test was holding it there. What the
+    // refusal has to name is the *one* message that is missing — putting a sound
+    // on a track — not a capability the box turned out to have.
+    assert!(
+        !why.contains("answers no dump request"),
+        "the A4 answers dump requests; the refusal is narrower than that: {why}"
+    );
+    assert!(
+        why.contains("no message that puts a sound on"),
+        "it must say which half is missing: {why}"
+    );
     assert!(
         why.contains("browse") || why.contains("browses"),
         "and that the rest of the panel still works: {why}"

@@ -510,9 +510,13 @@ pub const VALUE_MAX: u16 = 0xFEFE;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct A4LaneWrite {
     pub param_id: u8,
-    /// Stored 16-bit words — the displayed value in the high byte, 256ths in
-    /// the low. The same quantity gen-2 keeps inline in a `u16be`, and what
-    /// [`A4Lane::word`] reports. `None` is a step with no lock; a short array
+    /// Stored 16-bit words as [`A4Lane::word`] packs them — the coarse byte in
+    /// the high half, the extension lane's fine byte in the low. **Not the
+    /// quantity gen-2 keeps inline in a `u16be`**: the fine byte is 128ths of a
+    /// display unit and gen-2's low byte is 256ths, so the word is not linear in
+    /// the displayed value. It is a faithful reversible packing of the two
+    /// stored bytes, which is all the round trip needs — see the module header's
+    /// "The fine byte is 128ths". `None` is a step with no lock; a short array
     /// leaves the remaining steps unlocked.
     pub values: Vec<Option<u16>>,
 }

@@ -917,6 +917,7 @@ fn a_patch() -> TrackPatch {
         kit_index: 7,
         from: Source { device_slug: "digitakt2".into(), bank: 1, index: 5 },
         seen_at: 1_787_184_000, // 2026-08-20T00:00:00Z — not the default of nothing
+        live: false,
     }
 }
 

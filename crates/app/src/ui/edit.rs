@@ -86,7 +86,7 @@ use digi_core::midifile::{midi_file_name, midi_file_to_notes, track_to_midi_file
 use digi_core::model::PLockLane;
 use digi_core::{Session, Track};
 use digi_protocol::pattern::{length_byte_to_steps, steps_to_length_byte};
-use digi_protocol::params::auditable_params_for;
+use digi_protocol::params::writable_params_for;
 use eframe::egui::{self, Color32, Ui};
 
 use crate::ui::pianoroll::{PianoRoll, ZOOM_MAX, ZOOM_MIN};
@@ -683,20 +683,28 @@ impl EditPanel {
         super::section_header(ui, "P-LOCK LANES", None);
         let mut changed = false;
 
-        let kind = session.device(device).and_then(|d| d.model.spec()).map(|s| s.device);
-        let Some(kind) = kind else {
-            ui.label(
-                egui::RichText::new(
-                    "This box has no SysEx spec, so there is no parameter table to \
-                     author a lane against.",
-                )
-                .weak()
-                .italics(),
-            );
+        // **The box's own key, not its `Spec`'s.** This read `model.spec()` until
+        // 2026-09-01, and `spec()` is `None` on the Analog Four and always will be
+        // — so an A4 track carrying sixty-one lanes off the box listed none of
+        // them and said "this box has no SysEx spec" instead. That sentence was
+        // answering a question nobody asked here: *listing* a lane needs only
+        // `PLockLane::param`, which resolves against the lane's own recorded
+        // `device_kind` and no spec at all. What a spec was standing in for is the
+        // **authoring** half, and that is now gated on its own terms below.
+        let Some(kind) = session.device(device).map(|d| d.model.key) else {
             return false;
         };
 
-        let params = auditable_params_for(kind);
+        // **`writable_params_for`, not `auditable_params_for`.** A lane is
+        // authored to be *written into a pattern*, so the question is whether the
+        // parameter's p-lock slot has been measured — not whether it can be heard
+        // over MIDI. The two sets are identical on both digis (all eleven), so
+        // this changes nothing there; it differs on the A4, whose eleven
+        // parameters are auditable and none of whose p-lock scalings have been
+        // measured. Offering them would have produced a lane the write path then
+        // refuses by name, which is the exact trade `params.rs`'s own split at the
+        // top of the file exists to prevent.
+        let params = writable_params_for(kind);
         let taken: Vec<&'static str> = crate::ui::tracks::track(session, selection)
             .map(|t| t.plocks.iter().filter_map(|l| l.param().name).collect())
             .unwrap_or_default();
@@ -776,19 +784,43 @@ impl EditPanel {
             }
         }
 
+        // **Two different emptinesses, and they say different things.** `params`
+        // empty means no parameter on this box can be authored into a lane *at
+        // all*; `available` empty means every one that can is already on this
+        // track. The A4 is the first box to reach the first state, and telling
+        // someone "every parameter already has a lane" in front of an empty list
+        // would be a flat contradiction.
+        let can_author = !params.is_empty();
+
         if lanes.is_empty() {
             ui.label(
-                egui::RichText::new(
+                egui::RichText::new(if can_author {
                     "No lanes on this track. Add one and its bars appear under the \
-                     roll — press in a bar to set a step, drag to paint.",
-                )
+                     roll — press in a bar to set a step, drag to paint."
+                        .to_string()
+                } else {
+                    format!(
+                        "No lanes on this track. Fetch a pattern off the {kind} and any \
+                         p-locks it carries arrive here and under the roll."
+                    )
+                })
                 .weak()
                 .small(),
             );
             ui.add_space(4.0);
         }
 
-        if available.is_empty() {
+        if !can_author {
+            ui.label(
+                egui::RichText::new(format!(
+                    "No {kind} parameter has a measured p-lock scaling yet, so a lane off \
+                     the box is drawn and sent back exactly as it came — and there is \
+                     nothing to author one from here."
+                ))
+                .weak()
+                .small(),
+            );
+        } else if available.is_empty() {
             ui.label(
                 egui::RichText::new(format!(
                     "Every {kind} parameter this app has mapped already has a lane here."
@@ -1695,5 +1727,67 @@ mod tests {
         assert_eq!(row1.colour, READ_ONLY_LANE_CHIP);
         assert!(!row1.editable);
         assert_ne!(row1.colour, plocklane::lane_color(1).0);
+    }
+
+    /// **The panel lists a lane it cannot author, and the A4 is the box where
+    /// those two answers first differ.** Listing needs only the lane's own
+    /// recorded `device_kind`; authoring needs a measured p-lock scaling. The
+    /// section used to be gated as a whole on `model.spec()`, which is `None`
+    /// here, so a track carrying lanes off the box listed nothing at all.
+    ///
+    /// The lane below carries an **id and no name**, which on this box is not
+    /// enough to curate — its id space is per track kind, so a bare `0x22`
+    /// could be an FX-track lane. It lists, read-only, with the name the box
+    /// prints.
+    #[test]
+    fn the_panel_lists_an_a4_lane_it_cannot_author_from() {
+        let lane =
+            PLockLane::new(None, Some(0x22), Some(String::from("A4")), false, vec![Some(0x4000)])
+                .unwrap()
+                .with_label("FLTR1 FRQ");
+
+        let row = lane_row((0, &lane));
+        assert_eq!(row.label, "FLTR1 FRQ", "the box's own name, not the hex stand-in");
+        assert_eq!(row.steps, 1);
+        assert!(!row.editable, "an id with no name is not curated on this box");
+        assert_eq!(row.colour, READ_ONLY_LANE_CHIP);
+    }
+
+    /// **And the picker offers every parameter this app knows on the A4.**
+    /// This asserted `writable_params_for("A4").is_empty()` until 2026-09-01,
+    /// when `a4_scale_probe` read all thirteen scalings off the A4's own screen
+    /// across four runs — so the A4's picker is now exactly as full as a digi's.
+    #[test]
+    fn the_picker_offers_the_a4_parameters_that_were_measured() {
+        assert_eq!(writable_params_for("A4").len(), 13);
+        // A lane resolved by canonical name — what the import gives a synth
+        // track — is curated, editable and draws in colour.
+        let lane = PLockLane::new(
+            Some(String::from("filter.cutoff")),
+            Some(0x22),
+            Some(String::from("A4")),
+            false,
+            vec![Some(64)],
+        )
+        .unwrap();
+        let row = lane_row((0, &lane));
+        assert!(row.editable, "a measured scaling is what makes a lane draggable");
+        assert_eq!(row.colour, plocklane::lane_color(0).0);
+        assert_eq!(row.label, "FLTR1 FREQ");
+    }
+
+    /// The switch from `auditable_params_for` to `writable_params_for` costs the
+    /// digis nothing — every parameter they can hear also has a measured p-lock
+    /// slot. If that ever stops being true the picker quietly loses an entry,
+    /// so it is asserted rather than assumed.
+    #[test]
+    fn every_auditable_digi_parameter_is_also_authorable() {
+        for kind in ["DT2", "DN2"] {
+            assert_eq!(
+                writable_params_for(kind).len(),
+                digi_protocol::params::auditable_params_for(kind).len(),
+                "{kind}",
+            );
+        }
     }
 }

@@ -133,6 +133,11 @@ pub enum DeviceError {
     NotARequestOpcode(u8),
     /// This box has no known dump protocol, so we cannot address its dumps.
     UnknownFamily(String),
+    /// A call that only the Analog Four answers was aimed at another box. The
+    /// digis do reply to `0x62`, with a gen-2 kit struct nothing here reads
+    /// standalone — so this refuses rather than fetching bytes it would then
+    /// have to guess at.
+    NotAnAnalogFour(u8),
 }
 
 impl std::fmt::Display for DeviceError {
@@ -145,6 +150,10 @@ impl std::fmt::Display for DeviceError {
             DeviceError::UnknownFamily(name) => {
                 write!(f, "no known dump protocol for {name}")
             }
+            DeviceError::NotAnAnalogFour(family) => write!(
+                f,
+                "that request is the Analog Four's; this box answered dump family {family:#04x}"
+            ),
         }
     }
 }

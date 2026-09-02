@@ -227,7 +227,7 @@ fn main() {
                     .unwrap_or_default();
                 let fine = l.fine.as_ref().and_then(|f| f.get(step).copied().flatten());
                 let fine = match fine {
-                    Some(f) if f != 0 => format!(" (+{f}/256)"),
+                    Some(f) if f != 0 => format!(" (+{f}/128)"),
                     _ => String::new(),
                 };
                 println!(
@@ -266,7 +266,7 @@ fn describe(l: &A4Lane) -> String {
             v.map(|v| {
                 let fine = l.fine.as_ref().and_then(|f| f.get(step).copied().flatten());
                 match fine {
-                    Some(f) if f != 0 => format!("step {} = {v} (+{f}/256)", step + 1),
+                    Some(f) if f != 0 => format!("step {} = {v} (+{f}/128)", step + 1),
                     _ => format!("step {} = {v}", step + 1),
                 }
             })

@@ -321,6 +321,21 @@ pub trait PatternIo {
     fn identity(&self) -> Option<&DeviceIdentity>;
     fn fetch_pattern_kit(&mut self, index: u8) -> Result<Vec<u8>, String>;
     fn send_pattern_kit(&mut self, index: u8, payload: &[u8]) -> Result<(), String>;
+
+    /// The Analog Four's **working kit** — its edit buffer, `0x68` → `0x58`.
+    ///
+    /// **Not a round trip a safe write needs**, which is why it is defaulted to
+    /// a refusal rather than added to the two above. It is here because this
+    /// trait is already what a *read* path is written against — `ui::sync`'s
+    /// patch-names read has always gone through `fetch_pattern_kit` — and a
+    /// second trait for one gen-1 method would mean every test double in the
+    /// workspace grew a bound it has nothing to say about.
+    ///
+    /// The default refuses in the box's own terms, so a caller that dispatches
+    /// on the wrong route gets a sentence rather than a panic or a wrong kit.
+    fn fetch_a4_working_kit(&mut self) -> Result<Vec<u8>, String> {
+        Err("this box has no gen-1 kit dump to read an edit buffer from".into())
+    }
 }
 
 /// Progress, consent, and an optional second copy of the backup.
