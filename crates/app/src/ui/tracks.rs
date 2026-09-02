@@ -13,16 +13,21 @@
 // a one-line summary once "32 open headers is more than a screen" — a concern
 // that mattered when each track was a wrapped inline button. A 46px-tall row of
 // 16 cells costs a fixed ~54px per box regardless of window width, and the
-// spec's own layout (§1b) never mentions a fold control; §1b's `pane()` caller
-// in `workspace.rs` already scrolls this pane when a session outgrows the
-// row's height, which is the mechanism a third or fourth box now leans on
-// instead. Dropping the fold state also let `Groups` and its fold-arrow polygon
+// spec's own layout (§1b) never mentions a fold control; this pane scrolls its
+// own grid when a session outgrows the row's height, which is the mechanism a
+// fifth or sixth box now leans on instead — `pane_height` below simply makes
+// the row tall enough that the first four never reach for it. Dropping the fold state also let `Groups` and its fold-arrow polygon
 // go — nothing in this redesign draws a glyph that could turn to tofu, per
 // `super`'s postmortem table, because there is no glyph left to draw here.
 //
-// **The selected-track parameter row (§1b item 4) is deliberately almost
-// untouched.** The spec calls it "unchanged from the current app apart from
-// the box·track label at its head", so the M/S toggles, LEN, SCALE, CH and
+// **The selected-track parameter row (§1b item 4) is pinned, and otherwise
+// deliberately almost untouched.** Pinned since 2026-09-01: it used to be the
+// last thing in the same scroll as the grid, so the third box in the session
+// put the one line naming the selected track under the fold — see `ui` below
+// for how the `bottom_up` layout keeps it on the pane's floor, and
+// `pane_height` for the second half, which is that three boxes now fit without
+// scrolling at all. Beyond that the spec calls it "unchanged from the current
+// app apart from the box·track label at its head", so the M/S toggles, LEN, SCALE, CH and
 // trig-count controls below are the same code the old pane had — ported
 // forward rather than rebuilt. The one change beyond the label format is that
 // the mock's static "PRESET 1" is not reproduced: this app has no preset/kit
@@ -66,7 +71,7 @@
 use digi_core::model::{PatchSound, TrackScale};
 use digi_core::track_clip::{paste_track, TrackClip};
 use digi_core::{Device, Pattern, Session, Source, Track, TrackKind};
-use eframe::egui::{self, Align2, FontId, Pos2, Rect, Sense, Stroke, Ui, Vec2};
+use eframe::egui::{self, Align, Align2, FontId, Layout, Pos2, Rect, Sense, Stroke, Ui, Vec2};
 
 use crate::engine::EngineLink;
 
@@ -570,6 +575,26 @@ const SECTION_GAP: f32 = 10.0;
 /// Padding between the last device row's divider and the parameter row below —
 /// the spec's `padding-top: 10px` on that row.
 const PARAM_ROW_GAP: f32 = 10.0;
+/// The divider itself, between the grid and the parameter row.
+const RULE_H: f32 = 1.0;
+/// The parameter row's own height: one line of controls at egui's default
+/// `interact_size`, plus the two pixels a `DragValue`'s frame adds around it.
+///
+/// Only [`pane_height`] uses this, and only to pick a height that fits — the
+/// row's real height is whatever egui lays it out at, and the `bottom_up`
+/// layout in [`ui`] gives it that much whether this number agrees or not. A row
+/// that wraps to two lines in a narrow window takes the second line out of the
+/// grid's scroll, not out of itself.
+const PARAM_ROW_H: f32 = 24.0;
+/// The most device rows the pane shows before the grid starts scrolling them.
+///
+/// Four rather than three, so the three boxes in the house and one more borrowed
+/// for an evening all fit; past that the roll underneath would be paying for
+/// lanes nobody is looking at, and scrolling is the cheaper trade.
+const MAX_ROWS_SHOWN: usize = 4;
+/// The pane's inner padding. Named because [`pane_height`] has to add the same
+/// top and bottom back on to work out how tall the pane wants to be.
+const FRAME_MARGIN: egui::Margin = egui::Margin { left: 14, right: 14, top: 12, bottom: 14 };
 
 /// Whether `track` carries anything worth a density strip, a trig count, or a
 /// progress overlay. The one predicate the whole cell hangs off: an empty
@@ -874,19 +899,37 @@ fn paint_device_row(
     }
 }
 
+/// The height `workspace` hands this pane: one device row per box in the
+/// session, up to [`MAX_ROWS_SHOWN`] of them, plus the chrome above and below.
+///
+/// **The caller asks rather than assumes, because the A4 broke the assumption.**
+/// The row was a flat 206px sized for the two-box session this app shipped
+/// with. A third box (2026-08-31) pushed the parameter row past the fold: the
+/// pane scrolled, the row scrolled with it, and the one line naming which track
+/// the roll is editing was only reachable by scrolling a pane most people never
+/// noticed was scrollable. [`ui`] now pins that row out of the scroll so it
+/// cannot hide again at any height; this makes the ordinary case — every box in
+/// the house on screen at once — need no scrolling to begin with.
+///
+/// Capped, because the roll underneath needs the rest of the window: past
+/// [`MAX_ROWS_SHOWN`] boxes the grid scrolls, which is what the fixed height
+/// always did once a session outgrew it.
+pub fn pane_height(devices: usize) -> f32 {
+    let rows = devices.clamp(1, MAX_ROWS_SHOWN) as f32;
+    FRAME_MARGIN.top as f32
+        + HEADER_H
+        + SECTION_GAP
+        + rows * (CELL_H + ROW_GAP)
+        + RULE_H
+        + PARAM_ROW_GAP
+        + PARAM_ROW_H
+        + FRAME_MARGIN.bottom as f32
+}
+
 /// Draw the pane. Returns whether the session changed — which clicking a cell
 /// never does; only the parameter row below the grid can.
 pub fn ui(ui: &mut Ui, session: &mut Session, selection: &mut Selection, engine: &EngineLink) -> bool {
     let mut changed = false;
-    /// What the VOL field shows before anything has set it. The middle of the
-    /// range rather than the top: a fader that opens at 127 invites a first drag
-    /// that can only go down, and the box's own default is not knowable from
-    /// here anyway (see `Track::level`).
-    const DEFAULT_LEVEL: u8 = 100;
-    // Set by the VOL field below, acted on after the selected track's mutable
-    // borrow of the session ends — sending reads the session back, which is the
-    // one thing that borrow forbids.
-    let mut level_moved = false;
 
     // Read before the mutable borrow of the selected track below: the param
     // row says which box the track belongs to, and a bare track number does
@@ -918,147 +961,210 @@ pub fn ui(ui: &mut Ui, session: &mut Session, selection: &mut Selection, engine:
     egui::Frame::new()
         .fill(super::PANEL_BG)
         .stroke(Stroke::new(1.0, super::PANEL_BORDER))
-        .inner_margin(egui::Margin { left: 14, right: 14, top: 12, bottom: 14 })
+        .inner_margin(FRAME_MARGIN)
         .show(ui, |ui| {
-            paint_header(ui, session, *selection);
-            // The clipboard's last word — what a copy or a paste had to say,
-            // including any warning a paste came back with — sits directly
-            // under the header, the pane's own natural home for a line about
-            // the pane as a whole rather than about one track.
-            match clipboard.message.as_deref() {
-                Some(message) => {
-                    ui.add_space(4.0);
-                    super::consequence_line(ui, message);
-                    ui.add_space(SECTION_GAP - 4.0);
-                }
-                None => ui.add_space(SECTION_GAP),
-            }
-
-            for (index, device) in session.devices.iter().enumerate() {
-                let Some(pattern) = session.current_pattern(device.id) else {
-                    continue;
-                };
-                paint_device_row(ui, device, pattern, index, selection, clipboard.source, position_steps);
-                ui.add_space(ROW_GAP);
-            }
-
-            let rule_rect = ui.allocate_exact_size(Vec2::new(ui.available_width(), 1.0), Sense::hover()).0;
-            ui.painter().line_segment(
-                [rule_rect.left_top(), rule_rect.right_top()],
-                Stroke::new(1.0, super::PANEL_BORDER),
-            );
-            ui.add_space(PARAM_ROW_GAP);
-
-            // --- the selected-track parameter row: unchanged from the old
-            // pane apart from the label at its head (see this module's doc
-            // comment for why "PRESET 1" is not reproduced). ---
-            // Read before `track_mut` takes the session: the CH note below is
-            // per-model, and a `&'static str` key is all it needs to survive
-            // the borrow.
-            let model_key = session.devices.get(selection.device).map(|d| d.model.key);
-            let Some(track) = track_mut(session, *selection) else {
-                ui.weak("no track selected");
-                return;
-            };
-
-            ui.horizontal_wrapped(|ui| {
-                ui.label(
-                    egui::RichText::new(format!("{owner} · {:02}", selection.track + 1))
-                        .strong()
-                        .color(super::TEXT_PRIMARY),
+            // **Laid out from the floor up, so the parameter row is pinned.**
+            // Everything in this pane used to sit in one `ScrollArea` — header,
+            // device rows, divider and parameter row alike — so the row naming
+            // the selected track was simply the last thing in a scrolling
+            // column, and the third box in the session pushed it out of sight.
+            // A `bottom_up` layout claims that row's height first, off the
+            // pane's floor, and gives the grid whatever is left; the row is
+            // then outside the scroll by construction rather than by a height
+            // that happens to be generous enough, which is what
+            // [`pane_height`] alone could never guarantee. It also survives the
+            // row wrapping to two lines in a narrow window: the grid gives up
+            // the second line's height, not the row.
+            ui.with_layout(Layout::bottom_up(Align::Min), |ui| {
+                changed |= param_row(ui, session, *selection, &owner, engine);
+                ui.add_space(PARAM_ROW_GAP);
+                let rule_rect =
+                    ui.allocate_exact_size(Vec2::new(ui.available_width(), RULE_H), Sense::hover()).0;
+                ui.painter().line_segment(
+                    [rule_rect.left_top(), rule_rect.right_top()],
+                    Stroke::new(1.0, super::PANEL_BORDER),
                 );
 
-                if ui.toggle_value(&mut track.mute, "M").changed() {
-                    changed = true;
-                }
-                if ui
-                    .toggle_value(&mut track.solo, "S")
-                    .on_hover_text("Solo is session-wide: soloing a DT2 track silences DN2 tracks too")
-                    .changed()
-                {
-                    changed = true;
-                }
-
-                // **VOL is the box's own track LEVEL, and moving it moves the
-                // box.** It sends the moment it changes — a fader that waited
-                // for the transport would be a fader that does nothing while
-                // stopped, which is when most mixing happens. Nothing puts the
-                // level back afterwards, exactly as if the encoder had been
-                // turned by hand, and the hover says so.
-                //
-                // `None` until touched: see `Track::level`. The field shows
-                // `DEFAULT_LEVEL` while it is unset, dimmed by the same argument
-                // the hover makes — the app does not know where the box's fader
-                // is and must not pretend the number under the pointer is a
-                // reading. The first drag makes it a value, and only then is
-                // anything sent.
-                ui.label("VOL");
-                let mut level = track.level.unwrap_or(DEFAULT_LEVEL);
-                let response = ui.add(egui::DragValue::new(&mut level).range(0..=127));
-                if response.changed() {
-                    track.level = Some(level);
-                    level_moved = true;
-                    changed = true;
-                }
-                response.on_hover_text(match track.level {
-                    Some(_) => "The box's own track LEVEL (CC 95). Sent as you move it — this \
-                                rides the box's fader, and nothing puts it back.",
-                    None => "The box's own track LEVEL (CC 95). Nothing has been sent yet: \
-                             only the box knows where its fader is, so this shows a starting \
-                             number rather than a reading. Move it and it rides the box's \
-                             fader, and nothing puts it back.",
-                });
-
-                ui.label("LEN");
-                if ui
-                    .add(egui::DragValue::new(&mut track.length_steps).range(1..=128))
-                    .on_hover_text("Steps before this track wraps — its own, not the pattern's")
-                    .changed()
-                {
-                    changed = true;
-                }
-
-                ui.label("SCALE");
-                egui::ComboBox::from_id_salt("track-scale")
-                    .selected_text(scale_label(track.scale))
-                    .show_ui(ui, |ui| {
-                        for (scale, label) in SCALES {
-                            if ui.selectable_value(&mut track.scale, scale, label).changed() {
-                                changed = true;
-                            }
+                // Back to reading order for what is left: the header at the
+                // top, the grid filling the gap down to the rule above.
+                ui.with_layout(Layout::top_down(Align::Min), |ui| {
+                    paint_header(ui, session, *selection);
+                    // The clipboard's last word — what a copy or a paste had to
+                    // say, including any warning a paste came back with — sits
+                    // directly under the header, the pane's own natural home
+                    // for a line about the pane as a whole rather than about
+                    // one track. Above the scroll with the header, for the same
+                    // reason the parameter row is below it: a message you have
+                    // to go looking for is a message that did not arrive.
+                    match clipboard.message.as_deref() {
+                        Some(message) => {
+                            ui.add_space(4.0);
+                            super::consequence_line(ui, message);
+                            ui.add_space(SECTION_GAP - 4.0);
                         }
-                    });
+                        None => ui.add_space(SECTION_GAP),
+                    }
 
-                ui.label("CH");
-                // Channels are 1–16 to the user and 0–15 on the wire, which is
-                // the one place that difference is allowed to show.
-                let mut channel = track.channel as u16 + 1;
-                if ui
-                    .add(egui::DragValue::new(&mut channel).range(1..=16))
-                    .on_hover_text(
-                        "The channel this track's notes go out on. It has to match TRACK n CH on the box \
-                         (SETTINGS > MIDI CONFIG > CHANNELS), which is not the same thing as the track \
-                         number.",
-                    )
-                    .changed()
-                {
-                    track.channel = (channel - 1) as u8;
-                    changed = true;
-                }
-                // Amber, because [`super::CAUTION`] is "this worked but not
-                // the way you wanted" and a trig on a channel the box does not
-                // listen on is exactly that: the app is sending it, and
-                // nothing will ever play it.
-                if let Some((label, why)) =
-                    model_key.and_then(|k| channel_note(k, selection.track, channel))
-                {
-                    ui.label(egui::RichText::new(label).color(super::CAUTION))
-                        .on_hover_text(why);
-                }
-
-                ui.label(egui::RichText::new(format!("{} trigs", track.notes.len())).color(super::TRIG_GREEN));
+                    egui::ScrollArea::vertical()
+                        .id_salt("digi-roll-track-grid")
+                        .auto_shrink([false, false])
+                        .show(ui, |ui| {
+                            for (index, device) in session.devices.iter().enumerate() {
+                                let Some(pattern) = session.current_pattern(device.id) else {
+                                    continue;
+                                };
+                                paint_device_row(
+                                    ui,
+                                    device,
+                                    pattern,
+                                    index,
+                                    selection,
+                                    clipboard.source,
+                                    position_steps,
+                                );
+                                ui.add_space(ROW_GAP);
+                            }
+                        });
+                });
             });
         });
+
+    changed
+}
+
+/// The selected-track parameter row, and the one thing it sends.
+///
+/// Split out of [`ui`] when the row was pinned to the pane's floor: the
+/// `bottom_up` layout has to draw it before the grid it sits under, and a row
+/// that draws first but reads last is much easier to follow as a call than as a
+/// hundred lines wedged above the header.
+fn param_row(
+    ui: &mut Ui,
+    session: &mut Session,
+    selection: Selection,
+    owner: &str,
+    engine: &EngineLink,
+) -> bool {
+    let mut changed = false;
+    /// What the VOL field shows before anything has set it. The middle of the
+    /// range rather than the top: a fader that opens at 127 invites a first drag
+    /// that can only go down, and the box's own default is not knowable from
+    /// here anyway (see `Track::level`).
+    const DEFAULT_LEVEL: u8 = 100;
+    // Set by the VOL field below, acted on after the selected track's mutable
+    // borrow of the session ends — sending reads the session back, which is the
+    // one thing that borrow forbids.
+    let mut level_moved = false;
+
+    // --- the selected-track parameter row: unchanged from the old
+    // pane apart from the label at its head (see this module's doc
+    // comment for why "PRESET 1" is not reproduced). ---
+    // Read before `track_mut` takes the session: the CH note below is
+    // per-model, and a `&'static str` key is all it needs to survive
+    // the borrow.
+    let model_key = session.devices.get(selection.device).map(|d| d.model.key);
+    let Some(track) = track_mut(session, selection) else {
+        ui.weak("no track selected");
+        return false;
+    };
+
+    ui.horizontal_wrapped(|ui| {
+        ui.label(
+            egui::RichText::new(format!("{owner} · {:02}", selection.track + 1))
+                .strong()
+                .color(super::TEXT_PRIMARY),
+        );
+
+        if ui.toggle_value(&mut track.mute, "M").changed() {
+            changed = true;
+        }
+        if ui
+            .toggle_value(&mut track.solo, "S")
+            .on_hover_text("Solo is session-wide: soloing a DT2 track silences DN2 tracks too")
+            .changed()
+        {
+            changed = true;
+        }
+
+        // **VOL is the box's own track LEVEL, and moving it moves the
+        // box.** It sends the moment it changes — a fader that waited
+        // for the transport would be a fader that does nothing while
+        // stopped, which is when most mixing happens. Nothing puts the
+        // level back afterwards, exactly as if the encoder had been
+        // turned by hand, and the hover says so.
+        //
+        // `None` until touched: see `Track::level`. The field shows
+        // `DEFAULT_LEVEL` while it is unset, dimmed by the same argument
+        // the hover makes — the app does not know where the box's fader
+        // is and must not pretend the number under the pointer is a
+        // reading. The first drag makes it a value, and only then is
+        // anything sent.
+        ui.label("VOL");
+        let mut level = track.level.unwrap_or(DEFAULT_LEVEL);
+        let response = ui.add(egui::DragValue::new(&mut level).range(0..=127));
+        if response.changed() {
+            track.level = Some(level);
+            level_moved = true;
+            changed = true;
+        }
+        response.on_hover_text(match track.level {
+            Some(_) => "The box's own track LEVEL (CC 95). Sent as you move it — this \
+                        rides the box's fader, and nothing puts it back.",
+            None => "The box's own track LEVEL (CC 95). Nothing has been sent yet: \
+                     only the box knows where its fader is, so this shows a starting \
+                     number rather than a reading. Move it and it rides the box's \
+                     fader, and nothing puts it back.",
+        });
+
+        ui.label("LEN");
+        if ui
+            .add(egui::DragValue::new(&mut track.length_steps).range(1..=128))
+            .on_hover_text("Steps before this track wraps — its own, not the pattern's")
+            .changed()
+        {
+            changed = true;
+        }
+
+        ui.label("SCALE");
+        egui::ComboBox::from_id_salt("track-scale")
+            .selected_text(scale_label(track.scale))
+            .show_ui(ui, |ui| {
+                for (scale, label) in SCALES {
+                    if ui.selectable_value(&mut track.scale, scale, label).changed() {
+                        changed = true;
+                    }
+                }
+            });
+
+        ui.label("CH");
+        // Channels are 1–16 to the user and 0–15 on the wire, which is
+        // the one place that difference is allowed to show.
+        let mut channel = track.channel as u16 + 1;
+        if ui
+            .add(egui::DragValue::new(&mut channel).range(1..=16))
+            .on_hover_text(
+                "The channel this track's notes go out on. It has to match TRACK n CH on the box \
+                 (SETTINGS > MIDI CONFIG > CHANNELS), which is not the same thing as the track \
+                 number.",
+            )
+            .changed()
+        {
+            track.channel = (channel - 1) as u8;
+            changed = true;
+        }
+        // Amber, because [`super::CAUTION`] is "this worked but not
+        // the way you wanted" and a trig on a channel the box does not
+        // listen on is exactly that: the app is sending it, and
+        // nothing will ever play it.
+        if let Some((label, why)) =
+            model_key.and_then(|k| channel_note(k, selection.track, channel))
+        {
+            ui.label(egui::RichText::new(label).color(super::CAUTION))
+                .on_hover_text(why);
+        }
+
+        ui.label(egui::RichText::new(format!("{} trigs", track.notes.len())).color(super::TRIG_GREEN));
+    });
 
     // **Out of the closure, because sending reads the session** — which the
     // selected track's `&mut` borrow above forbids. The engine link resolves the
@@ -1506,6 +1612,109 @@ mod tests {
             crate::ui::tracks::ui(u, session, selection, engine);
         });
         output.textures_delta.clear();
+    }
+
+    // --- the pane's height, and the row it must never hide -------------------
+
+    /// The three boxes actually in the house as of 2026-08-31, in the order the
+    /// setup panel lists them — the session that first pushed the parameter row
+    /// below the fold.
+    fn three_box_session() -> Session {
+        let mut session = digi_core::two_box_session();
+        session.add_device(Device::new("A4", &digi_core::A4, 6));
+        session
+    }
+
+    #[test]
+    fn pane_height_gives_every_box_a_row_until_the_cap() {
+        let row = CELL_H + ROW_GAP;
+        let one = pane_height(1);
+
+        assert_eq!(pane_height(2), one + row, "a second box costs exactly one row");
+        assert_eq!(pane_height(3), one + 2.0 * row, "and so does the third — the A4 fits without scrolling");
+        assert_eq!(
+            pane_height(9),
+            pane_height(MAX_ROWS_SHOWN),
+            "past the cap the pane stops growing and the grid scrolls instead, so the roll \
+             underneath keeps its window"
+        );
+        // An empty session still has to leave room for the row that says so.
+        assert_eq!(pane_height(0), one, "no boxes is still one row's worth of pane");
+    }
+
+    /// Where a frame painted the parameter row's trig count, and the clip rect
+    /// it was painted under. `None` if nothing painted it at all — which is the
+    /// other half of the failure this test is looking for, since a `ScrollArea`
+    /// culls what has scrolled out rather than painting it somewhere invisible.
+    fn trig_count_paint(output: &egui::FullOutput) -> Option<(Rect, Rect)> {
+        fn find(shape: &egui::Shape, clip: Rect, found: &mut Option<(Rect, Rect)>) {
+            match shape {
+                egui::Shape::Text(text) if text.galley.text().ends_with("trigs") => {
+                    *found = Some((Rect::from_min_size(text.pos, text.galley.size()), clip));
+                }
+                egui::Shape::Vec(shapes) => shapes.iter().for_each(|s| find(s, clip, found)),
+                _ => {}
+            }
+        }
+        let mut found = None;
+        for clipped in &output.shapes {
+            find(&clipped.shape, clipped.clip_rect, &mut found);
+        }
+        found
+    }
+
+    /// Neil, 2026-09-01: "this is kinda hidden by default, the user has to
+    /// scroll to see it."
+    ///
+    /// The parameter row — the one line that says *which* track the roll is
+    /// editing, and carries M/S, VOL, LEN, SCALE and CH — used to be the last
+    /// thing in the same `ScrollArea` as the device grid. Two boxes fit; the A4
+    /// made three, and the row went under the fold of a pane whose scrollbar
+    /// most people never noticed.
+    ///
+    /// So this draws three boxes into a pane deliberately capped at **one**
+    /// box's height — a harsher squeeze than any real window applies, standing
+    /// in for "the grid cannot possibly fit" — and demands the trig count at the
+    /// row's far end still be painted, on screen, and unclipped. Growing
+    /// `pane_height` alone would not pass this: only taking the row out of the
+    /// scroll does.
+    #[test]
+    fn the_parameter_row_stays_on_screen_when_the_grid_has_to_scroll() {
+        let ctx = egui::Context::default();
+        let mut session = three_box_session();
+        let mut selection = Selection::default();
+        let engine = EngineLink::default();
+        let cap = pane_height(1);
+
+        // Two passes, for the reason `frame` above gives: the first lays the
+        // widgets out and the second paints them where the first decided.
+        let mut painted = None;
+        for _ in 0..2 {
+            let mut output = ctx.run_ui(egui::RawInput::default(), |u| {
+                u.allocate_ui_with_layout(Vec2::new(900.0, cap), Layout::top_down(Align::Min), |u| {
+                    u.set_min_height(cap);
+                    u.set_max_height(cap);
+                    crate::ui::tracks::ui(u, &mut session, &mut selection, &engine);
+                });
+            });
+            painted = trig_count_paint(&output);
+            output.textures_delta.clear();
+        }
+
+        let (rect, clip) = painted.expect(
+            "nothing in the frame painted the parameter row's trig count — it scrolled out of \
+             the pane, which is the bug",
+        );
+        assert!(
+            rect.max.y <= cap,
+            "the parameter row was painted at {:?}, past the pane's own {cap}px floor",
+            rect.max.y
+        );
+        assert!(
+            clip.contains_rect(rect),
+            "the parameter row was painted at {rect:?} but clipped to {clip:?} — on screen in the \
+             paint list and invisible on the glass"
+        );
     }
 
     #[test]
