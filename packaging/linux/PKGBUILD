@@ -1,6 +1,6 @@
 # Maintainer: zooloo303
 # Builds Digi-Roll Studio into a native Arch package (.pkg.tar.zst) for advance
-# install via:  sudo pacman -U digi-roll-studio-0.3.2-1-x86_64.pkg.tar.zst
+# install via:  sudo pacman -U digi-roll-studio-0.3.3-1-x86_64.pkg.tar.zst
 #
 # The source tarball is the repo itself, so this builds from source exactly like
 # the macOS and Windows CI builds do. Run from the repo root:
@@ -8,7 +8,7 @@
 #   packaging/linux/build-pkg.sh
 
 pkgname=digi-roll-studio
-pkgver=0.3.2
+pkgver=0.3.3
 pkgrel=1
 pkgdesc="Native Rust desktop sequencer for the Elektron Digitakt II, Digitone II and Analog Four"
 arch=('x86_64')
