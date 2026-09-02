@@ -1002,6 +1002,58 @@ hardware-verified write policy conditional for no reason at all.
   scope of a port. `a4_pattern::sevenbit_is_shared_across_generations` is now the
   test that fails if anyone re-derives the old claim from the old prose.
 
+### 18. "Does the box require X?" is rarely the question the code needs answered
+
+The A4's p-lock pool is written compacted and sorted by `(param_id, track)`.
+That it *produces* that order was measured on 2026-08-31. Whether it *requires*
+it blocked the pool writer for a day, on the reasonable grounds that a pool
+written in another order is a guess delivered to hardware.
+
+**The answer was no, and the encoder still has to emit that order.** Three
+single-variable writes to A16 — keys swapped, a hole between used lanes, an
+extension detached from its parent — and each time the box parsed everything,
+lost no lock, and wrote back its own canonical form. It requires none of the
+three properties. But *because* it normalises, a pool written any other way
+comes back different from what was sent, and `a4_safe_write_tracks` verifies by
+comparing the read-back byte for byte: 10 spurious diffs for the swapped pair,
+132 for the hole. A correct write would have reported as a failed one.
+
+So the obligation on the encoder is real, stronger than the original question
+implied, and **derived from our own verify rather than from the box**. Had the
+experiment come back "the box requires it", the encoder would have been
+identical. The day was not wasted — a guess delivered to hardware is still a
+guess — but the thing it bought was the *reason*, not the rule.
+
+Two habits come out of this:
+
+- **Ask what the code does differently under each answer before running the
+  experiment.** Here both answers produced the same encoder, which was knowable
+  in advance and would have reordered the work: the writer could have been built
+  first and the experiment run to explain it rather than to unblock it. The same
+  shape as `a4_plock_extension_check`, which said so explicitly up front — "both
+  outcomes give the same encoder rule, which is worth knowing before the capture
+  rather than after" — and then the next open item was framed the old way anyway.
+- **The constraint may live on your side of the wire.** "The box tolerates it"
+  and "we may therefore do it" are different claims, and a verify step, a
+  round-trip test or a diff-minimisation promise can each impose a requirement
+  the hardware does not.
+
+**The throwaway variant was the one that paid.** Variant C — an `80 80`
+extension detached from the lane it extends — was included only because the rig
+made it nearly free; the encoder would never emit one. It settled that an
+extension binds to the lane physically *before* it, which `read_all_plocks` had
+always assumed and nothing had ever tested, because the box had never produced a
+pool where the two were apart. A reader's untested assumption is invisible
+precisely while the box keeps agreeing with it by accident, and the only way to
+find it is to hand the box something it would not have written.
+
+It also produced the fixture that caught a real edge in the encoder an hour
+later: a pool holding an all-zero extension, which the round-trip test then
+failed on. **An experiment that corrupts state on purpose leaves behind the one
+input nobody would have thought to construct.**
+
+---
+
 ---
 
 ## Rules that are not up for renegotiation

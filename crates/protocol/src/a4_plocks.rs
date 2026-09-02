@@ -1,5 +1,5 @@
-//! The Analog Four's **gen-1** p-lock pool: 128 lanes of 66 bytes, read off a
-//! pattern payload.
+//! The Analog Four's **gen-1** p-lock pool: 128 lanes of 66 bytes, read off and
+//! written back to a pattern payload.
 //!
 //! The gen-1 counterpart to [`crate::plocks`], and a separate module rather than
 //! a generation parameter on that one. The reasons are in
@@ -52,7 +52,9 @@
 //!   compact the pool; it clears a freed lane in place and claims the lowest
 //!   free lane including holes" — and
 //!   [`crate::plocks::apply_track_plocks`]'s whole scrub-then-write policy is
-//!   built on that. **A gen-1 lane index does not survive an edit on the box.**
+//!   built on that. **A gen-1 lane index does not survive an edit on the box**,
+//!   which is why [`A4LaneWrite`] cannot name one and why
+//!   [`apply_track_plocks`] rebuilds the pool rather than editing it in place.
 //! * 128 lanes of 66 bytes, against 80 of 258.
 //!
 //! # Extension lanes
@@ -72,21 +74,63 @@
 //! and 116, a knob landing in different places inside one displayed integer.
 //! A marker, a count or a companion field could not look like that.
 //!
-//! [`crate::plocks`] records gen-2 storing display × 256 in a `u16be`, so **both
-//! generations store the same 16-bit quantity** — gen-2 inline, gen-1 split
-//! across a lane and its extension, because a gen-1 lane has 64 value bytes
-//! where gen-2's has 128. `0x8080` is a continuation marker rather than a
-//! parameter id, which is why it never looked like a plausible one.
+//! `0x8080` is a continuation marker rather than a parameter id, which is why it
+//! never looked like a plausible one.
 //!
-//! **The fractional reading is inference, and [`A4Lane::word`] is where it
-//! lives.** That the coarse byte equals the display is measured; that the fine
-//! byte is 256ths of a display unit is imported from gen-2.
+//! # The fine byte is 128ths, and it is not the gen-2 quantity
 //!
-//! # There is no write path here, deliberately
+//! This section said the opposite until 2026-09-01: that the fine byte was
+//! 256ths of a display unit and that **both generations store the same 16-bit
+//! quantity**, gen-2 inline and gen-1 split. That was inference imported from
+//! [`crate::plocks`], flagged as inference, and it was wrong.
 //!
-//! [`apply_track_plocks`](crate::plocks::apply_track_plocks) has a gen-1
-//! counterpart only when two things are known. **The first was answered on
-//! 2026-08-31 and the second was not**, so there is still no writer:
+//! **OSC TUNE is what settled it, because it is the only parameter whose fine
+//! byte the box will show you a number for.** TUN and FIN are not two p-lock
+//! parameters — they are the coarse and fine halves of *one* lane, which is why
+//! locking either locks both on the front panel and why turning FIN allocates
+//! nothing. So FIN is a fine byte with its own on-screen value, and it can be
+//! read against the bytes:
+//!
+//! ```text
+//!   TUN  0, FIN   0   ->  coarse 64, fine   0
+//!   TUN  0, FIN  +1   ->  coarse 64, fine   1     one click, one byte
+//!   TUN  0, FIN +63   ->  coarse 64, fine  63     the top of FIN's range
+//!   TUN  0, FIN -64   ->  coarse 63, fine  64     the coarse byte *borrows*
+//!   TUN +1, FIN   0   ->  coarse 65, fine   0     and carries at 128
+//! ```
+//!
+//! So a value is fixed point with **128 fractional steps per display unit**:
+//!
+//! ```text
+//!   value = (coarse - 64) + fine / 128        fine is 0..=127
+//! ```
+//!
+//! Three things follow, and each one contradicts something this module used to
+//! say.
+//!
+//! * **The fine byte never sets its top bit.** Measured on tune by watching the
+//!   carry from `fine 127` to `coarse + 1, fine 0`, and true of every fine byte
+//!   in every capture — 24 of them, highest 116, which
+//!   `tests/a4.rs::no_captured_fine_byte_uses_the_top_bit` pins. Under a 256ths
+//!   reading roughly half should exceed 127.
+//! * **The word is not display × 256, and the generations do not agree.** The
+//!   integer part scales by 256 and the fraction by 128, so
+//!   [`A4Lane::word`] is not linear in the displayed value and words with a fine
+//!   byte of 128–255 are unreachable. It remains a faithful, reversible encoding
+//!   of the stored state — which is all the round trip needs — but it is not a
+//!   quantity to scale arithmetically without knowing this.
+//! * **The coarse byte is not always the displayed value.** `coarse 63, fine 64`
+//!   reads on the box as TUN **0** with FIN −64, not TUN −1. The claim held for
+//!   FLTR1 FREQ, RESO and OVERDRIVE and was written as "measured twice"; all
+//!   three are unipolar, and tune is the first bipolar parameter it met. A UI
+//!   showing the coarse byte as the parameter's value would be off by one across
+//!   half of tune's range.
+//!
+//! # The write path, and what it cost to get
+//!
+//! [`apply_track_plocks`] is the gen-1 counterpart to
+//! [`crate::plocks::apply_track_plocks`], and it waited on three things. All
+//! three are now measured.
 //!
 //! 1. ~~**Whether the box omits an extension whose fine bytes are all zero.**~~
 //!    **Answered 2026-08-31: FLTR1 RESO is integer-valued.** Four RESO locks on
@@ -102,26 +146,45 @@
 //!    indexed per step**, which every previous capture left as inference because
 //!    every previous lock sat on step 1. `tests/a4.rs` pins all of it;
 //!    `examples/a4_plock_extension_check.rs` is the tool that read it.
-//! 2. **Whether the box requires the compacted, `(param_id, track)`-sorted
-//!    order it produces.** That it produces that order is measured. That it
-//!    *needs* it is not, and a pool written in some other order is a guess
-//!    delivered to hardware.
 //!
-//! [`crate::a4_pattern::build_pattern`] refuses to encode a ragged tail it
-//! cannot measure rather than pick one of two orders. This is the same refusal
-//! one level up: the reader is complete, and the writer waits for the capture.
+//! 2. ~~**Whether the box requires the compacted, `(param_id, track)`-sorted
+//!    order it produces.**~~ **Answered 2026-09-01, and the answer inverts the
+//!    question.** Three single-variable writes to A16 — keys swapped, a hole
+//!    wedged between two used lanes, an extension detached from its parent — and
+//!    in every one the box parsed every lane, lost no lock, and wrote back its
+//!    own canonical form. **It requires none of the three.** The sorted-compacted
+//!    pool is a serialisation artefact of a box that holds p-locks keyed by
+//!    `(param_id, track)` and rebuilds them on ingest, not a structure it reads
+//!    in place.
 //!
-//! **A third fact the writer will want, caught free on 2026-09-01.** The lane
-//! probe was watching when A16 was cleared from the front panel, so the box's
-//! own way of *freeing* a lane is on record: it writes [`FREE`] into both id
-//! bytes and **zeroes all 64 value bytes**, rather than filling them with
-//! [`NO_VALUE`]. An extension lane between two used lanes (`80 80`) is freed the
-//! same way. So a writer removing a lock should zero the values, which is not
-//! what the two opposite fills elsewhere in this format would lead anyone to
-//! guess — and an untouched free lane in a cleared pattern reads the same way,
-//! so the two are indistinguishable afterwards, which is presumably the point.
-//! The capture is `local/a4-check/lanes/a4-working-change002.syx` against
-//! `change001`.
+//!    **The encoder emits that form anyway, because the verify needs it.** A
+//!    write is checked by reading the slot back and comparing byte for byte, and
+//!    a box that normalises turns a correct write into a failed-looking one — 10
+//!    spurious diffs for the swapped pair, 132 for the hole. See
+//!    [`apply_track_plocks`], and `examples/a4_plock_order_probe.rs` for the
+//!    instrument.
+//!
+//!    The detached-extension write paid for itself twice. It settled that **an
+//!    `80 80` binds to the lane physically before it** — which this module's
+//!    reader has always assumed and nothing had ever tested, because the box had
+//!    never produced a pool where the two were apart — and it confirmed the
+//!    per-step indexing from the write side, by re-aligning the adopted
+//!    extension's fine bytes to its new parent's locked steps unprompted.
+//!
+//! 3. ~~**How the box frees a lane.**~~ **Answered 2026-09-01, caught free.** The
+//!    lane probe was watching when A16 was cleared from the front panel, so the
+//!    box's own way of freeing a lane is on record: it writes [`FREE`] into both
+//!    id bytes and **zeroes all 64 value bytes**, rather than filling them with
+//!    [`NO_VALUE`]. An extension lane between two used lanes (`80 80`) is freed
+//!    the same way. That is not what the two opposite fills elsewhere in this
+//!    format would lead anyone to guess — and an untouched free lane in a cleared
+//!    pattern reads the same way, so the two are indistinguishable afterwards,
+//!    which is presumably the point. The capture is
+//!    `local/a4-check/lanes/a4-working-change002.syx` against `change001`.
+//!
+//! [`crate::a4_pattern::build_pattern`] still refuses to encode a ragged tail it
+//! cannot measure rather than pick one of two orders. That refusal stands; this
+//! one is discharged.
 
 use crate::a4_pattern::{NUM_STEPS, NUM_TRACKS, PAYLOAD_LEN, TRACK_BASE, TRACK_STRIDE};
 
@@ -172,19 +235,26 @@ pub struct A4Lane {
 }
 
 impl A4Lane {
-    /// The stored 16-bit value at a zero-based step, in the same units
-    /// [`crate::plocks`] reports for gen-2: display × 256.
+    /// The stored 16-bit value at a zero-based step: the coarse byte in the high
+    /// half, the fine byte in the low.
     ///
-    /// **Half measured, half inferred.** The coarse byte being the displayed
-    /// value is measured on this box. That the fine byte is 256ths of a display
-    /// unit is imported from the gen-2 scaling in [`crate::params`] — it is
-    /// consistent with every capture and it is not independently established
-    /// here, which is why the raw bytes stay reachable on
-    /// [`values`](A4Lane::values) and [`fine`](A4Lane::fine).
+    /// **Not display × 256, and not the gen-2 quantity** — that is what this said
+    /// until 2026-09-01, and the module doc has the measurement that refuted it.
+    /// The fine byte is **128ths** of a display unit and never exceeds 127, so
+    /// the integer part of a value scales by 256 here while its fraction scales
+    /// by 128. This number is therefore *not* linear in what the box displays,
+    /// and half the `u16` range is unreachable.
+    ///
+    /// What it is good for is what the write path needs: a faithful, reversible
+    /// packing of the two bytes into one comparable value, so a lane read off the
+    /// box goes back byte-exact. Anything wanting the *displayed* number wants
+    /// `(coarse - 64) + fine / 128` for a bipolar parameter like tune, and the
+    /// raw bytes stay reachable on [`values`](A4Lane::values) and
+    /// [`fine`](A4Lane::fine) precisely because the scaling is per parameter and
+    /// mostly unmeasured.
     ///
     /// A lane with no extension reads its fine byte as zero, which is what an
-    /// absent extension has always meant so far and is the other half of open
-    /// item 3.
+    /// absent extension has always meant.
     pub fn word(&self, step: usize) -> Option<u16> {
         let coarse = (*self.values.get(step)?)?;
         let fine = self.fine.as_ref().and_then(|f| f.get(step).copied().flatten()).unwrap_or(0);
@@ -304,33 +374,44 @@ pub fn orphan_extension_count(payload: &[u8]) -> Result<usize, String> {
         .count())
 }
 
-/// Is the pool in the compacted, `(param_id, track)`-sorted form the box
-/// produces?
+/// Every allocated lane sits below every free one — the pool has no holes.
 ///
-/// Every allocated lane below every free one, each extension immediately after
-/// the lane it extends, and the allocated lanes non-decreasing by
-/// `(param_id, track)`. **Measured, not required**: that the box produces this
-/// is established, that it demands it is not — which is why this is a predicate
-/// a caller can check rather than an invariant anything here enforces. It is the
-/// second of the two things a gen-1 pool writer is waiting on.
-pub fn is_compacted(payload: &[u8]) -> Result<bool, String> {
+/// One of the three independent properties [`is_compacted`] bundles, split out
+/// because the box may require some and not others, and a single `false` cannot
+/// say which. See [`PoolOrder`].
+pub fn is_packed(payload: &[u8]) -> Result<bool, String> {
     check_payload(payload)?;
     let mut seen_free = false;
-    let mut last_key: Option<(u8, u8)> = None;
     for lane in 0..NUM_LANES {
         if is_free(payload, lane) {
             seen_free = true;
-            continue;
-        }
-        if seen_free {
+        } else if seen_free {
             return Ok(false);
         }
-        if is_extension(payload, lane) {
-            // An extension must follow a real lane, and `read_all_plocks`
-            // already treats a leading one as an orphan.
-            if lane == 0 || is_extension(payload, lane - 1) {
-                return Ok(false);
-            }
+    }
+    Ok(true)
+}
+
+/// Every `80 80` lane immediately follows the lane it extends.
+///
+/// The reader depends on this — [`read_all_plocks`] binds an extension to the
+/// lane physically before it — and no capture has ever separated the two,
+/// because the box has never produced a pool where they are apart. So this is
+/// the reader's own assumption stated as a predicate.
+pub fn extensions_are_adjacent(payload: &[u8]) -> Result<bool, String> {
+    check_payload(payload)?;
+    Ok(orphan_extension_count(payload)? == 0)
+}
+
+/// The allocated lanes are non-decreasing by `(param_id, track)`.
+///
+/// Extensions are skipped: `80 80` is a continuation marker, not a key, and
+/// including it would make every extended lane look like a sort violation.
+pub fn keys_are_sorted(payload: &[u8]) -> Result<bool, String> {
+    check_payload(payload)?;
+    let mut last_key: Option<(u8, u8)> = None;
+    for lane in 0..NUM_LANES {
+        if is_free(payload, lane) || is_extension(payload, lane) {
             continue;
         }
         let o = lane_start(lane);
@@ -341,6 +422,363 @@ pub fn is_compacted(payload: &[u8]) -> Result<bool, String> {
         last_key = Some(key);
     }
     Ok(true)
+}
+
+/// The three properties of the box's own pool order, each answered separately.
+///
+/// **They are separate because the box may require some and not others**, and
+/// that distinction decides the shape of a gen-1 pool writer:
+///
+/// * holes tolerated → the writer can be gen-2-shaped, editing lanes in place
+///   and moving the fewest bytes;
+/// * holes refused → the writer must repack, which means touching lanes
+///   belonging to tracks the caller never named;
+/// * key order required → the writer must sort the whole pool, same problem
+///   one step further.
+///
+/// Which is why [`is_compacted`]'s single boolean is not enough to design
+/// against.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PoolOrder {
+    pub packed: bool,
+    pub extensions_adjacent: bool,
+    pub keys_sorted: bool,
+}
+
+impl PoolOrder {
+    /// All three — the form the box produces.
+    pub fn is_canonical(self) -> bool {
+        self.packed && self.extensions_adjacent && self.keys_sorted
+    }
+}
+
+/// All three order properties in one pass over the pool.
+pub fn pool_order(payload: &[u8]) -> Result<PoolOrder, String> {
+    Ok(PoolOrder {
+        packed: is_packed(payload)?,
+        extensions_adjacent: extensions_are_adjacent(payload)?,
+        keys_sorted: keys_are_sorted(payload)?,
+    })
+}
+
+/// Is the pool in the compacted, `(param_id, track)`-sorted form the box
+/// produces?
+///
+/// Every allocated lane below every free one, each extension immediately after
+/// the lane it extends, and the allocated lanes non-decreasing by
+/// `(param_id, track)`. **Measured, not required**: that the box produces this
+/// is established, that it demands it is not — which is why this is a predicate
+/// a caller can check rather than an invariant anything here enforces. It is the
+/// second of the two things a gen-1 pool writer is waiting on.
+///
+/// The conjunction of [`pool_order`]'s three, and kept as its own name because
+/// "is this what the box would have written" is the question most callers have.
+/// A caller *designing a writer* wants the three separately.
+pub fn is_compacted(payload: &[u8]) -> Result<bool, String> {
+    Ok(pool_order(payload)?.is_canonical())
+}
+
+// --- Writing -----------------------------------------------------------------
+
+/// The largest word a step can hold, because **both** bytes have a sentinel.
+///
+/// A coarse byte of [`NO_VALUE`] reads back as a step with no lock, so a value
+/// whose display byte is `0xFF` would erase itself — the gen-1 form of the one
+/// clamp [`crate::plocks::VALUE_MAX`] keeps. The fine byte needs the same guard
+/// for a subtler reason: the box writes [`NO_VALUE`] into an extension at every
+/// step its parent does not lock (measured 2026-09-01, variant C), so a fine
+/// byte of `0xFF` on a locked step is indistinguishable from "this step has no
+/// fine part" and [`A4Lane::word`] would read it back as zero. Clamping costs
+/// 1/256 of a display unit; not clamping costs the whole fine byte, silently.
+pub const VALUE_MAX: u16 = 0xFEFE;
+
+/// One lane a caller wants this track to end up with.
+///
+/// The gen-1 twin of [`crate::plocks::LaneWrite`], and narrower in the same way:
+/// a caller says *which parameter* and *what values*, never which of the 128
+/// lanes. On this box it could not say even if it wanted to — the pool is
+/// rebuilt in `(param_id, track)` order on every write, so a lane index is an
+/// output of the encoder rather than an input to it.
+///
+/// **`param_id` is the box's own byte, and that is the whole identity.** Unlike
+/// gen-2, nothing here resolves a lane through [`crate::params`] first. Three A4
+/// parameter ids are named (`0x22` FLTR1 FREQ, `0x23` RESO, `0x24` OVERDRIVE)
+/// out of an unknown total, so a curated-table lookup would drop nearly every
+/// lane a box handed us — and the policy below frees what it is not asked to
+/// keep, which would turn "we cannot name it" into "we deleted it". A lane read
+/// off the box goes back on the strength of its id alone.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct A4LaneWrite {
+    pub param_id: u8,
+    /// Stored 16-bit words — the displayed value in the high byte, 256ths in
+    /// the low. The same quantity gen-2 keeps inline in a `u16be`, and what
+    /// [`A4Lane::word`] reports. `None` is a step with no lock; a short array
+    /// leaves the remaining steps unlocked.
+    pub values: Vec<Option<u16>>,
+}
+
+impl A4LaneWrite {
+    pub fn new(param_id: u8, values: Vec<Option<u16>>) -> Self {
+        Self { param_id, values }
+    }
+
+    fn is_empty(&self) -> bool {
+        !self.values.iter().any(Option::is_some)
+    }
+}
+
+/// A lane read off a payload, asked for again as-is — what a caller does when it
+/// is rewriting a track it just read, and what keeps another track's lanes
+/// byte-exact through a rebuild.
+impl From<&A4Lane> for A4LaneWrite {
+    fn from(l: &A4Lane) -> Self {
+        Self {
+            param_id: l.param_id,
+            values: (0..NUM_STEPS).map(|step| l.word(step)).collect(),
+        }
+    }
+}
+
+/// One lane's bytes, plus its extension's when it needs one.
+///
+/// The unit the pool is laid out from: a lane and its `80 80` are adjacent by
+/// construction here, because that is what the box does with them and — since
+/// the box re-derives an extension's steps from its parent's (variant C) —
+/// what it will normalise them to anyway.
+struct Encoded {
+    key: (u8, u8),
+    lane: [u8; LANE_SIZE],
+    ext: Option<[u8; LANE_SIZE]>,
+}
+
+impl Encoded {
+    fn lanes(&self) -> usize {
+        1 + usize::from(self.ext.is_some())
+    }
+}
+
+fn encode_lane(param_id: u8, track: u8, values: &[Option<u16>]) -> Encoded {
+    let mut lane = [NO_VALUE; LANE_SIZE];
+    let mut ext = [NO_VALUE; LANE_SIZE];
+    lane[0] = param_id;
+    lane[1] = track;
+    ext[0] = EXT;
+    ext[1] = EXT;
+
+    let mut any_fine = false;
+    for step in 0..NUM_STEPS {
+        let Some(word) = values.get(step).copied().flatten() else { continue };
+        let word = word.min(VALUE_MAX);
+        lane[2 + step] = (word >> 8) as u8;
+        let fine = (word & 0xFF) as u8;
+        // A fine byte is written at exactly the steps the parent locks, and
+        // `NO_VALUE` everywhere else — the box's own alignment, measured when it
+        // re-derived a detached extension from its parent on 2026-09-01.
+        ext[2 + step] = fine;
+        any_fine |= fine != 0;
+    }
+
+    Encoded {
+        key: (param_id, track),
+        lane,
+        // The rule open item 1 closed on 2026-08-31: an extension exists iff
+        // some fine byte is non-zero. The box stores an all-zero one when handed
+        // it and never allocates one itself, so emitting one would be a lane
+        // spent to say nothing.
+        ext: any_fine.then_some(ext),
+    }
+}
+
+/// Reset one lane to the form the box leaves an unallocated one in: `FF FF` and
+/// 64 **zero** bytes.
+///
+/// Not [`NO_VALUE`] in the values, which is what this format's two opposite
+/// fills would lead anyone to guess. Measured 2026-09-01 by watching the box
+/// clear A16 — see the module doc.
+fn free_lane(payload: &mut [u8], lane: usize) {
+    let o = lane_start(lane);
+    payload[o] = FREE;
+    payload[o + 1] = FREE;
+    payload[o + 2..o + LANE_SIZE].fill(0);
+}
+
+/// Write one track's p-lock lanes into a payload, in place.
+///
+/// Returns the warnings — written to be shown to the user verbatim, and the only
+/// way this reports trouble. **A full pool is not an error**: a write that
+/// cannot fit every lane should still land the notes, loudly. The `Err` is
+/// reserved for a track this pattern does not have or a payload too short to
+/// hold a pool, both of which are caller bugs.
+///
+/// # Why this rebuilds the whole pool, where gen-2 edits lanes in place
+///
+/// [`crate::plocks::apply_track_plocks`] keeps every lane where the box put it,
+/// on the grounds that the safest write moves the fewest bytes. That policy
+/// rests on gen-2 not compacting, and it does not port.
+///
+/// **Measured on hardware 2026-09-01, three single-variable writes to A16.** The
+/// box requires *none* of the three properties [`pool_order`] reports: handed a
+/// pool with its keys out of order, or with a hole in it, or with an extension
+/// detached from its parent, it parsed every lane, lost no lock, and wrote back
+/// its own canonical form. The sorted-compacted pool is a serialisation
+/// artefact of a box that holds p-locks keyed by `(param_id, track)` and rebuilds
+/// them on ingest — not a structure it reads in place.
+///
+/// **So the box does not require canonical order, and this encoder emits it
+/// anyway, because the *verify* requires it.** A write is checked by reading the
+/// slot back and comparing byte for byte
+/// ([`crate::safe_write::a4_safe_write_tracks`]). The box normalises what it is
+/// sent, so a pool written in any other order comes back *different from what
+/// was sent* and a correct write reports as a failed one — 10 spurious diffs for
+/// a swapped pair, 132 for a single hole. Emitting the box's own form is what
+/// keeps the read-back check meaningful.
+///
+/// Rebuilding means **lanes belonging to other tracks change index**, which is
+/// the one thing gen-2's policy exists to avoid. Their *contents* are carried
+/// through byte-exact and that is the property to hold onto: on this box a lane
+/// index is not a place a lane lives, it is an artefact of the order, and the
+/// box itself moves them on every edit.
+///
+/// # The policy
+///
+/// * Lanes belonging to **other tracks are carried through unchanged** — same
+///   parameter, same values, same fine bytes — and re-laid-out in key order.
+/// * The named track's lanes are **replaced wholesale** by `lanes`. A parameter
+///   the caller no longer asks for is gone, which is the same scrub-before-write
+///   [`crate::plocks::apply_track_plocks`] does and for the same reason: a step
+///   that lost its trig must not leave a lock behind for the next trig to
+///   inherit.
+/// * A lane with no values is not allocated: it would claim one of 128 to say
+///   nothing.
+/// * One lane per parameter per track. A repeated `param_id` is warned about and
+///   the first wins.
+/// * An extension is emitted **iff some fine byte is non-zero**, and carries a
+///   fine byte at exactly the steps its parent locks.
+/// * **When the pool is full, the caller's lanes are what get dropped** — never
+///   another track's. A budget failure must not become someone else's data loss.
+///
+/// **Nothing here consults [`crate::params`].** See [`A4LaneWrite`] for why: the
+/// param id is the identity, and a table lookup would silently free every lane
+/// whose knob this app cannot name, which on this box is nearly all of them.
+pub fn apply_track_plocks(
+    payload: &mut [u8],
+    track_index: usize,
+    lanes: &[A4LaneWrite],
+) -> Result<Vec<String>, String> {
+    if track_index >= NUM_TRACKS {
+        return Err(format!("no track {track_index}; an A4 pattern has {NUM_TRACKS}"));
+    }
+    check_payload(payload)?;
+    let mut warnings = Vec::new();
+
+    // Other tracks first, and they are not negotiable: read before anything is
+    // overwritten, carried through byte-exact, and laid out ahead of the
+    // caller's lanes when the pool runs short.
+    let keep: Vec<Encoded> = read_all_plocks(payload)?
+        .iter()
+        .filter(|l| usize::from(l.track) != track_index)
+        .map(|l| {
+            let values: Vec<Option<u16>> = (0..NUM_STEPS).map(|step| l.word(step)).collect();
+            encode_lane(l.param_id, l.track, &values)
+        })
+        .collect();
+
+    // What the caller wants this track to end up with, in the order asked for.
+    let mut wanted: Vec<Encoded> = Vec::new();
+    for lane in lanes {
+        if lane.param_id == FREE || lane.param_id == EXT || lane.is_empty() {
+            if lane.param_id == FREE || lane.param_id == EXT {
+                warnings.push(format!(
+                    "p-lock parameter {:#04x} is a marker byte in this format, not a parameter \
+                     — that lane was not written",
+                    lane.param_id
+                ));
+            }
+            continue;
+        }
+        if wanted.iter().any(|e| e.key.0 == lane.param_id) {
+            warnings.push(format!(
+                "p-lock parameter {} appears twice for track {} — the box holds one lane per \
+                 parameter per track, so only the first was written",
+                lane.param_id,
+                track_index + 1
+            ));
+            continue;
+        }
+        wanted.push(encode_lane(lane.param_id, track_index as u8, &lane.values));
+    }
+
+    // **A track asking for nothing over a destination that has something.**
+    // Not an ordinary deletion: deleting the last lane in the roll arrives the
+    // same way, but so does a project file written before the import carried the
+    // pool at all — and in that second case the lanes being freed are ones the
+    // user was never shown. The two are indistinguishable from here, so the
+    // narrow shape is reported and the caller's instruction is still obeyed.
+    if wanted.is_empty() {
+        let had = read_all_plocks(payload)?
+            .iter()
+            .filter(|l| usize::from(l.track) == track_index)
+            .count();
+        if had > 0 {
+            warnings.push(format!(
+                "track {} had {had} p-lock lane{} on the box and this write asks for none, so \
+                 {} removed — if you did not delete them here, the pattern was read in before \
+                 digi-roll carried p-locks and the box's own are the ones to keep",
+                track_index + 1,
+                if had == 1 { "" } else { "s" },
+                if had == 1 { "it was" } else { "they were" },
+            ));
+        }
+    }
+
+    // The budget, in *lanes* rather than locks: a lane needing a fine byte costs
+    // two. Other tracks are seated first, so an overflow lands on the caller.
+    let mut used: usize = keep.iter().map(Encoded::lanes).sum();
+    let mut dropped: Vec<u8> = Vec::new();
+    let mut seated: Vec<Encoded> = Vec::new();
+    for lane in wanted {
+        let cost = lane.lanes();
+        if used + cost > NUM_LANES {
+            dropped.push(lane.key.0);
+            continue;
+        }
+        used += cost;
+        seated.push(lane);
+    }
+    if !dropped.is_empty() {
+        let n = dropped.len();
+        let list = dropped.iter().map(|id| format!("{id:#04x}")).collect::<Vec<_>>().join(", ");
+        warnings.push(format!(
+            "the pattern's {NUM_LANES} p-lock lanes are all in use, so {n} lane{} \
+             (parameter{} {list}) {} not written — free some p-locks on the box first",
+            if n == 1 { "" } else { "s" },
+            if n == 1 { "" } else { "s" },
+            if n == 1 { "was" } else { "were" },
+        ));
+    }
+
+    // The box's own form: sorted by (param_id, track), packed from lane zero,
+    // each extension immediately after the lane it extends.
+    let mut all: Vec<Encoded> = keep;
+    all.extend(seated);
+    all.sort_by_key(|e| e.key);
+
+    let mut lane = 0usize;
+    for e in &all {
+        let o = lane_start(lane);
+        payload[o..o + LANE_SIZE].copy_from_slice(&e.lane);
+        lane += 1;
+        if let Some(ext) = &e.ext {
+            let o = lane_start(lane);
+            payload[o..o + LANE_SIZE].copy_from_slice(ext);
+            lane += 1;
+        }
+    }
+    for empty in lane..NUM_LANES {
+        free_lane(payload, empty);
+    }
+
+    Ok(warnings)
 }
 
 #[cfg(test)]
@@ -541,5 +979,261 @@ mod tests {
         let p = cleared();
         assert!(read_track_plocks(&p, 5).is_ok());
         assert!(read_track_plocks(&p, 6).is_err());
+    }
+
+    // --- the write half ------------------------------------------------------
+
+    /// Put a lane on a payload the way the box would, so a test can start from
+    /// a pool that is already the box's own form.
+    fn place(p: &mut [u8], lane: usize, param_id: u8, track: u8, at: &[(usize, u8, Option<u8>)]) {
+        let o = lane_start(lane);
+        p[o] = param_id;
+        p[o + 1] = track;
+        p[o + 2..o + LANE_SIZE].fill(NO_VALUE);
+        if at.iter().any(|(_, _, f)| f.is_some_and(|f| f != 0)) {
+            let e = lane_start(lane + 1);
+            p[e] = EXT;
+            p[e + 1] = EXT;
+            p[e + 2..e + LANE_SIZE].fill(NO_VALUE);
+        }
+        for &(step, coarse, fine) in at {
+            p[o + 2 + step] = coarse;
+            if let Some(f) = fine {
+                p[lane_start(lane + 1) + 2 + step] = f;
+            }
+        }
+    }
+
+    fn words(at: &[(usize, u16)]) -> Vec<Option<u16>> {
+        let mut v = vec![None; NUM_STEPS];
+        for &(step, w) in at {
+            v[step] = Some(w);
+        }
+        v
+    }
+
+    /// The property every other write test leans on, and the reason this
+    /// encoder rebuilds rather than edits: the box normalises what it is sent,
+    /// so anything but its own form makes a correct write read back as a failure.
+    #[test]
+    fn a_written_pool_is_in_the_box_s_own_form() {
+        let mut p = cleared();
+        // Deliberately asked for out of key order, and with the higher id first.
+        let lanes = [
+            A4LaneWrite::new(0x40, words(&[(0, 0x2000)])),
+            A4LaneWrite::new(0x22, words(&[(0, 0x3200), (4, 0x6440)])),
+        ];
+        assert!(apply_track_plocks(&mut p, 0, &lanes).unwrap().is_empty());
+
+        let order = pool_order(&p).unwrap();
+        assert!(order.is_canonical(), "{order:?}");
+        let read = read_all_plocks(&p).unwrap();
+        assert_eq!(read.iter().map(|l| l.param_id).collect::<Vec<_>>(), [0x22, 0x40]);
+    }
+
+    /// A lane read off a payload and asked for again comes back byte-identical
+    /// — the round trip the same-slot write-back depends on.
+    #[test]
+    fn a_lane_written_back_unchanged_moves_no_bytes() {
+        let mut p = cleared();
+        place(&mut p, 0, 0x22, 0, &[(0, 0x32, Some(0x3b)), (4, 0x64, Some(0))]);
+        place(&mut p, 2, 0x23, 0, &[(4, 0x64, None)]);
+        let before = p.clone();
+
+        let lanes: Vec<A4LaneWrite> =
+            read_all_plocks(&p).unwrap().iter().map(A4LaneWrite::from).collect();
+        apply_track_plocks(&mut p, 0, &lanes).unwrap();
+
+        assert_eq!(p, before, "a write-back of what was read moved bytes");
+    }
+
+    /// **The containment property.** A one-track write rebuilds the whole pool,
+    /// so another track's lanes change *index* — and their contents must not
+    /// change at all. This is the gen-1 replacement for gen-2's "lanes belonging
+    /// to other tracks are never read, moved or written", which cannot hold on a
+    /// box that sorts.
+    #[test]
+    fn another_track_s_lanes_survive_a_rebuild_that_moves_them() {
+        let mut p = cleared();
+        // SYN2's lane sorts *after* SYN1's 0x22 but *before* a new 0x40, so
+        // adding to SYN1 must shift it — index changes, content does not.
+        place(&mut p, 0, 0x22, 0, &[(0, 0x32, Some(0x3b))]);
+        place(&mut p, 2, 0x24, 1, &[(8, 0x7f, None)]);
+
+        let syn2_before = read_track_plocks(&p, 1).unwrap();
+        assert_eq!(syn2_before[0].lane, 2);
+
+        // 0x23 sorts *between* SYN1's 0x22 and SYN2's 0x24, so seating it
+        // pushes SYN2's lane down. A parameter above 0x24 would leave it where
+        // it is and the test would pass without exercising anything.
+        let lanes = [
+            A4LaneWrite::new(0x22, words(&[(0, 0x323b)])),
+            A4LaneWrite::new(0x23, words(&[(1, 0x1000)])),
+        ];
+        apply_track_plocks(&mut p, 0, &lanes).unwrap();
+
+        let syn2_after = read_track_plocks(&p, 1).unwrap();
+        assert_eq!(syn2_after.len(), 1, "SYN2's lane survived");
+        assert_ne!(syn2_after[0].lane, syn2_before[0].lane, "and it moved, as it must");
+        assert_eq!(syn2_after[0].param_id, 0x24);
+        assert_eq!(syn2_after[0].values, syn2_before[0].values);
+        assert_eq!(syn2_after[0].fine, syn2_before[0].fine);
+        assert!(pool_order(&p).unwrap().is_canonical());
+    }
+
+    /// A parameter the caller stops asking for is gone, and the lane it left
+    /// behind is the box's own free form — `FF FF` and 64 **zero** bytes, not
+    /// 64 `NO_VALUE`. Measured 2026-09-01; the opposite of what this format's
+    /// two opposite fills suggest.
+    #[test]
+    fn a_dropped_lane_is_freed_the_way_the_box_frees_one() {
+        let mut p = cleared();
+        place(&mut p, 0, 0x22, 0, &[(0, 0x32, None)]);
+        place(&mut p, 1, 0x23, 0, &[(4, 0x64, None)]);
+
+        apply_track_plocks(&mut p, 0, &[A4LaneWrite::new(0x22, words(&[(0, 0x3200)]))]).unwrap();
+
+        assert_eq!(read_all_plocks(&p).unwrap().len(), 1);
+        assert_eq!(free_lane_count(&p).unwrap(), NUM_LANES - 1);
+        let o = lane_start(1);
+        assert_eq!(p[o], FREE);
+        assert_eq!(p[o + 1], FREE);
+        assert!(p[o + 2..o + LANE_SIZE].iter().all(|&v| v == 0), "freed values must be zero");
+    }
+
+    #[test]
+    fn an_extension_is_emitted_only_when_some_fine_byte_is_non_zero() {
+        let mut integral = cleared();
+        apply_track_plocks(&mut integral, 0, &[A4LaneWrite::new(0x23, words(&[(4, 0x6400)]))])
+            .unwrap();
+        assert!(read_all_plocks(&integral).unwrap()[0].fine.is_none());
+        assert_eq!(free_lane_count(&integral).unwrap(), NUM_LANES - 1, "one lane, not two");
+
+        let mut fractional = cleared();
+        apply_track_plocks(&mut fractional, 0, &[A4LaneWrite::new(0x22, words(&[(0, 0x323b)]))])
+            .unwrap();
+        let lane = &read_all_plocks(&fractional).unwrap()[0];
+        assert_eq!(lane.fine.as_ref().unwrap()[0], Some(0x3b));
+        assert_eq!(lane.ext_lane, Some(1));
+        assert_eq!(free_lane_count(&fractional).unwrap(), NUM_LANES - 2);
+    }
+
+    /// An extension carries a fine byte at exactly its parent's locked steps and
+    /// `NO_VALUE` elsewhere — the alignment the box re-derived for itself when
+    /// handed a detached extension on 2026-09-01.
+    #[test]
+    fn an_extension_holds_fine_bytes_only_where_its_parent_locks() {
+        let mut p = cleared();
+        apply_track_plocks(
+            &mut p,
+            0,
+            &[A4LaneWrite::new(0x22, words(&[(0, 0x323b), (8, 0x6400)]))],
+        )
+        .unwrap();
+        let fine = read_all_plocks(&p).unwrap()[0].fine.clone().unwrap();
+        assert_eq!(fine[0], Some(0x3b));
+        assert_eq!(fine[8], Some(0), "a locked step with no fine part is zero, not absent");
+        assert_eq!(fine[1], None, "an unlocked step carries NO_VALUE");
+        assert_eq!(fine.iter().filter(|f| f.is_some()).count(), 2);
+    }
+
+    /// Both bytes have a sentinel, so both need the clamp. A coarse `0xFF`
+    /// would read back as an unlocked step and a fine `0xFF` as no fine part —
+    /// two ways for an unclamped write to lose data with no error anywhere.
+    #[test]
+    fn neither_sentinel_can_be_written_as_a_value() {
+        let mut p = cleared();
+        apply_track_plocks(&mut p, 0, &[A4LaneWrite::new(0x22, words(&[(0, 0xFFFF)]))]).unwrap();
+        let lane = &read_all_plocks(&p).unwrap()[0];
+        assert_eq!(lane.values[0], Some(0xFE), "the lock survives as a lock");
+        assert_eq!(lane.word(0), Some(VALUE_MAX));
+        assert_eq!(lane.fine.as_ref().unwrap()[0], Some(0xFE));
+    }
+
+    #[test]
+    fn a_lane_with_no_values_claims_nothing() {
+        let mut p = cleared();
+        apply_track_plocks(&mut p, 0, &[A4LaneWrite::new(0x22, vec![None; NUM_STEPS])]).unwrap();
+        assert!(read_all_plocks(&p).unwrap().is_empty());
+        assert_eq!(free_lane_count(&p).unwrap(), NUM_LANES);
+    }
+
+    #[test]
+    fn one_parameter_twice_writes_the_first_and_says_so() {
+        let mut p = cleared();
+        let warnings = apply_track_plocks(
+            &mut p,
+            0,
+            &[
+                A4LaneWrite::new(0x22, words(&[(0, 0x3200)])),
+                A4LaneWrite::new(0x22, words(&[(4, 0x6400)])),
+            ],
+        )
+        .unwrap();
+        assert_eq!(warnings.len(), 1);
+        assert!(warnings[0].contains("appears twice"), "{}", warnings[0]);
+        let lanes = read_all_plocks(&p).unwrap();
+        assert_eq!(lanes.len(), 1);
+        assert_eq!(lanes[0].values[0], Some(0x32));
+        assert_eq!(lanes[0].values[4], None, "the second lane did not merge in");
+    }
+
+    /// A marker byte is not a parameter. `FF` would author a lane that reads as
+    /// free and `80` one that reads as somebody else's extension — both of which
+    /// corrupt the pool rather than filling it.
+    #[test]
+    fn a_marker_byte_is_refused_as_a_parameter_id() {
+        let mut p = cleared();
+        let warnings = apply_track_plocks(
+            &mut p,
+            0,
+            &[
+                A4LaneWrite::new(FREE, words(&[(0, 0x3200)])),
+                A4LaneWrite::new(EXT, words(&[(0, 0x3200)])),
+            ],
+        )
+        .unwrap();
+        assert_eq!(warnings.len(), 2);
+        assert!(read_all_plocks(&p).unwrap().is_empty());
+    }
+
+    /// **When the pool is full it is the caller's lanes that go.** Another
+    /// track's data must not be the thing a budget failure spends.
+    #[test]
+    fn a_full_pool_drops_the_caller_s_lanes_and_never_another_track_s() {
+        let mut p = cleared();
+        // 126 lanes belonging to SYN2, leaving room for one more lane only.
+        for i in 0..126usize {
+            place(&mut p, i, i as u8, 1, &[(0, 0x40, None)]);
+        }
+        assert_eq!(free_lane_count(&p).unwrap(), 2);
+
+        let warnings = apply_track_plocks(
+            &mut p,
+            0,
+            &[
+                // Two lanes' worth: this one needs an extension.
+                A4LaneWrite::new(0xC8, words(&[(0, 0x323b)])),
+                A4LaneWrite::new(0xC9, words(&[(0, 0x3200)])),
+                A4LaneWrite::new(0xCA, words(&[(0, 0x3200)])),
+            ],
+        )
+        .unwrap();
+
+        assert_eq!(warnings.len(), 1);
+        assert!(warnings[0].contains("all in use"), "{}", warnings[0]);
+        assert_eq!(read_track_plocks(&p, 1).unwrap().len(), 126, "SYN2 kept every lane");
+        // The 0xC8 pair fit; 0xC9 and 0xCA did not.
+        let syn1 = read_track_plocks(&p, 0).unwrap();
+        assert_eq!(syn1.len(), 1);
+        assert_eq!(syn1[0].param_id, 0xC8);
+        assert!(pool_order(&p).unwrap().is_canonical());
+    }
+
+    #[test]
+    fn a_write_to_a_track_this_box_does_not_have_is_refused() {
+        let mut p = cleared();
+        assert!(apply_track_plocks(&mut p, 6, &[]).is_err());
+        assert!(apply_track_plocks(&mut [0u8; 100], 0, &[]).is_err());
     }
 }

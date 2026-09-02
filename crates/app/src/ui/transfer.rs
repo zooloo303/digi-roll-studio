@@ -679,15 +679,29 @@ fn summary(into: PatternRef, report: &ImportReport) -> String {
     )
 }
 
-/// [`summary`]'s A4 twin. Smaller because the report is: no swing, no p-lock
-/// lanes and no box tempo are in the mapped format, so a line claiming them
-/// would be inventing facts the wire never carried.
+/// [`summary`]'s A4 twin. Still smaller because neither swing nor box tempo is
+/// in the mapped format, so a line claiming them would be inventing facts the
+/// wire never carried — but **p-lock lanes are, since 2026-09-01**, and they are
+/// counted here for the same reason the gen-2 line counts them: an import that
+/// brought 8 KB of automation across and said nothing about it reads as one that
+/// did not.
+///
+/// Trigless lanes are named separately when there are any. They arrive
+/// read-only — this model has no trigless lock — and a lane the roll cannot let
+/// you edit is worth saying so about at the moment it lands, rather than leaving
+/// someone to discover it by trying.
 fn a4_summary(into: PatternRef, report: &A4ImportReport) -> String {
+    let lanes = match (report.plock_lanes, report.trigless_plock_lanes) {
+        (0, _) => String::new(),
+        (n, 0) => format!(", {n} p-lock lane(s)"),
+        (n, t) => format!(", {n} p-lock lane(s) ({t} trigless, read-only)"),
+    };
     format!(
-        "Into {} · {} note(s) on {} track(s)",
+        "Into {} · {} note(s) on {} track(s){}",
         into.label(),
         report.notes,
         report.tracks_with_notes,
+        lanes,
     )
 }
 

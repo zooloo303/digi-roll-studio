@@ -766,6 +766,7 @@ fn a_lane_shorter_than_the_full_step_count_is_indexed_safely() {
         param_id: None,
         device_kind: Some(String::from("DT2")),
         trigless: false,
+        label: None,
         values: vec![Some(64); 16],
     };
     track.plocks = vec![short];

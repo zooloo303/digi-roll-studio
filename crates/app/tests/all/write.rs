@@ -394,6 +394,7 @@ fn a_lane_that_could_not_be_written_reaches_the_dialog_and_the_result_line() {
         // refuses to make.
         device_kind: Some("DN2".into()),
         trigless: false,
+        label: None,
         values: vec![Some(64); 16],
     }];
 

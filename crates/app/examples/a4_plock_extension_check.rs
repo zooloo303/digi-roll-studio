@@ -62,7 +62,7 @@
 // requiring something, so that one is a write test, and it is the same shape as
 // the compaction question one bullet down in PLAN.md §10.
 
-use digi_protocol::a4_pattern::{parse_pattern, slot_name, TRACK_NAMES};
+use digi_protocol::a4_pattern::{parse_pattern, parse_working_pattern, slot_name, TRACK_NAMES};
 use digi_protocol::a4_plocks::{is_compacted, orphan_extension_count, read_all_plocks};
 
 /// The two parameter ids this box's captures have mapped. Everything else prints
@@ -116,7 +116,12 @@ fn main() {
                 std::process::exit(2);
             }
         };
-        let pattern = match parse_pattern(&framed(&raw)) {
+        // Either kind of dump. A stored slot is `0x54`; the box's edit buffer
+        // answers `0x5a`, and `a4_param_probe` saves those by the dozen — a
+        // reader that took only the first would refuse the captures this
+        // workspace now produces most of.
+        let framed = framed(&raw);
+        let pattern = match parse_pattern(&framed).or_else(|_| parse_working_pattern(&framed)) {
             Ok(p) => p,
             Err(e) => {
                 eprintln!("{path}: {e}");

@@ -171,7 +171,7 @@ fn syn2_write(index: u8) -> A4TrackWrite {
     steps[0] = note(60);
     steps[4] = note(64);
     steps[63] = note(48);
-    A4TrackWrite { index, track_index: 1, steps }
+    A4TrackWrite { index, track_index: 1, steps, plocks: None }
 }
 
 // --- the ceremony -------------------------------------------------------------
@@ -205,9 +205,13 @@ fn the_whole_ceremony_runs_in_order_and_verifies_byte_identical() {
 #[test]
 fn the_write_composes_on_the_destination_and_touches_only_the_named_lanes() {
     // The RMW promise, byte for byte: everything outside SYN2's four written
-    // lanes — the p-lock pool above all, which has no writer — is the
-    // destination's own, plus the one slot-marker byte the box itself writes on
-    // every save.
+    // lanes is the destination's own, plus the one slot-marker byte the box
+    // itself writes on every save.
+    //
+    // **The p-lock pool above all, and it is `plocks: None` that keeps it so.**
+    // Since 2026-09-01 a write *can* rebuild the pool; this write does not ask
+    // it to, which is the other half of that field's meaning and the case a
+    // caller gets when it has nothing to say about p-locks.
     let before = a4_payload(A01);
     let mut box_ = FakeA4::new();
     let stash = tmp_stash("carry");
@@ -252,7 +256,7 @@ fn the_confirm_counts_what_the_box_shows_and_carries_no_gen_2_facts() {
     let mut hooks = Recorder::default();
     let mut steps = vec![None; 64];
     steps[0] = note(69);
-    let write = A4TrackWrite { index: 0, track_index: 0, steps };
+    let write = A4TrackWrite { index: 0, track_index: 0, steps, plocks: None };
 
     a4_safe_write_tracks(&mut box_, &stash, &[write], &mut hooks, NOW).unwrap();
 
@@ -287,7 +291,7 @@ fn an_empty_track_clears_the_destination_deliberately() {
     let mut box_ = FakeA4::new();
     let stash = tmp_stash("clear");
     let mut hooks = Recorder::default();
-    let write = A4TrackWrite { index: 0, track_index: 0, steps: vec![None; 64] };
+    let write = A4TrackWrite { index: 0, track_index: 0, steps: vec![None; 64], plocks: None };
 
     let result = a4_safe_write_tracks(&mut box_, &stash, &[write], &mut hooks, NOW).unwrap();
 
@@ -438,10 +442,10 @@ fn a_malformed_write_is_refused_before_the_fetch() {
     );
     assert_refused(&[syn2_write(0), syn2_write(0)], "named twice");
     assert_refused(
-        &[A4TrackWrite { index: 0, track_index: 1, steps: vec![None; 63] }],
+        &[A4TrackWrite { index: 0, track_index: 1, steps: vec![None; 63], plocks: None }],
         "63 steps",
     );
-    assert_refused(&[A4TrackWrite { index: 0, track_index: 6, steps: vec![None; 64] }], "no track");
+    assert_refused(&[A4TrackWrite { index: 0, track_index: 6, steps: vec![None; 64], plocks: None }], "no track");
 }
 
 #[test]
@@ -453,7 +457,7 @@ fn two_tracks_go_as_one_slot_write_with_one_backup() {
     let mut hooks = Recorder { log: Some(Rc::clone(&box_.log)), ..Recorder::default() };
     let mut syn1_steps = vec![None; 64];
     syn1_steps[8] = note(52);
-    let writes = [A4TrackWrite { index: 0, track_index: 0, steps: syn1_steps }, syn2_write(0)];
+    let writes = [A4TrackWrite { index: 0, track_index: 0, steps: syn1_steps, plocks: None }, syn2_write(0)];
 
     let result = a4_safe_write_tracks(&mut box_, &stash, &writes, &mut hooks, NOW).unwrap();
 
@@ -515,7 +519,7 @@ fn a_write_replaces_conditions_and_still_leaves_the_arp_notes_alone() {
         // 0x16 is FILL.
         condition: Some(0x16),
     });
-    let write = A4TrackWrite { index: 0, track_index: 1, steps };
+    let write = A4TrackWrite { index: 0, track_index: 1, steps, plocks: None };
     a4_safe_write_tracks(&mut box_, &stash, &[write], &mut hooks, NOW).unwrap();
 
     let after = &box_.slots[&0];
@@ -538,7 +542,7 @@ fn an_authored_trig_lands_in_all_four_lanes() {
     let mut steps = vec![None; 64];
     steps[3] =
         Some(A4Step { note: 64, velocity: 1, length: 0x7f, micro_timing: -23, condition: None });
-    let write = A4TrackWrite { index: 0, track_index: 1, steps };
+    let write = A4TrackWrite { index: 0, track_index: 1, steps, plocks: None };
 
     a4_safe_write_tracks(&mut box_, &stash, &[write], &mut hooks, NOW).unwrap();
 
@@ -578,7 +582,7 @@ fn a_write_keeps_a_trigless_trig_and_still_deletes_a_note_trig() {
     let mut hooks = Recorder::default();
     // A write of SYN2 that says nothing about either step — the roll shows both
     // as empty, because it cannot show a trigless trig at all.
-    let write = A4TrackWrite { index: 0, track_index: 1, steps: vec![None; 64] };
+    let write = A4TrackWrite { index: 0, track_index: 1, steps: vec![None; 64], plocks: None };
     a4_safe_write_tracks(&mut box_, &stash, &[write], &mut hooks, NOW).unwrap();
 
     let states = read_track_states(&box_.slots[&0], 1).unwrap();

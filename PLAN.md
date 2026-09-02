@@ -2671,12 +2671,12 @@ the box. Item 2 could only be closed by a *write*, because it asks whether the b
 reads its own bytes the way it writes them — so no number of dumps would have
 moved it, which is why it outlived the reading work by a morning.
 
-**Item 3 closed the same day**, by the capture it asked for. What remains is
-items 4 and 5 — a bit order waiting on a payload no capture has produced, and a
-backup policy waiting on a decision — plus the sibling of 3 that item 3 could
-never have reached: **whether the box requires the compacted pool order it
-produces.** The pool still has no writer, and now it waits on a write rather than
-on a dump.
+**Item 3 closed the same day**, by the capture it asked for, and **the sibling
+it could never have reached closed on 2026-09-01** — whether the box requires the
+compacted pool order it produces. It does not, and the pool has a writer; see
+"The p-lock writer, and the question that inverted" below for why the encoder
+emits that order regardless. What remains is items 4 and 5: a bit order waiting
+on a payload no capture has produced, and a backup policy waiting on a decision.
 
 1. ~~**Bring the gen-1 format into `protocol`.**~~ **Done 2026-08-31**, and it
    was a *smaller* job than this bullet says, in the two places the bullet was
@@ -3467,19 +3467,201 @@ they did not build here.
   write-back preserves them; a copy cannot. Inherent to the design rather than a
   bug, and it will surprise somebody.
 
-### What the p-lock writer still needs — 2026-09-01
+### The p-lock writer, and the question that inverted — 2026-09-01, A4 0195
 
-Two blockers were on record and one of them is still open. **Whether the box
-*requires* the compacted `(param_id, track)` order it produces** is unmeasured;
-that it produces that order is not in doubt. A pool written in another order is
-a guess delivered to hardware, which is why there is no writer yet.
+**The last blocker is measured and the writer shipped.** Whether the box
+*requires* the compacted `(param_id, track)` order it produces was the open
+question. It does not — and the answer changes what the encoder must do anyway,
+in the opposite direction from the one the question implied.
 
-Caught free while the probe was watching A16 being cleared: **the box frees a
-lane by writing `FF FF` into both id bytes and zeroing all 64 values**, not by
-filling them with `NO_VALUE`. An extension lane (`80 80`) sitting between two
-used lanes is freed the same way. That is the third thing a writer needs, and it
-is the opposite of what this format's two opposite fills would lead anyone to
-guess.
+#### Three writes to A16, one deviation each
+
+Every variant was built from a ground truth the box itself authored (SYN1: FLTR1
+FREQ 50 on step 1, RESO 100 on step 5), was byte-identical to it everywhere
+except the one property under test, and went through the full ceremony.
+
+| variant | what it broke | what the box did |
+|---|---|---|
+| A | keys out of order, packed, extensions adjacent | re-sorted; read-back **byte-identical to the baseline**, all 12,974 |
+| B | one free lane wedged between two used ones | compacted; read-back **byte-identical to the baseline** |
+| C | an `80 80` detached from the lane it extends | adopted it as the *preceding* lane's, and re-aligned its fine bytes |
+
+**The box requires none of the three properties.** It parsed every scrambled
+pool, lost no lock, and wrote back its own canonical form. The sorted-compacted
+pool is a serialisation artefact of a box that holds p-locks keyed by
+`(param_id, track)` and rebuilds them on ingest — which is also the cheaper
+explanation of the 2026-08-31 "gen-1 compacts on edit" observation, since
+shifting a lane at edit time is a multi-kilobyte memmove for a knob turn.
+
+**And the engineering conclusion is the opposite of the finding.** Because the
+box normalises, a pool written in any other order comes back *different from
+what was sent*, so `a4_safe_write_tracks`' byte-exact read-back reports a
+correct write as a failed one — 10 spurious diffs for the swapped pair, 132 for
+the hole. **The encoder must emit canonical order, for the verify's sake rather
+than the box's.** That is a stronger obligation than the original question
+assumed: it holds even where the box would have forgiven us.
+
+#### What variant C bought, which was not what it was for
+
+C was the throwaway of the three — the encoder would never emit a detached
+extension. It settled two things nothing else could.
+
+**An `80 80` binds to the lane physically before it.** `read_all_plocks` has
+always read one that way and it was inference: the box had never produced a pool
+where a lane and its extension were apart, so nothing tested what "before it"
+meant. Handed FREQ's orphaned extension sitting after RESO, the box **adopted it
+as RESO's** — the reader's rule, confirmed from the write side on a payload the
+box had never seen.
+
+**And an extension is indexed per step**, confirmed by the box doing the
+alignment itself: it rewrote exactly two bytes, putting a fine byte at RESO's
+locked step and `NO_VALUE` at FREQ's. Previously measured only on the four-step
+FREQ lane of the `reso4` capture.
+
+**A third thing, free: the box stores an all-zero extension it is handed and
+never allocates one itself.** So "emit an extension iff some fine byte is
+non-zero" is a rule the box tolerates rather than enforces — worth knowing which.
+
+#### How the box frees a lane
+
+Caught while the probe was watching A16 being cleared: **`FF FF` into both id
+bytes and all 64 values zeroed**, not filled with `NO_VALUE`. An extension lane
+between two used lanes is freed the same way. The opposite of what this format's
+two opposite fills would suggest, and what `free_lane` does.
+
+#### The writer, and the one property it had to give up
+
+`a4_plocks::apply_track_plocks` rebuilds all 128 lanes, where
+`plocks::apply_track_plocks` edits in place. **So lanes belonging to tracks a
+write never names change index**, which is the one thing the gen-2 policy exists
+to prevent. It cannot be avoided on a box that sorts, so what is held instead is
+that their *contents* do not change — same parameter, same values, same fine
+bytes.
+
+**Verified on hardware the same day.** A16 carries a two-track pool (SYN1 `0x22`
+and `0x23`, SYN2 `0x24`); writing SYN1 through the real path — fetch →
+`a4_pattern_to_model` → `a4_track_write` → `a4_safe_write_tracks` — moved 77 of
+12,974 bytes, **read back byte-identical**, and SYN2's OVERDRIVE lane came back
+with every byte intact having moved from lane 3 to lane 2.
+`examples/a4_plock_containment.rs` is the run.
+
+**And the front panel read it back, which is the half the byte-compare cannot
+reach.** A pool this app composed from scratch coming back byte-identical proves
+the box *stored* it; it does not prove the box *parsed* it, because storing bytes
+without understanding them looks the same from the wire. Neil read A16 on the
+box: SYN1 step 1 `FREQ 50`, step 5 `RESO 100`, SYN2 step 9 `OVERDRIVE` at max.
+Three locks, two tracks, one of them on the track the write never named — every
+one of them live. That is the same reasoning the trig model needed on 2026-08-31,
+when an unlit LED refuted a model no dump could see (lesson 16), and it is why
+the write experiments and the screen are two witnesses rather than one.
+
+**One deliberate exception to byte-exact round-tripping.** A pool holding an
+extension whose fine bytes are all zero comes back one lane shorter, because the
+encoder emits one only when it carries something. The lane holds no information
+— `A4Lane::word` reads a zero fine byte and an absent extension identically — and
+the box never produces the shape, so the only way to meet one is to have sent
+it. `tests/all/a4.rs` states it as its own test rather than letting the
+round-trip test quietly exclude the case.
+
+#### A third parameter id, and why the writer does not need a table
+
+`0x24` is **OVERDRIVE**, named on the box 2026-09-01 (SYN2 step 9, max, stored as
+127 with no extension) — joining `0x22` FLTR1 FREQ and `0x23` RESO. Adjacent ids
+for adjacent knobs, for a third time.
+
+Three ids out of an unknown total, and none of them in `params::A4_PARAMS` with a
+p-lock slot. **So a gen-1 lane travels on the box's own `param_id`, not on a
+curated name.** `core::a4_transfer` imports every pool lane by number and writes
+it back by number, and the round trip is lossless with no parameter table at
+all — where the gen-2 path resolves through `params` and drops what it cannot
+name. Copying gen-2 here would have freed nearly every lane in the pool, since
+"we cannot name it" would have become "we deleted it".
+
+What that leaves undone is *authoring*: a lane drawn in the roll from a named
+knob has no A4 id to be written under, and is refused by name with a warning
+rather than aimed at a guess. An A4 parameter table is what closes that, and it
+is display-and-authoring work, not round-trip work.
+
+### The A4's p-lock parameter ids, measured — 2026-09-01, A4 0195
+
+**Ninety-two parameters named, one knob turn each**, against
+`examples/a4_param_probe.rs` watching the working pattern. No save, no slot
+written: a knob turn on a held trig allocates a pool lane, the probe prints the
+id, the operator names the knob. `params::A4_SYNTH_PLOCKS` is the table and
+`tests` pin the count, the holes and each structural shape.
+
+It closes the gap that made the p-lock writer round-trip-only. A lane off the
+box now shows as `FLTR1 FRQ` rather than `param 0x22`.
+
+#### Every shortcut was tried and every one was wrong
+
+Each looked reasonable, and each would have produced a table that was right in
+the region it was derived from and confidently wrong outside it:
+
+- **`param_id = nrpn_lsb − 6`** fits FLTR1 FREQ, RESO and OVERDRIVE exactly —
+  three for three, against Elektron's own appendix. It sends `osc1.level`
+  (NRPN 4) to −2. The offset is *regional*: −6 across the filter, −10 across the
+  FX sends. And the LFOs break it structurally rather than numerically — the
+  NRPNs lay LFO1 and LFO2 ten apart, the pool **interleaves** them two apart. The
+  two numberings are not one order with an offset, and the agreement in two
+  regions was a coincidence of those regions being sequential in both.
+- **"ids run consecutively in screen order"** holds for the ten filter knobs and
+  fails on the very next page swept: the AMP page's envelope row is stride 3.
+- **"a page is laid out by rows"** — refuted by AM2. **"by columns"** — refuted
+  by the eight knobs after it. The real order pairs AM1/AM2 and then takes each
+  row in turn, which is a third scheme neither guess covered.
+
+Four layout schemes appear in one address space — sequential, interleaved by 2,
+interleaved by 3, paired-then-sequential — and **no page predicts the next**.
+That is the case for having measured all 92 rather than 20 and a rule.
+
+#### What the sweep found on the way
+
+- **TUN and FIN are one parameter.** They are the coarse and fine halves of a
+  single lane, which is why the box locks both when either is turned and why a
+  ten-knob page yields nine ids. Neil spotted the front-panel behaviour; the pool
+  explained it.
+- **The fine byte is 128ths, not 256ths** — and that corrects a shipped claim.
+  TUNE is the only parameter whose fine byte the box displays a number for, so it
+  is the only one that could be calibrated: FIN's −64…+63 maps onto bytes 64…127
+  and 0…63, and the box carries from `fine 127` to `coarse + 1, fine 0`. The
+  reading in `a4_plocks` was inference imported from gen-2, flagged as inference,
+  and half the true value. No live bug — `word()` is still a faithful reversible
+  packing and nothing scales an A4 word — but it would have become one the moment
+  a scaling table landed.
+- **"The coarse byte is the displayed value" is false in general.** Written as
+  "measured twice" from FREQ, RESO and OVERDRIVE — all unipolar. TUNE is the
+  first bipolar parameter it met: `coarse 63, fine 64` reads on the box as TUN
+  **0**, not TUN −1.
+- **Noise COL sits at `0x64`, 77 ids from the rest of its page.** Measured twice
+  in independent sweeps. It looked like an artefact of a scrambled run and was
+  not. A parameter appended by a later OS would land exactly there — inserting it
+  at `0x16` would renumber everything above and break every saved pattern — but
+  that is a hypothesis needing an early-OS box.
+
+#### The id space is per track kind, which is why this is a synth-only table
+
+Two knob turns on the **FX track** put locks on `0x1a` and `0x29` — both synth
+parameters in the table above. So the same byte means different things on
+different track kinds, a single flat table would have been wrong, and every FX
+p-lock would have been labelled with a confident synth name.
+
+`a4_lane_to_model` therefore looks up a label only for tracks 0–3 and leaves FX
+and CV lanes showing their hex byte. Neither has been swept; both stay
+notes-only by decision, until there is a use case.
+
+#### Named is not editable, and the split is deliberate
+
+`Param::plock` is documented as `None` until the paramId **and scaling** have
+been measured. Only ids were measured here, so none of these went into
+`A4_PARAMS` — `writable_params_for("A4")` is still empty and a test says so.
+`PLockLane::label` carries the name, `ParamDesc::curated` stays false, and
+`ui::plocklane::lane_is_editable` therefore still refuses. **A lane can now be
+named and still not dragged**, because dragging needs a scaling and only TUNE has
+one.
+
+Nine ids inside the range are unmapped and stay that way rather than being
+interpolated: `0x12`–`0x14`, `0x2c`, `0x32`, `0x60`–`0x63`.
 
 ### 10.5 What saving a kit will cost, when it comes
 

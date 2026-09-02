@@ -52,6 +52,7 @@
 
 use crate::backup_stash::{BackupContext, Stash, StashError};
 use crate::device::DeviceIdentity;
+use crate::a4_plocks::A4LaneWrite;
 use crate::pattern::{
     bank_name, decode_pattern_kit, diff_payloads, dn2_spec, dt2_spec, encode_track_notes,
     track_trig_count, ByteDiff, Note, PatternKit, Spec,
@@ -830,9 +831,9 @@ pub struct A4Step {
 ///
 /// The A4 twin of [`TrackWrite`]. It carries note, velocity, length, micro
 /// timing and trig condition per step — the five lanes hardware named on
-/// 2026-09-01. Not the ARP note lanes, which are named and have no
-/// representation in this app's model, and not the p-lock pool, which has no
-/// writer; both keep the destination's own bytes.
+/// 2026-09-01 — and, since the pool writer landed the same day, the track's
+/// p-lock lanes. Not the ARP note lanes, which are named and have no
+/// representation in this app's model; those keep the destination's own bytes.
 ///
 /// Chords and notes past step 64 were resolved by the caller, whose warnings
 /// ride beside the write — the same split `core::export` makes for a gen-2
@@ -848,6 +849,21 @@ pub struct A4TrackWrite {
     /// as a gen-2 [`TrackWrite`]'s notes are the track's whole contents, and an
     /// empty track is a deliberate clear rather than a no-op.
     pub steps: Vec<Option<A4Step>>,
+    /// This track's p-lock lanes, or `None` to leave the pool alone.
+    ///
+    /// The same two meanings [`TrackWrite::plocks`] carries, and the same
+    /// reason for the `Option`: `Some(vec)` says *the track's lanes are the
+    /// truth*, so a parameter not in it is one the caller means to remove,
+    /// while `None` says the caller has nothing to say about the pool and the
+    /// destination keeps its own. Every A4 write took the second meaning until
+    /// 2026-09-01, because there was no encoder.
+    ///
+    /// **`Some` on this box moves more bytes than `Some` on a digi.** The pool
+    /// is rebuilt in `(param_id, track)` order, so lanes belonging to the
+    /// tracks this write never names change *index* — see
+    /// [`crate::a4_plocks::apply_track_plocks`] for why that is forced and what
+    /// is preserved instead.
+    pub plocks: Option<Vec<A4LaneWrite>>,
 }
 
 /// Replace several tracks of **one** pattern on an Analog Four, safely, in one
@@ -857,10 +873,10 @@ pub struct A4TrackWrite {
 /// `a4_transfer` as two files: the ceremony is the same five rules in the same
 /// order — gate, re-fetch, confirm, stash, send, read back, byte-compare — and
 /// almost nothing *inside* the steps is shared. The decode is
-/// [`crate::a4_pattern`]'s rather than a `Spec`'s, the encode is two lanes per
-/// track rather than an encoder with a trig-record pool, and there are no
-/// p-locks, no swing and no per-track PROB to carry, because none of those are
-/// in the mapped format.
+/// [`crate::a4_pattern`]'s rather than a `Spec`'s, the encode is five per-step
+/// lanes plus a pool rebuild rather than an encoder with a trig-record pool, and
+/// there is no swing and no per-track PROB to carry, because neither is in the
+/// mapped format.
 ///
 /// **The re-fetch is what retired the baseline rule.** Until 2026-08-31 an A4
 /// write was composed on a dump kept from receive time, because "the A4 cannot
@@ -883,7 +899,7 @@ pub fn a4_safe_write_tracks(
     hooks: &mut impl WriteHooks,
     now: Timestamp,
 ) -> Result<WriteResult, WriteError> {
-    use crate::a4_pattern::{
+use crate::a4_pattern::{
         clear_trig, read_track_trigs, set_note_trig, set_trig_condition, set_trig_length,
     set_trig_micro_timing, set_trig_velocity, slot_name, trig_offset, trig_state, TrigState,
     NUM_STEPS, NUM_TRACKS,
@@ -1027,6 +1043,7 @@ pub fn a4_safe_write_tracks(
 
     let mut payload = original.clone();
     let mut written = 0usize;
+    let mut plock_warnings: Vec<String> = Vec::new();
     for write in writes {
         for (step, authored) in write.steps.iter().enumerate() {
             match authored {
@@ -1079,6 +1096,22 @@ pub fn a4_safe_write_tracks(
             }
         }
     }
+    // The pool, after the trig lanes and once per track — the same order
+    // `safe_write_tracks` composes a gen-2 write in, and for the same reason:
+    // `apply_track_plocks` scrubs the lanes it is replacing, so it must not run
+    // before something that then edits them.
+    //
+    // A `None` here leaves the destination's pool exactly as fetched, which is
+    // what every A4 write did before there was an encoder.
+    for write in writes {
+        if let Some(lanes) = &write.plocks {
+            plock_warnings.extend(
+                crate::a4_plocks::apply_track_plocks(&mut payload, write.track_index, lanes)
+                    .map_err(WriteError::Encode)?,
+            );
+        }
+    }
+
     // The payload's own slot marker. Fetched from this very slot it already
     // agrees — except on a slot the box has never saved, where it reads FF, and
     // the box itself writes the slot here on every save. Doing the same is the
@@ -1101,7 +1134,7 @@ pub fn a4_safe_write_tracks(
         diffs,
         dropped: 0,
         written,
-        warnings: Vec::new(),
+        warnings: plock_warnings,
         label,
         index,
         tracks: writes.iter().map(|w| w.track_index).collect(),

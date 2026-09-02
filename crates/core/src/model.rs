@@ -102,6 +102,22 @@ pub struct PLockLane {
     /// at the pattern's lane pool, which is unported.
     #[serde(default)]
     pub values: Vec<Option<u16>>,
+    /// What the box's own screen calls this knob, when we know — `FLTR1 FRQ`.
+    ///
+    /// **Set only where the id could be resolved against the right table, which
+    /// on the A4 means the track kind was known.** That box's p-lock ids are
+    /// per track kind: an FX-track lane on `0x22` is not FLTR1 FREQ, so the
+    /// lookup happens at import (`a4_transfer::a4_lane_to_model`) where the
+    /// track is in hand, and the answer is carried here rather than re-derived
+    /// somewhere that has only the id.
+    ///
+    /// **A label is not curation.** It changes what a lane is *called* and
+    /// nothing else — the lane stays uneditable, because editing needs the
+    /// stored-to-display scaling and on the A4 only OSC TUNE has had one
+    /// measured. `ui::plocklane::lane_is_editable` keys off
+    /// `ParamDesc::curated`, which this deliberately does not set.
+    #[serde(default)]
+    pub label: Option<String>,
 }
 
 impl PLockLane {
@@ -126,6 +142,10 @@ impl PLockLane {
             param_id,
             device_kind,
             trigless,
+            // Set by `with_label` rather than here: naming a lane needs the
+            // *right table*, and on the A4 that means knowing the track kind,
+            // which a constructor taking only an id cannot.
+            label: None,
             values: v,
         })
     }
@@ -145,14 +165,36 @@ impl PLockLane {
     /// a lane belonging to the other box's numbering gets refused instead of
     /// translated. This one answers "what is this lane", which is what the strip
     /// draws and what a refusal has to name.
+    /// Name this lane as the box's own screen does.
+    ///
+    /// Separate from [`PLockLane::new`] because resolving an id to a name needs
+    /// context the constructor does not have — on the A4 the track kind, since
+    /// its p-lock ids mean different things on a synth track and an FX track.
+    /// A caller that cannot answer that does not call this, and the lane keeps
+    /// its hex stand-in.
+    pub fn with_label(mut self, label: impl Into<String>) -> Self {
+        self.label = Some(label.into());
+        self
+    }
+
     pub fn param(&self) -> digi_protocol::params::ParamDesc {
         let kind = self.device_kind.as_deref().unwrap_or_default();
-        digi_protocol::params::describe_param(
+        let mut desc = digi_protocol::params::describe_param(
             digi_protocol::params::param_table_for(kind),
             self.name.as_deref(),
             self.param_id,
             digi_protocol::params::device_kind_key(kind),
-        )
+        );
+        // A measured name replaces the `param 0x22` stand-in and changes nothing
+        // else. `curated` stays as `describe_param` left it, so a lane named
+        // this way is still read-only — see [`PLockLane::label`].
+        if !desc.curated {
+            if let Some(label) = &self.label {
+                desc.short = label.rsplit(' ').next().unwrap_or(label).to_owned().into();
+                desc.label = label.clone().into();
+            }
+        }
+        desc
     }
 }
 

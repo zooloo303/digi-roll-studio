@@ -20,8 +20,12 @@
 //! that vocabulary. It touches no payload. The payload work happens in
 //! `digi_protocol::safe_write::a4_safe_write_tracks`, which re-fetches the
 //! destination slot (`0x64`) and edits the named tracks' lanes into *that* —
-//! so the unmapped 10 KB of the message (sounds, p-locks, six unnamed lanes)
-//! is the destination's own, read moments before the send.
+//! so the unmapped 10 KB of the message (sounds, six unnamed lanes) is the
+//! destination's own, read moments before the send. The pool is no longer among
+//! them, and it is the first thing this app writes that moves bytes outside the
+//! named tracks' lanes — see
+//! [`digi_protocol::a4_plocks::apply_track_plocks`] for why, and what is held
+//! invariant instead.
 //!
 //! Until 2026-08-31 this file instead carried a `DumpBaseline` — the received
 //! dump kept whole on the pattern, 26 KB of hex per slot in the project file —
@@ -48,8 +52,16 @@
 //! logic and ratio entries become `cond` — exactly one of the three, because
 //! exactly one is what the box can hold.
 //!
-//! Not p-locks. That lane has no writer, so a write leaves the destination's
-//! own bytes alone.
+//! And **p-locks, since 2026-09-01**, in both directions. A lane travels on the
+//! strength of the box's own `param_id` rather than a curated name — three A4
+//! ids are measured out of an unknown total, so a table lookup would drop nearly
+//! every lane the box has — which means the values carried are raw stored words
+//! and the round trip is lossless without a parameter table. What this cannot
+//! do is *author* a new lane from a named knob: that needs the id, and the id is
+//! what is missing.
+//!
+//! Not the ARP note lanes, and not the unnamed `+459`; a write leaves the
+//! destination's own bytes there.
 //!
 //! An A4 step holds **one note**. A session track can hold a chord, so an
 //! export has to drop notes, and the warning counts the steps that lost
@@ -60,13 +72,15 @@ use digi_protocol::a4_pattern::{
     NUM_TRACKS, PAYLOAD_LEN, TRACK_NAMES,
 };
 use digi_protocol::a4_conditions::{self, A4Cond};
+use digi_protocol::a4_plocks::{read_track_plocks, A4Lane, A4LaneWrite};
+use digi_protocol::params;
 use digi_protocol::pattern::{
     length_byte_to_steps, micro_byte_to_steps, micro_steps_to_byte, steps_to_length_byte,
 };
 use digi_protocol::safe_write::{A4Step, A4TrackWrite};
 
 use crate::device::{DeviceId, DeviceModel, PatternRoute, A4};
-use crate::model::{Note, Pattern, Source};
+use crate::model::{Note, PLockLane, Pattern, Source};
 use crate::session::{PatternRef, Session};
 
 // --- IN ----------------------------------------------------------------------
@@ -91,6 +105,13 @@ pub struct A4ImportReport {
     /// a logic or ratio condition. Not a loss; a count, so the panel can say
     /// the pattern has conditions in it.
     pub conditions: usize,
+    /// P-lock lanes carried in, across every track. An extension is not counted
+    /// separately: it is half of a value, not a lane of automation.
+    pub plock_lanes: usize,
+    /// Of those, the ones holding a value on a step with no trig. Carried
+    /// read-only — this model has no trigless lock — and counted because a
+    /// track full of them looks like a track full of nothing.
+    pub trigless_plock_lanes: usize,
     /// Condition bytes past the end of the menu, which no box has ever been
     /// seen to write.
     ///
@@ -171,6 +192,8 @@ pub fn a4_pattern_to_model(
         notes_from_track_default: 0,
         conditions: 0,
         conditions_off_the_menu: 0,
+        plock_lanes: 0,
+        trigless_plock_lanes: 0,
     };
 
     for (t, track_name) in TRACK_NAMES.iter().enumerate().take(NUM_TRACKS.min(model.num_tracks)) {
@@ -238,13 +261,128 @@ pub fn a4_pattern_to_model(
         report.notes += notes.len();
         report.tracks_with_notes += usize::from(!notes.is_empty());
 
+        // The pool, keyed off the steps that actually hold a trig so a lane can
+        // say whether it is trigless. `trigs` is the box's own one-based count
+        // with residue already excluded, which is the same set the roll draws.
+        let live_steps: Vec<usize> = trigs.iter().map(|t| t.step - 1).collect();
+        let lanes: Vec<PLockLane> = read_track_plocks(&dump.payload, t)
+            .map_err(A4ImportError::BadPayload)?
+            .iter()
+            .map(|l| a4_lane_to_model(l, t, &live_steps))
+            .collect();
+        report.plock_lanes += lanes.len();
+        report.trigless_plock_lanes += lanes.iter().filter(|l| l.trigless).count();
+
         let track = pattern.track_mut(t).expect("built for this model a moment ago");
         track.length_steps = NUM_STEPS as u16;
         track.name = (*track_name).to_owned();
         track.notes = notes;
+        track.plocks = lanes;
     }
 
     Ok((pattern, report))
+}
+
+/// One pool lane as this app's model holds it.
+///
+/// The gen-1 twin of `import::lane_to_model`, and it differs in the one place
+/// that matters: **nothing is resolved through [`digi_protocol::params`]**.
+///
+/// Three A4 parameter ids are measured — `0x22` FLTR1 FREQ, `0x23` RESO and
+/// `0x24` OVERDRIVE, all three named by a hand on the box — out of an unknown
+/// total, and none of them is in `A4_PARAMS` with a p-lock slot
+/// (`writable_params_for("A4")` is empty). A gen-2 import that cannot name a
+/// lane still carries it by number, and that is the whole mechanism here rather
+/// than the exception: `param_id` is the box's own byte and it is what a
+/// write-back needs. Naming is for *display*.
+///
+/// So `values` are **raw stored words** — display in the high byte, 256ths in
+/// the low — which is what [`crate::model::PLockLane::values`] documents for a
+/// lane off a box whose knob we cannot name. They go back out unchanged, so the
+/// round trip is lossless without a parameter table.
+fn a4_lane_to_model(lane: &A4Lane, track: usize, live_steps: &[usize]) -> PLockLane {
+    let modelled = PLockLane::new(
+        None,
+        Some(u16::from(lane.param_id)),
+        Some("A4".to_owned()),
+        lane.has_trigless_values(live_steps),
+        (0..NUM_STEPS).map(|step| lane.word(step)).collect(),
+    )
+    .expect("a pool lane always has a param id");
+
+    // **The track kind decides which table names this id, and only a synth
+    // track has one.** Measured 2026-09-01: an FX-track lock landed on `0x1a`
+    // and `0x29`, both of which name synth parameters — so the id space is per
+    // track kind and labelling an FX or CV lane from the synth table would
+    // produce a confident wrong name rather than no name. Neither of those two
+    // tracks has been swept, so their lanes keep their hex stand-in, which is
+    // the honest answer and is visible on screen if anyone meets one.
+    //
+    // A label is not curation: the lane is named and stays read-only, because
+    // editing needs a stored-to-display scaling and only OSC TUNE has one.
+    match (track < A4_SYNTH_TRACKS)
+        .then(|| params::a4_synth_plock_full_label(lane.param_id))
+        .flatten()
+    {
+        Some(label) => modelled.with_label(label),
+        None => modelled,
+    }
+}
+
+/// SYN1–SYN4. Track 4 is the FX track and 5 is CV, and neither shares the synth
+/// tracks' p-lock parameter numbering — see [`a4_lane_to_model`].
+const A4_SYNTH_TRACKS: usize = 4;
+
+/// Model p-lock lanes → the lanes [`digi_protocol::a4_plocks::apply_track_plocks`]
+/// writes.
+///
+/// The gen-1 counterpart to `export::lanes_for_device`, and shorter for the same
+/// reason [`a4_lane_to_model`] is: the param id travels, so there is no table to
+/// resolve against and no lane dropped for want of a measured p-lock slot.
+///
+/// Two lanes still do not make it, both reported:
+///
+/// * one belonging to another box's parameter numbering — a DT2's `0x22` is not
+///   this box's, and crossing boxes is copy-track's job, by name;
+/// * one that names a parameter **only** by name. This app can author
+///   `filter.cutoff` in the roll and play it over MIDI, and cannot yet say which
+///   byte the A4 stores it under, because only three of this box's ids have been
+///   measured. That is the gap the A4 parameter table would close, and until it
+///   does, an authored lane is honestly refused rather than aimed at a guess.
+pub fn a4_lanes_for_write(lanes: &[PLockLane]) -> (Vec<A4LaneWrite>, Vec<String>) {
+    let mut out = Vec::new();
+    let mut warnings = Vec::new();
+    for lane in lanes {
+        if let Some(kind) = lane.device_kind.as_deref() {
+            if kind != "A4" {
+                warnings.push(format!(
+                    "a p-lock lane wasn't sent — it belongs to a {kind}'s parameter numbering,                      not the Analog Four's"
+                ));
+                continue;
+            }
+        }
+        let Some(id) = lane.param_id else {
+            warnings.push(format!(
+                "the {} lane wasn't sent — digi-roll can play that parameter over MIDI but \
+                 hasn't measured which byte an A4 pattern stores it under, so it can't write \
+                 it into the pool",
+                lane.name.as_deref().unwrap_or("unnamed"),
+            ));
+            continue;
+        };
+        let Ok(param_id) = u8::try_from(id) else {
+            // Unreachable from a box, whose ids are bytes; this is the
+            // hand-edited project file, where truncating would aim the lane at a
+            // real parameter, silently and wrongly.
+            warnings.push(format!(
+                "a p-lock lane wasn't sent — parameter number {id} is past the 255 an A4 lane \
+                 header can hold"
+            ));
+            continue;
+        };
+        out.push(A4LaneWrite::new(param_id, lane.values.clone()));
+    }
+    (out, warnings)
 }
 
 // --- OUT ---------------------------------------------------------------------
@@ -420,20 +558,30 @@ pub fn a4_track_write(
             if crowded == 1 { "" } else { "s" },
         ));
     }
-    // Lanes drawn in the roll on this track. The A4's p-lock pool is mapped as
-    // shape only and a write never touches it, so these cannot travel — said
-    // here, where every other per-track loss is said, rather than silently
-    // arriving as a pattern that plays flat.
-    if !track.plocks.is_empty() {
-        warnings.push(format!(
-            "{} p-lock lane{} not sent — the A4's pool is not in the mapped format, and the \
-             destination keeps its own",
-            track.plocks.len(),
-            if track.plocks.len() == 1 { "" } else { "s" },
-        ));
-    }
+    // Lanes drawn in the roll on this track. Since 2026-09-01 these travel:
+    // `a4_plocks::apply_track_plocks` is the encoder and this is where the model
+    // is put into its vocabulary. What it cannot say is said here, where every
+    // other per-track loss is said.
+    let (plocks, lane_warnings) = a4_lanes_for_write(&track.plocks);
+    warnings.extend(lane_warnings);
 
-    Ok(A4TrackExport { write: A4TrackWrite { index, track_index, steps }, warnings })
+    Ok(A4TrackExport {
+        // **`Some`, always — including for a track with no lanes.** This says
+        // "the track's lanes are the truth", which is the same contract
+        // `export::track_write` gives a digi, and it is what makes deleting the
+        // last lane in the roll something a write can express. `None` would mean
+        // "leave the pool alone" and there would then be no way to clear one.
+        //
+        // The cost is on the other side and it is worth naming: a project file
+        // written before this date holds A4 patterns whose `plocks` are empty
+        // because the *import* did not carry them, and writing one of those back
+        // removes lanes the user was never shown. `apply_track_plocks` warns on
+        // exactly that shape — a track asking for nothing over a destination
+        // that has something — which is the one signature that separates it from
+        // an ordinary deletion.
+        write: A4TrackWrite { index, track_index, steps, plocks: Some(plocks) },
+        warnings,
+    })
 }
 
 impl Session {
@@ -862,3 +1010,194 @@ mod tests {
     }
 }
 
+
+#[cfg(test)]
+mod plock_routing_tests {
+    use super::*;
+    use crate::device::Device;
+
+    fn fixture(name: &str) -> A4Pattern {
+        let path = format!("{}/../protocol/tests/fixtures/{name}", env!("CARGO_MANIFEST_DIR"));
+        let raw = std::fs::read(&path).unwrap_or_else(|e| panic!("{path}: {e}"));
+        digi_protocol::a4_pattern::parse_pattern(&raw).unwrap_or_else(|e| panic!("{name}: {e}"))
+    }
+
+    /// SYN1 `0x22` + `0x23`, SYN2 `0x24` — the two-track pool captured 2026-09-01.
+    fn two_track() -> A4Pattern {
+        fixture("analogfour-A16-plock-two-track-2026-09-01.syx")
+    }
+
+    #[test]
+    fn an_import_carries_the_pool_onto_the_tracks_that_own_it() {
+        let (pattern, report) = a4_pattern_to_model(&A4, &two_track()).unwrap();
+        assert_eq!(report.plock_lanes, 3);
+        assert_eq!(report.trigless_plock_lanes, 0, "every lock sits on a trig");
+
+        let syn1 = &pattern.track(0).unwrap().plocks;
+        assert_eq!(syn1.iter().map(|l| l.param_id).collect::<Vec<_>>(), [Some(0x22), Some(0x23)]);
+        let syn2 = &pattern.track(1).unwrap().plocks;
+        assert_eq!(syn2.iter().map(|l| l.param_id).collect::<Vec<_>>(), [Some(0x24)]);
+
+        // Raw stored words, because no A4 parameter has a curated scaling. The
+        // high byte is what the box displays: FREQ 50, RESO 100, OVERDRIVE 127.
+        // **This fixture carries the scar of the experiment that produced it.**
+        // It was captured after the detached-extension write, which cost FREQ
+        // the fine byte it had (`0x3b`) and left RESO holding an all-zero
+        // extension it would never have allocated. So FREQ reads as an exact 50
+        // here where every 2026-08-31 capture has it fractional.
+        assert_eq!(syn1[0].values[0], Some(0x3200), "FREQ 50, its fine byte spent on variant C");
+        assert_eq!(syn1[1].values[4], Some(0x6400), "RESO 100, and the zero fine byte reads as 0");
+        assert_eq!(syn2[0].values[8], Some(0x7f00), "OVERDRIVE max");
+        assert!(syn1.iter().all(|l| l.name.is_none()), "no A4 param id is curated yet");
+        assert!(syn1.iter().all(|l| l.device_kind.as_deref() == Some("A4")));
+    }
+
+    /// A lane holding a value on a step with no trig is marked, so the roll can
+    /// show it read-only rather than edit it into a lie — the same promise the
+    /// gen-2 import makes, and the reason a write can be trusted not to
+    /// invent one.
+    #[test]
+    fn a_lock_on_a_step_with_no_trig_imports_as_trigless() {
+        let mut dump = two_track();
+        // SYN1's FREQ lane locks step 1. Take the trig off it and the lane is
+        // holding a value nothing plays.
+        digi_protocol::a4_pattern::clear_trig(&mut dump.payload, 0, 0).unwrap();
+        let (pattern, report) = a4_pattern_to_model(&A4, &dump).unwrap();
+        let freq = &pattern.track(0).unwrap().plocks[0];
+        assert!(freq.trigless, "the FREQ lane now holds a value on a trigless step");
+        assert_eq!(report.trigless_plock_lanes, 1);
+    }
+
+    /// **The end-to-end round trip: import, describe as a write, apply, and the
+    /// pool must be the bytes it started as.**
+    ///
+    /// The two halves of the routing checked against each other with the box's
+    /// own payload in the middle, which is what `a4_track_write` claims when it
+    /// says the track's lanes are the truth.
+    #[test]
+    fn a_pattern_read_off_the_box_and_written_straight_back_keeps_its_pool() {
+        let dump = two_track();
+        let (mut s, dev) = {
+            let mut s = Session::default();
+            let id = s.add_device(Device::new("A4", &A4, 16));
+            (s, id)
+        };
+        let slot = PatternRef::new(0, 0);
+        s.import_a4_pattern(dev, slot, &dump).unwrap();
+
+        let mut payload = dump.payload.clone();
+        for track in 0..2 {
+            let export = s.a4_track_write(dev, slot, track, slot).unwrap();
+            let lanes = export.write.plocks.expect("the track's lanes are the truth");
+            assert!(
+                export.warnings.iter().all(|w| !w.contains("p-lock")),
+                "{:?}", export.warnings
+            );
+            digi_protocol::a4_plocks::apply_track_plocks(&mut payload, track, &lanes).unwrap();
+        }
+
+        let before = digi_protocol::a4_plocks::read_all_plocks(&dump.payload).unwrap();
+        let after = digi_protocol::a4_plocks::read_all_plocks(&payload).unwrap();
+        assert_eq!(after.len(), before.len(), "no lane gained or lost");
+        for (a, b) in after.iter().zip(&before) {
+            assert_eq!((a.param_id, a.track), (b.param_id, b.track));
+            assert_eq!(a.values, b.values);
+        }
+    }
+
+    /// A lane authored in the roll from a *name* cannot be sent, because only
+    /// three A4 parameter ids have been measured and none is in the curated
+    /// table. Refused by name rather than aimed at a guess — and said out loud,
+    /// because a lane silently not arriving is a pattern that plays flat.
+    #[test]
+    fn a_lane_named_but_not_numbered_is_refused_and_reported() {
+        let lane = PLockLane::new(
+            Some("filter.cutoff".to_owned()),
+            None,
+            Some("A4".to_owned()),
+            false,
+            vec![Some(0x4000)],
+        )
+        .unwrap();
+        let (out, warnings) = a4_lanes_for_write(&[lane]);
+        assert!(out.is_empty());
+        assert_eq!(warnings.len(), 1);
+        assert!(warnings[0].contains("filter.cutoff"), "{}", warnings[0]);
+        assert!(warnings[0].contains("can't write"), "{}", warnings[0]);
+    }
+
+    /// A DT2's `0x22` is not an A4's. Crossing boxes is copy-track's job and it
+    /// translates by name; a lane carrying another box's numbering is refused.
+    #[test]
+    fn another_box_s_lane_does_not_go_to_the_a4() {
+        let lane =
+            PLockLane::new(None, Some(0x22), Some("DT2".to_owned()), false, vec![Some(0x4000)])
+                .unwrap();
+        let (out, warnings) = a4_lanes_for_write(&[lane]);
+        assert!(out.is_empty());
+        assert!(warnings[0].contains("DT2"), "{}", warnings[0]);
+    }
+}
+
+#[cfg(test)]
+mod plock_naming_tests {
+    use super::*;
+
+    fn fixture(name: &str) -> A4Pattern {
+        let path = format!("{}/../protocol/tests/fixtures/{name}", env!("CARGO_MANIFEST_DIR"));
+        let raw = std::fs::read(&path).unwrap_or_else(|e| panic!("{path}: {e}"));
+        digi_protocol::a4_pattern::parse_pattern(&raw).unwrap_or_else(|e| panic!("{name}: {e}"))
+    }
+
+    /// A synth track's lanes arrive named as the box's own screen names them.
+    #[test]
+    fn a_synth_lane_is_named_from_the_measured_table() {
+        let dump = fixture("analogfour-A16-plock-two-track-2026-09-01.syx");
+        let (pattern, _) = a4_pattern_to_model(&A4, &dump).unwrap();
+
+        let syn1 = &pattern.track(0).unwrap().plocks;
+        assert_eq!(syn1[0].label.as_deref(), Some("FLTR1 FRQ"));
+        assert_eq!(syn1[1].label.as_deref(), Some("FLTR1 RES"));
+        assert_eq!(syn1[0].param().label.as_ref(), "FLTR1 FRQ");
+
+        let syn2 = &pattern.track(1).unwrap().plocks;
+        assert_eq!(syn2[0].label.as_deref(), Some("FLTR1 OVR"));
+    }
+
+    /// **Naming a lane does not make it editable.** Editing needs a
+    /// stored-to-display scaling and no A4 parameter has a measured one, so the
+    /// lane is named and still read-only — `ParamDesc::curated` stays false.
+    ///
+    /// This is the assertion that stops a later "it has a name now, why can't I
+    /// drag it" change from writing bytes on a guessed scale.
+    #[test]
+    fn a_named_lane_is_still_not_curated() {
+        let dump = fixture("analogfour-A16-plock-two-track-2026-09-01.syx");
+        let (pattern, _) = a4_pattern_to_model(&A4, &dump).unwrap();
+        let lane = &pattern.track(0).unwrap().plocks[0];
+        assert_eq!(lane.param().label.as_ref(), "FLTR1 FRQ");
+        assert!(!lane.param().curated, "a label is not a measured scaling");
+        assert!(lane.name.is_none(), "and it is not a cross-device canonical name");
+    }
+
+    /// **An FX or CV lane keeps its hex stand-in.** The p-lock id space is per
+    /// track kind — an FX lock was measured on `0x1a` and `0x29`, both synth
+    /// parameters — so naming one from the synth table would be a confident
+    /// wrong answer. Neither track has been swept.
+    #[test]
+    fn an_fx_track_lane_is_not_named_from_the_synth_table() {
+        let mut dump = fixture("analogfour-A16-plock-two-track-2026-09-01.syx");
+        // Move SYN1's 0x22 lane onto the FX track (index 4) by hand: the same
+        // id, a different track kind.
+        let o = digi_protocol::a4_plocks::POOL_BASE + 1;
+        assert_eq!(dump.payload[o - 1], 0x22, "the fixture's first lane");
+        dump.payload[o] = 4;
+
+        let (pattern, _) = a4_pattern_to_model(&A4, &dump).unwrap();
+        let fx = &pattern.track(4).unwrap().plocks;
+        assert_eq!(fx.len(), 1);
+        assert_eq!(fx[0].param_id, Some(0x22), "the lane still arrives");
+        assert_eq!(fx[0].label, None, "but unnamed — 0x22 is not FLTR1 FRQ here");
+        assert!(fx[0].param().label.contains("0x22"), "{}", fx[0].param().label);
+    }
+}

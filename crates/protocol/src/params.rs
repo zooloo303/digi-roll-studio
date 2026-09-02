@@ -471,6 +471,227 @@ pub static A4_PARAMS: &[Param] = &[
     },
 ];
 
+// --- The Analog Four's p-lock parameter ids ------------------------------------
+
+/// What one `param_id` byte means in an Analog Four **synth track's** p-lock
+/// pool.
+///
+/// Deliberately **not** a [`Param`]. A `Param`'s `plock` field is documented as
+/// `None` "until the paramId *and scaling* have been measured on hardware", and
+/// only the ids are measured here — so putting these in [`A4_PARAMS`] would
+/// assert a scaling nobody has read off the box. This carries the fact that was
+/// actually established and no more: a byte, and what the front panel calls it.
+pub struct A4PlockParam {
+    /// The box's own parameter byte, as a pool lane header carries it.
+    pub id: u8,
+    /// The page it lives on, as the box labels the page.
+    pub page: &'static str,
+    /// The knob's own four-character name, as the box prints it.
+    pub label: &'static str,
+}
+
+/// Every p-lock parameter id measured on an Analog Four **synth** track,
+/// 2026-09-01.
+///
+/// # How this was measured, and why none of it is interpolated
+///
+/// One hand on the box, one knob at a time, against
+/// `examples/a4_param_probe.rs` watching the working pattern — no save, no slot
+/// written. A knob turn on a held trig allocates a pool lane, the probe names the
+/// id, and the operator names the knob. **Ninety-two entries, ninety-two knob
+/// turns.**
+///
+/// It was measured exhaustively because every attempt to shortcut it failed, and
+/// each failure is worth recording since all of them looked reasonable first:
+///
+/// * **`param_id = nrpn_lsb − 6`** fits FLTR1 FREQ, RESO and OVERDRIVE exactly,
+///   and `osc1.level`'s NRPN of 4 sends it to −2. The offset is regional: −6 in
+///   the filter block, −10 across the FX sends. And the LFOs break it
+///   structurally rather than numerically — the published NRPNs lay LFO1 and
+///   LFO2 out ten apart while the pool **interleaves** them two apart, so the two
+///   numberings are not one order with an offset.
+/// * **"ids run consecutively in screen order"** holds for the ten filter knobs
+///   and fails on the very next page: the AMP page's envelope row is stride 3,
+///   because three envelopes are interleaved.
+/// * **"a page is laid out by rows"** and **"by columns"** are both wrong for
+///   OSC page 2, which pairs AM1 and AM2 first and then takes the rest of each
+///   row in turn.
+///
+/// Four layout schemes appear here — sequential, interleaved by 2, interleaved
+/// by 3, and paired-then-sequential — and no page predicts the next.
+///
+/// # What it does not cover
+///
+/// **Synth tracks only.** The id space is *per track kind*: an FX-track lock was
+/// measured landing on `0x1a` and `0x29`, both of which are synth parameters
+/// here. Labelling an FX or CV lane from this table would produce a confident
+/// wrong name, which is why the lookup is
+/// [`a4_synth_plock_label`] and takes the caller's word for it.
+///
+/// **Ids, not scalings.** What a stored word means on screen is a second
+/// measurement, and only OSC TUNE has had it — see [`crate::a4_plocks`], where
+/// tune turned out to be bipolar with a borrow, refuting "the coarse byte is the
+/// displayed value" for the general case.
+///
+/// **Nine ids in range are unmapped** and stay that way rather than being
+/// guessed: `0x12`–`0x14`, `0x2c`, `0x32`, `0x60`–`0x63`. A lane arriving on one
+/// of those has no name here and will show as its hex byte, which is the honest
+/// answer and is visible if it ever happens.
+pub static A4_SYNTH_PLOCKS: &[A4PlockParam] = &[
+    // OSC1 and OSC2 interleave: OSC1 on even ids, OSC2 on odd. Confirmed at both
+    // ends of the page — TUNE (0x00/0x01) and PWM (0x10/0x11) — rather than from
+    // one anchor and a stride.
+    //
+    // **TUN and FIN are one parameter, not two.** They are the coarse and fine
+    // halves of a single lane, which is why the front panel locks both when
+    // either is turned and why a ten-knob page yields nine ids.
+    A4PlockParam { id: 0x00, page: "OSC1", label: "TUN/FIN" },
+    A4PlockParam { id: 0x02, page: "OSC1", label: "DET" },
+    A4PlockParam { id: 0x04, page: "OSC1", label: "TRK" },
+    A4PlockParam { id: 0x06, page: "OSC1", label: "LEV" },
+    A4PlockParam { id: 0x08, page: "OSC1", label: "WAV" },
+    A4PlockParam { id: 0x0a, page: "OSC1", label: "SUB" },
+    A4PlockParam { id: 0x0c, page: "OSC1", label: "PW" },
+    A4PlockParam { id: 0x0e, page: "OSC1", label: "SPD" },
+    A4PlockParam { id: 0x10, page: "OSC1", label: "PWM" },
+    A4PlockParam { id: 0x01, page: "OSC2", label: "TUN/FIN" },
+    A4PlockParam { id: 0x03, page: "OSC2", label: "DET" },
+    A4PlockParam { id: 0x05, page: "OSC2", label: "TRK" },
+    A4PlockParam { id: 0x07, page: "OSC2", label: "LEV" },
+    A4PlockParam { id: 0x09, page: "OSC2", label: "WAV" },
+    A4PlockParam { id: 0x0b, page: "OSC2", label: "SUB" },
+    A4PlockParam { id: 0x0d, page: "OSC2", label: "PW" },
+    A4PlockParam { id: 0x0f, page: "OSC2", label: "SPD" },
+    A4PlockParam { id: 0x11, page: "OSC2", label: "PWM" },
+    // 0x12-0x14 unmapped.
+    //
+    // The noise section, on OSC1's second page. Consecutive rather than
+    // interleaved because there is one noise generator, not one per oscillator —
+    // the same reason the shared OSC page below is consecutive.
+    A4PlockParam { id: 0x15, page: "NOISE", label: "SnH" },
+    A4PlockParam { id: 0x16, page: "NOISE", label: "FAD" },
+    A4PlockParam { id: 0x17, page: "NOISE", label: "LEV" },
+    // OSC page 2 — settings the manual says affect *both* oscillators, which is
+    // why there is one set of them. AM1 and AM2 are paired first, then the rest
+    // of the top row, then the rest of the bottom row: a layout neither
+    // row-major nor column-major, and both guesses were made and refuted.
+    A4PlockParam { id: 0x18, page: "OSC", label: "AM1" },
+    A4PlockParam { id: 0x19, page: "OSC", label: "AM2" },
+    A4PlockParam { id: 0x1a, page: "OSC", label: "SMD" },
+    A4PlockParam { id: 0x1b, page: "OSC", label: "SNC" },
+    A4PlockParam { id: 0x1c, page: "OSC", label: "BND" },
+    A4PlockParam { id: 0x1d, page: "OSC", label: "SLI" },
+    A4PlockParam { id: 0x1e, page: "OSC", label: "TRG" },
+    A4PlockParam { id: 0x1f, page: "OSC", label: "FAD" },
+    A4PlockParam { id: 0x20, page: "OSC", label: "SPD" },
+    A4PlockParam { id: 0x21, page: "OSC", label: "VIB" },
+    // The two filters, sequential and in screen order — the one page where the
+    // obvious layout is the real one.
+    A4PlockParam { id: 0x22, page: "FLTR1", label: "FRQ" },
+    A4PlockParam { id: 0x23, page: "FLTR1", label: "RES" },
+    A4PlockParam { id: 0x24, page: "FLTR1", label: "OVR" },
+    A4PlockParam { id: 0x25, page: "FLTR1", label: "TRK" },
+    A4PlockParam { id: 0x26, page: "FLTR1", label: "DEP" },
+    A4PlockParam { id: 0x27, page: "FLTR2", label: "FRQ" },
+    A4PlockParam { id: 0x28, page: "FLTR2", label: "RES" },
+    A4PlockParam { id: 0x29, page: "FLTR2", label: "TYP" },
+    A4PlockParam { id: 0x2a, page: "FLTR2", label: "TRK" },
+    A4PlockParam { id: 0x2b, page: "FLTR2", label: "DEP" },
+    // 0x2c unmapped.
+    //
+    // The AMP page's bottom row: sends, pan and volume.
+    A4PlockParam { id: 0x2d, page: "AMP", label: "CHO" },
+    A4PlockParam { id: 0x2e, page: "AMP", label: "DEL" },
+    A4PlockParam { id: 0x2f, page: "AMP", label: "REV" },
+    A4PlockParam { id: 0x30, page: "AMP", label: "PAN" },
+    A4PlockParam { id: 0x31, page: "AMP", label: "VOL" },
+    // 0x32 unmapped.
+    //
+    // **Three envelopes interleaved at stride 3** — ENV1, ENV2, then AMP, in
+    // that order. The AMP page's top row is what exposed the stride; ENV1 and
+    // ENV2 placed AMP third, where the prediction had put it first.
+    A4PlockParam { id: 0x33, page: "ENV1", label: "ATK" },
+    A4PlockParam { id: 0x34, page: "ENV2", label: "ATK" },
+    A4PlockParam { id: 0x35, page: "AMP", label: "ATK" },
+    A4PlockParam { id: 0x36, page: "ENV1", label: "DEC" },
+    A4PlockParam { id: 0x37, page: "ENV2", label: "DEC" },
+    A4PlockParam { id: 0x38, page: "AMP", label: "DEC" },
+    A4PlockParam { id: 0x39, page: "ENV1", label: "SUS" },
+    A4PlockParam { id: 0x3a, page: "ENV2", label: "SUS" },
+    A4PlockParam { id: 0x3b, page: "AMP", label: "SUS" },
+    A4PlockParam { id: 0x3c, page: "ENV1", label: "REL" },
+    A4PlockParam { id: 0x3d, page: "ENV2", label: "REL" },
+    A4PlockParam { id: 0x3e, page: "AMP", label: "REL" },
+    A4PlockParam { id: 0x3f, page: "ENV1", label: "SHP" },
+    A4PlockParam { id: 0x40, page: "ENV2", label: "SHP" },
+    A4PlockParam { id: 0x41, page: "AMP", label: "SHP" },
+    // Only ENV1 and ENV2 have LEN, so the interleave drops to two here and the
+    // AMP envelope has no entry.
+    A4PlockParam { id: 0x42, page: "ENV1", label: "LEN" },
+    A4PlockParam { id: 0x43, page: "ENV2", label: "LEN" },
+    // Destinations and depths are *blocked* rather than interleaved: each
+    // envelope's two sit together.
+    A4PlockParam { id: 0x44, page: "ENV1", label: "DST1" },
+    A4PlockParam { id: 0x45, page: "ENV1", label: "DST2" },
+    A4PlockParam { id: 0x46, page: "ENV2", label: "DST1" },
+    A4PlockParam { id: 0x47, page: "ENV2", label: "DST2" },
+    A4PlockParam { id: 0x48, page: "ENV1", label: "DEP1" },
+    A4PlockParam { id: 0x49, page: "ENV1", label: "DEP2" },
+    A4PlockParam { id: 0x4a, page: "ENV2", label: "DEP1" },
+    A4PlockParam { id: 0x4b, page: "ENV2", label: "DEP2" },
+    // The two LFOs interleave at stride 2 for the first six knobs, then block
+    // for destinations and depths — the same shape as the envelopes' tail.
+    A4PlockParam { id: 0x4c, page: "LFO1", label: "SPD" },
+    A4PlockParam { id: 0x4d, page: "LFO2", label: "SPD" },
+    A4PlockParam { id: 0x4e, page: "LFO1", label: "MUL" },
+    A4PlockParam { id: 0x4f, page: "LFO2", label: "MUL" },
+    A4PlockParam { id: 0x50, page: "LFO1", label: "FAD" },
+    A4PlockParam { id: 0x51, page: "LFO2", label: "FAD" },
+    A4PlockParam { id: 0x52, page: "LFO1", label: "SPH" },
+    A4PlockParam { id: 0x53, page: "LFO2", label: "SPH" },
+    A4PlockParam { id: 0x54, page: "LFO1", label: "MOD" },
+    A4PlockParam { id: 0x55, page: "LFO2", label: "MOD" },
+    A4PlockParam { id: 0x56, page: "LFO1", label: "WAV" },
+    A4PlockParam { id: 0x57, page: "LFO2", label: "WAV" },
+    A4PlockParam { id: 0x58, page: "LFO1", label: "DST1" },
+    A4PlockParam { id: 0x59, page: "LFO1", label: "DST2" },
+    A4PlockParam { id: 0x5a, page: "LFO2", label: "DST1" },
+    A4PlockParam { id: 0x5b, page: "LFO2", label: "DST2" },
+    A4PlockParam { id: 0x5c, page: "LFO1", label: "DEP1" },
+    A4PlockParam { id: 0x5d, page: "LFO1", label: "DEP2" },
+    A4PlockParam { id: 0x5e, page: "LFO2", label: "DEP1" },
+    A4PlockParam { id: 0x5f, page: "LFO2", label: "DEP2" },
+    // 0x60-0x63 unmapped.
+    //
+    // **Noise COL sits 77 ids from the rest of its own page.** Measured twice,
+    // in two independent sweeps, in the same position in the turn order — it was
+    // the reading that looked like an artefact and was not. A parameter added in
+    // a later OS would land here, since appending costs nothing where inserting
+    // at 0x16 would renumber everything above it and break every saved pattern;
+    // that is a hypothesis and an early-OS box would be needed to test it.
+    A4PlockParam { id: 0x64, page: "NOISE", label: "COL" },
+];
+
+/// What an Analog Four **synth** track's pool lane is called, or `None` for an
+/// id nobody has measured.
+///
+/// **The caller asserts the track kind, and must be right.** The id space
+/// differs per track kind — an FX-track lock was measured on `0x1a` and `0x29`,
+/// both synth parameters in [`A4_SYNTH_PLOCKS`] — so calling this for an FX or
+/// CV lane produces a confident wrong name. There is no FX or CV table yet
+/// because neither has been swept.
+pub fn a4_synth_plock_label(param_id: u8) -> Option<&'static str> {
+    A4_SYNTH_PLOCKS.iter().find(|p| p.id == param_id).map(|p| p.label)
+}
+
+/// `FLTR1 FRQ` — page and knob, as the box prints them, for a synth track.
+pub fn a4_synth_plock_full_label(param_id: u8) -> Option<String> {
+    A4_SYNTH_PLOCKS
+        .iter()
+        .find(|p| p.id == param_id)
+        .map(|p| format!("{} {}", p.page, p.label))
+}
+
 // --- The track's own level -----------------------------------------------------
 
 /// The track LEVEL fader, per box: the one on the box's mixer, not the AMP
@@ -1113,5 +1334,118 @@ lfo3.depth|LFO3 DEPTH|LFO3|true|||[1,72]|31|256|0|127|1|true|true"
         assert!(!d.writable());
         assert_eq!(d.stored_from_display(64.0), None);
         assert_eq!(d.display_from_stored(0x4000), None);
+    }
+
+    // --- the Analog Four's p-lock parameter ids ------------------------------
+
+    /// The count, and that every id is unique and in range.
+    ///
+    /// Ninety-two entries, one per knob turned on the box on 2026-09-01. The
+    /// number is asserted because this table's whole claim is that it was
+    /// measured exhaustively rather than extrapolated — a silently shorter table
+    /// would mean somebody filled a hole in by hand.
+    #[test]
+    fn the_a4_synth_plock_table_is_ninety_two_measured_ids() {
+        assert_eq!(A4_SYNTH_PLOCKS.len(), 92);
+        let mut ids: Vec<u8> = A4_SYNTH_PLOCKS.iter().map(|p| p.id).collect();
+        ids.sort_unstable();
+        let before = ids.len();
+        ids.dedup();
+        assert_eq!(ids.len(), before, "an id appears twice");
+        // 0xFF is a free lane header and 0x80 is an extension marker; neither can
+        // be a parameter.
+        assert!(A4_SYNTH_PLOCKS.iter().all(|p| p.id != 0xFF && p.id != 0x80));
+    }
+
+    /// The nine ids inside the measured range that nobody has mapped.
+    ///
+    /// Pinned as a *list* rather than left implicit, because the temptation with
+    /// a hole between two known neighbours is to assume it continues the page.
+    /// A lane arriving on one of these has no name and shows its hex byte.
+    #[test]
+    fn the_unmapped_ids_are_exactly_the_nine_known_holes() {
+        let holes: Vec<u8> = (0x00..=0x64u8)
+            .filter(|id| a4_synth_plock_label(*id).is_none())
+            .collect();
+        assert_eq!(holes, [0x12, 0x13, 0x14, 0x2c, 0x32, 0x60, 0x61, 0x62, 0x63]);
+    }
+
+    /// The three ids named by a hand on the box before the full sweep, which are
+    /// the ones every later reading was calibrated against.
+    #[test]
+    fn the_three_originally_named_ids_still_read_the_same() {
+        assert_eq!(a4_synth_plock_full_label(0x22).unwrap(), "FLTR1 FRQ");
+        assert_eq!(a4_synth_plock_full_label(0x23).unwrap(), "FLTR1 RES");
+        assert_eq!(a4_synth_plock_full_label(0x24).unwrap(), "FLTR1 OVR");
+    }
+
+    /// The structural shapes, each of which refuted a prediction when it was
+    /// measured. They are asserted so that a later edit cannot quietly
+    /// regularise the table into the layout it "should" have.
+    #[test]
+    fn the_four_layout_schemes_are_all_present() {
+        // Oscillators interleave on even/odd, anchored at both ends of the page.
+        assert_eq!(a4_synth_plock_full_label(0x00).unwrap(), "OSC1 TUN/FIN");
+        assert_eq!(a4_synth_plock_full_label(0x01).unwrap(), "OSC2 TUN/FIN");
+        assert_eq!(a4_synth_plock_full_label(0x10).unwrap(), "OSC1 PWM");
+        assert_eq!(a4_synth_plock_full_label(0x11).unwrap(), "OSC2 PWM");
+
+        // Three envelopes at stride 3, with AMP third rather than first.
+        for (i, page) in ["ENV1", "ENV2", "AMP"].iter().enumerate() {
+            assert_eq!(
+                a4_synth_plock_full_label(0x33 + i as u8).unwrap(),
+                format!("{page} ATK")
+            );
+            assert_eq!(
+                a4_synth_plock_full_label(0x36 + i as u8).unwrap(),
+                format!("{page} DEC")
+            );
+        }
+
+        // Two LFOs at stride 2 for the knobs, then blocked for DST and DEP.
+        assert_eq!(a4_synth_plock_full_label(0x4c).unwrap(), "LFO1 SPD");
+        assert_eq!(a4_synth_plock_full_label(0x4d).unwrap(), "LFO2 SPD");
+        assert_eq!(a4_synth_plock_full_label(0x58).unwrap(), "LFO1 DST1");
+        assert_eq!(a4_synth_plock_full_label(0x59).unwrap(), "LFO1 DST2");
+        assert_eq!(a4_synth_plock_full_label(0x5a).unwrap(), "LFO2 DST1");
+
+        // OSC page 2 pairs AM1/AM2 first — neither row-major nor column-major.
+        assert_eq!(a4_synth_plock_full_label(0x18).unwrap(), "OSC AM1");
+        assert_eq!(a4_synth_plock_full_label(0x19).unwrap(), "OSC AM2");
+        assert_eq!(a4_synth_plock_full_label(0x1a).unwrap(), "OSC SMD");
+    }
+
+    /// **The published NRPN numbering does not predict these ids**, which is why
+    /// all 92 were measured. `nrpn - 6` fits the filter block exactly and is
+    /// wrong everywhere else — this pins the two counter-examples that killed it
+    /// so nobody re-derives the rule from the three that fit.
+    #[test]
+    fn the_nrpn_offset_rule_does_not_hold() {
+        // Fits: FLTR1 FREQ is NRPN 40, and 40 - 6 = 34 = 0x22.
+        let freq = param_by_name(param_table_for("A4"), "filter.cutoff").unwrap();
+        assert_eq!(freq.midi.nrpn.unwrap().1, 40);
+        assert_eq!(a4_synth_plock_label(40 - 6).unwrap(), "FRQ");
+
+        // Fails numerically: osc1.level is NRPN 4, and 4 - 6 is not a byte.
+        let osc1 = param_by_name(param_table_for("A4"), "osc1.level").unwrap();
+        assert_eq!(osc1.midi.nrpn.unwrap().1, 4);
+
+        // Fails structurally: the NRPNs put the two LFO depths ten apart, the
+        // pool puts them two apart. Not one ordering with an offset.
+        let l1 = param_by_name(param_table_for("A4"), "lfo1.depth").unwrap();
+        let l2 = param_by_name(param_table_for("A4"), "lfo2.depth").unwrap();
+        assert_eq!(l2.midi.nrpn.unwrap().1 - l1.midi.nrpn.unwrap().1, 10);
+        assert_eq!(0x5e - 0x5c, 2, "LFO1 DEP1 is 0x5c and LFO2 DEP1 is 0x5e");
+        assert_eq!(a4_synth_plock_full_label(0x5c).unwrap(), "LFO1 DEP1");
+        assert_eq!(a4_synth_plock_full_label(0x5e).unwrap(), "LFO2 DEP1");
+    }
+
+    /// **These are ids, not scalings**, and [`A4_PARAMS`] must stay unable to
+    /// write one. Every entry there is still `plock: None` because what a stored
+    /// word means on screen is a second measurement that only OSC TUNE has had.
+    #[test]
+    fn naming_a_parameter_did_not_make_it_writable() {
+        assert_eq!(writable_params_for("A4").len(), 0);
+        assert!(param_table_for("A4").iter().all(|p| p.plock.is_none()));
     }
 }

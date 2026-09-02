@@ -40,8 +40,8 @@ use digi_protocol::a4_pattern::{
     VELOCITY_MIN,
 };
 use digi_protocol::a4_plocks::{
-    free_lane_count, is_compacted, orphan_extension_count, read_all_plocks, read_track_plocks,
-    NUM_LANES,
+    apply_track_plocks, free_lane_count, is_compacted, orphan_extension_count, read_all_plocks,
+    read_track_plocks, A4LaneWrite, NUM_LANES,
 };
 
 const CLEAR: &str = "analogfour-A16-clear-2026-08-31.syx";
@@ -52,6 +52,21 @@ const PLUS_SYN2: &str = "analogfour-A16-plock-plus-syn2-freq64-2026-08-31.syx";
 const BASE: &str = "analogfour-A16-plock-freq64-reso100-base-2026-08-31.syx";
 const FREQ100: &str = "analogfour-A16-plock-freq100-reso100-2026-08-31.syx";
 const RESO4: &str = "analogfour-A16-plock-reso4-freq64-2026-08-31.syx";
+/// Two tracks with locks — SYN1 `0x22` and `0x23`, SYN2 `0x24` — which is what
+/// the containment test needs and no 2026-08-31 capture has.
+const TWO_TRACK: &str = "analogfour-A16-plock-two-track-2026-09-01.syx";
+/// What the box wrote back when it was handed an `80 80` extension detached
+/// from the lane it extends. See [`the_box_binds_an_extension_to_the_lane_before_it`].
+const DETACHED_EXT: &str = "analogfour-A16-plock-detached-ext-readback-2026-09-01.syx";
+/// The canonical pool that detached extension was built from, and the backup it
+/// was restored from.
+const DETACHED_EXT_BASE: &str = "analogfour-A16-plock-detached-ext-sent-base-2026-09-01.syx";
+/// **61 lanes on one trig** — the parameter-naming sweep of 2026-09-01, caught in
+/// the working buffer. Twenty times richer than any pool captured before it, and
+/// the only fixture here that exercises the reader and the writer at scale. A
+/// `0x5a` working dump rather than a `0x54` stored one, because the sweep never
+/// saved: 61 p-locks were authored, read and thrown away without a slot moving.
+const SIXTY_ONE_LANES: &str = "analogfour-A16-plock-61-lanes-2026-09-01.syx";
 const A01: &str = "analogfour-A01-2026-08-30.syx";
 const A01_POSTRESET: &str = "analogfour-A01-postreset-2026-08-31.syx";
 
@@ -1123,4 +1138,315 @@ fn a_track_default_that_is_itself_unset_does_not_resolve_to_two_hundred_and_fift
     let trig = read_track_trigs(&payload, 0).expect("SYN1").remove(0);
     assert_eq!(trig.velocity, None, "the trig's own lane is unset");
     assert_eq!(effective_velocity(&payload, 0, &trig).unwrap(), 0x64, "and so is the track's");
+}
+
+
+// --- the pool writer, against the box's own bytes -----------------------------
+//
+// The gen-1 pool writer landed 2026-09-01, once three writes to A16 answered
+// whether the box requires the compacted `(param_id, track)` order it produces.
+// **It does not** — handed a pool with its keys swapped, or with a hole, or with
+// an extension detached from its parent, the box parsed every lane, lost no
+// lock, and wrote back its own canonical form.
+//
+// The encoder emits that form anyway, because the *verify* needs it: a write is
+// checked by reading the slot back and comparing byte for byte, and a box that
+// normalises turns a correct write into 10 or 132 spurious diffs. See
+// `a4_plocks::apply_track_plocks`.
+
+/// Every pool the box authored on its own: read its lanes, ask for them back,
+/// and the payload must not move.
+///
+/// **The box's own bytes are the oracle here**, which is what makes this the
+/// strongest single test of the encoder. Every rule it follows — the sort key,
+/// packing from lane zero, `FF FF` over 64 zeros for a free lane, an extension
+/// iff some fine byte is non-zero and holding fine bytes at exactly its parent's
+/// locked steps — is a rule about bytes the A4 wrote. Getting any one of them
+/// wrong moves a byte.
+///
+/// `TWO_TRACK` is deliberately absent, and
+/// [`a_zero_extension_is_normalised_away_and_that_is_the_one_exception`] is why:
+/// it is the one pool here the box did not compose by itself.
+#[test]
+fn a_pool_read_and_written_back_unchanged_moves_no_bytes() {
+    for name in [FREQ64, FREQ64_RESO100, PLUS_SYN2, BASE, FREQ100, RESO4] {
+        let pattern = a4_pattern(name);
+        let mut payload = pattern.payload.clone();
+        for track in 0..NUM_TRACKS {
+            let lanes: Vec<A4LaneWrite> =
+                read_track_plocks(&payload, track).unwrap().iter().map(A4LaneWrite::from).collect();
+            apply_track_plocks(&mut payload, track, &lanes).unwrap();
+        }
+        assert_eq!(payload, pattern.payload, "{name}: a write-back of what was read moved bytes");
+    }
+}
+
+/// The same round trip at twenty times the size, against the 61-lane sweep.
+///
+/// **Scale is the point.** Every other pool fixture holds one to three lanes, so
+/// the sort, the packing and the extension placement are all exercised over a
+/// handful of entries where an off-by-one has nowhere to show. This one has 61
+/// lanes across two tracks with ten of them carrying extensions, in the box's own
+/// order — so the encoder has to reproduce 4 KB of pool exactly, and any rule it
+/// gets subtly wrong moves a byte.
+#[test]
+fn the_sixty_one_lane_pool_survives_a_round_trip_byte_for_byte() {
+    let pattern = a4_working_pattern(SIXTY_ONE_LANES);
+    assert_eq!(read_all_plocks(&pattern.payload).unwrap().len(), 61);
+    assert!(is_compacted(&pattern.payload).unwrap());
+
+    let mut payload = pattern.payload.clone();
+    for track in 0..NUM_TRACKS {
+        let lanes: Vec<A4LaneWrite> =
+            read_track_plocks(&payload, track).unwrap().iter().map(A4LaneWrite::from).collect();
+        apply_track_plocks(&mut payload, track, &lanes).unwrap();
+    }
+    assert_eq!(payload, pattern.payload, "61 lanes did not survive a write-back");
+}
+
+/// **The containment property, against a two-track pool off the box.**
+///
+/// A gen-1 write rebuilds the pool, so SYN2's lane changes index — the one thing
+/// `plocks::apply_track_plocks` exists to avoid on the digis, and impossible to
+/// avoid on a box that sorts. What must hold instead is that its *contents*
+/// survive: same parameter, same values, same fine bytes.
+///
+/// This is the property the whole read-modify-write bargain rests on. A07 going
+/// back to the box on 2026-09-01 moved 56 of 12,974 bytes with the pool
+/// untouched, and the pool writer is the first thing that changes that.
+#[test]
+fn writing_one_track_s_lanes_leaves_another_track_s_contents_alone() {
+    let pattern = a4_pattern(TWO_TRACK);
+    let mut payload = pattern.payload.clone();
+
+    let syn2_before = read_track_plocks(&payload, 1).unwrap();
+    assert_eq!(syn2_before.len(), 1, "the fixture's SYN2 lane");
+    assert_eq!(syn2_before[0].param_id, 0x24, "OVERDRIVE, named on the box 2026-09-01");
+
+    // SYN1 gives up its 0x23 lane and gains a 0x10 — one below SYN2's 0x24 and
+    // one above nothing, so the layout genuinely shifts underneath it.
+    let lanes = [
+        A4LaneWrite::new(0x10, {
+            let mut v = vec![None; NUM_STEPS];
+            v[2] = Some(0x4000);
+            v
+        }),
+        A4LaneWrite::new(0x22, read_track_plocks(&payload, 0).unwrap()[0].values.iter()
+            .enumerate()
+            .map(|(step, _)| read_track_plocks(&payload, 0).unwrap()[0].word(step))
+            .collect()),
+    ];
+    apply_track_plocks(&mut payload, 0, &lanes).unwrap();
+
+    let syn2_after = read_track_plocks(&payload, 1).unwrap();
+    assert_eq!(syn2_after.len(), 1, "SYN2 still has its lane");
+    assert_ne!(syn2_after[0].lane, syn2_before[0].lane, "and it moved, which is forced");
+    assert_eq!(syn2_after[0].param_id, syn2_before[0].param_id);
+    assert_eq!(syn2_after[0].track, syn2_before[0].track);
+    assert_eq!(syn2_after[0].values, syn2_before[0].values, "SYN2's values are untouched");
+    assert_eq!(syn2_after[0].fine, syn2_before[0].fine);
+    assert!(is_compacted(&payload).unwrap(), "and the result is the box's own form");
+}
+
+/// **The box binds an `80 80` to the lane physically before it — measured from
+/// the write side, 2026-09-01.**
+///
+/// `read_all_plocks` has always read an extension that way, and until this
+/// capture it was inference: the box had never produced a pool where a lane and
+/// its extension were apart, so nothing tested what "before it" meant.
+///
+/// A16 was sent a pool holding FREQ with no extension, RESO, and FREQ's orphaned
+/// `80 80` immediately after RESO — genuinely ambiguous whose it is. The box kept
+/// the layout and rewrote exactly two bytes of the extension: it **adopted the
+/// lane as RESO's** and re-aligned its fine bytes to RESO's own locked steps,
+/// a fine byte where the parent locks and `NO_VALUE` where it does not.
+///
+/// Two things follow. The reader's adjacency rule is right. And "an extension is
+/// indexed per step" — previously measured only on the four-step FREQ lane of
+/// `RESO4` — is confirmed by the box doing that alignment itself.
+#[test]
+fn the_box_binds_an_extension_to_the_lane_before_it() {
+    let sent_base = a4_pattern(DETACHED_EXT_BASE);
+    let got = a4_pattern(DETACHED_EXT);
+
+    // The pool it was built from: FREQ with a fine byte, RESO without.
+    let before = read_all_plocks(&sent_base.payload).unwrap();
+    assert_eq!(before.len(), 2);
+    assert_eq!((before[0].param_id, before[1].param_id), (0x22, 0x23));
+    assert_eq!(before[0].values[0], Some(50), "FREQ 50 on step 1, named on the box");
+    assert_eq!(before[0].fine.as_ref().unwrap()[0], Some(0x3b), "and its fine byte");
+    assert!(before[1].fine.is_none(), "RESO is integer-valued and had no extension");
+
+    // What came back: the extension is RESO's, and holds a fine byte at RESO's
+    // step and nowhere else.
+    let after = read_all_plocks(&got.payload).unwrap();
+    assert_eq!(after.len(), 2);
+    assert_eq!((after[0].param_id, after[1].param_id), (0x22, 0x23));
+    assert!(after[0].fine.is_none(), "FREQ lost the extension we detached from it");
+    assert_eq!(after[0].values[0], Some(50), "and kept its coarse value");
+
+    let reso_fine = after[1].fine.as_ref().expect("the box adopted the 80 80 as RESO's");
+    assert_eq!(after[1].values[4], Some(100), "RESO 100 on step 5");
+    assert_eq!(reso_fine[4], Some(0), "a fine byte at its parent's locked step");
+    assert_eq!(reso_fine[0], None, "and NO_VALUE where the parent does not lock");
+    assert_eq!(reso_fine.iter().filter(|f| f.is_some()).count(), 1);
+
+    assert!(is_compacted(&got.payload).unwrap(), "the box's answer is always its own form");
+}
+
+/// The box will *store* an all-zero extension when handed one, and never
+/// allocates one itself.
+///
+/// Both halves matter to the encoder rule. The second is why "emit an extension
+/// iff some fine byte is non-zero" does not waste a lane; the first is why
+/// emitting one would not be *rejected* either — so the rule is a choice the
+/// box tolerates rather than one it enforces, and it is worth knowing which.
+#[test]
+fn an_all_zero_extension_is_stored_but_never_allocated() {
+    // Stored: the box kept the zero extension it was handed, through a save.
+    let got = a4_pattern(DETACHED_EXT);
+    let reso = &read_all_plocks(&got.payload).unwrap()[1];
+    assert_eq!(reso.fine.as_ref().unwrap()[4], Some(0));
+
+    // Never allocated: RESO across every capture the box composed by itself.
+    // `TWO_TRACK` is downstream of the detached-extension write, so its RESO
+    // extension is one the box was *handed* — including it here would be reading
+    // our own experiment back as evidence about the box.
+    for name in [FREQ64_RESO100, BASE, FREQ100, RESO4] {
+        for lane in read_all_plocks(&a4_pattern(name).payload).unwrap() {
+            if lane.param_id == 0x23 {
+                assert!(lane.fine.is_none(), "{name}: the box gave RESO an extension");
+            }
+        }
+    }
+}
+
+/// Three A4 parameter ids are measured, all three named by a hand on the box.
+///
+/// `0x24` OVERDRIVE joined `0x22` FLTR1 FREQ and `0x23` RESO on 2026-09-01 —
+/// SYN2 step 9, set to max, and it stored as 127 with no extension. The
+/// adjacent-ids-for-adjacent-knobs pattern holds for a third.
+///
+/// **This is the count, not a table.** None of the three is in `params::A4_PARAMS`
+/// with a p-lock slot, which is why `core::a4_transfer` carries a lane by its id
+/// rather than by a name — see `a4_lanes_for_write`.
+#[test]
+fn the_two_track_fixture_names_a_third_parameter_id() {
+    let p = a4_pattern(TWO_TRACK);
+    let all = read_all_plocks(&p.payload).unwrap();
+    assert_eq!(
+        all.iter().map(|l| (l.param_id, l.track)).collect::<Vec<_>>(),
+        [(0x22, 0), (0x23, 0), (0x24, 1)],
+        "sorted by (param_id, track), param primary"
+    );
+    let overdrive = &all[2];
+    assert_eq!(overdrive.values[8], Some(127), "max OVERDRIVE on step 9");
+    assert!(overdrive.fine.is_none(), "and integer-valued, like RESO");
+}
+
+/// **The one place a read-modify-write is not byte-exact, and the argument for
+/// letting it not be.**
+///
+/// The encoder emits an extension iff some fine byte is non-zero. A pool holding
+/// an extension whose fine bytes are *all* zero therefore comes back one lane
+/// shorter — 66 bytes that moved without being asked to, which is normally
+/// exactly what this app refuses to do.
+///
+/// It is allowed here because the lane carries nothing. [`A4Lane::word`] reads a
+/// zero fine byte and an absent extension identically, so the two forms are the
+/// same value written two ways, and dropping one hands a lane back to a pool of
+/// 128. The box never produces this shape — every RESO lane it composed itself
+/// has no extension — so the only way to meet one is to have sent it, which is
+/// how `TWO_TRACK` came to have one.
+///
+/// The property that has to hold instead is that **no lock changes**, and that
+/// is what is asserted.
+#[test]
+fn a_zero_extension_is_normalised_away_and_that_is_the_one_exception() {
+    let pattern = a4_pattern(TWO_TRACK);
+    let mut payload = pattern.payload.clone();
+
+    let before = read_all_plocks(&payload).unwrap();
+    let reso = before.iter().find(|l| l.param_id == 0x23).unwrap();
+    assert!(reso.fine.is_some(), "the fixture's RESO carries an all-zero extension");
+    assert!(reso.fine.as_ref().unwrap().iter().flatten().all(|&f| f == 0));
+    let words_before: Vec<Vec<Option<u16>>> =
+        before.iter().map(|l| (0..NUM_STEPS).map(|s| l.word(s)).collect()).collect();
+
+    for track in 0..NUM_TRACKS {
+        let lanes: Vec<A4LaneWrite> =
+            read_track_plocks(&payload, track).unwrap().iter().map(A4LaneWrite::from).collect();
+        apply_track_plocks(&mut payload, track, &lanes).unwrap();
+    }
+
+    let after = read_all_plocks(&payload).unwrap();
+    assert!(
+        after.iter().find(|l| l.param_id == 0x23).unwrap().fine.is_none(),
+        "the empty extension was dropped"
+    );
+    assert_eq!(free_lane_count(&payload).unwrap(), free_lane_count(&pattern.payload).unwrap() + 1);
+
+    // And nothing a person could hear or see has changed.
+    assert_eq!(
+        after.iter().map(|l| (l.param_id, l.track)).collect::<Vec<_>>(),
+        before.iter().map(|l| (l.param_id, l.track)).collect::<Vec<_>>(),
+    );
+    let words_after: Vec<Vec<Option<u16>>> =
+        after.iter().map(|l| (0..NUM_STEPS).map(|s| l.word(s)).collect()).collect();
+    assert_eq!(words_after, words_before, "every lock is the same value it was");
+    assert!(is_compacted(&payload).unwrap());
+}
+
+/// **No fine byte in any capture sets its top bit**, which is what says the fine
+/// half of a gen-1 value is 128ths of a display unit rather than 256ths.
+///
+/// Measured directly on OSC TUNE (2026-09-01): the box carries from `fine 127`
+/// to `coarse + 1, fine 0`, and FIN's on-screen −64…+63 maps onto bytes 64…127
+/// and 0…63. TUNE is the only parameter whose fine byte the box displays a
+/// number for, so it is the only one that could have been read this way.
+///
+/// This is the corroboration across everything else. Under the old 256ths
+/// reading — inference imported from gen-2, and what `a4_plocks` documented
+/// until that day — roughly half of these should exceed 127. None does, across
+/// parameters as unrelated as filter cutoff, envelope depths and LFO depths.
+#[test]
+fn no_captured_fine_byte_uses_the_top_bit() {
+    let mut examined = 0usize;
+    let mut highest = 0u8;
+    for name in [
+        FREQ64, FREQ64_RESO100, PLUS_SYN2, BASE, FREQ100, RESO4, TWO_TRACK, DETACHED_EXT,
+        DETACHED_EXT_BASE,
+    ] {
+        check_fine_bytes(&a4_pattern(name).payload, name, &mut examined, &mut highest);
+    }
+    check_fine_bytes(
+        &a4_working_pattern(SIXTY_ONE_LANES).payload,
+        SIXTY_ONE_LANES,
+        &mut examined,
+        &mut highest,
+    );
+
+    // A guard on the guard: an assertion that examines nothing passes for the
+    // wrong reason, and this one reads a *subset* of lanes (only those with an
+    // extension) so an encoding change could silently empty it.
+    assert!(examined >= 20, "only {examined} fine bytes examined — too few to mean anything");
+    assert!(highest <= 127, "highest fine byte was {highest}");
+}
+
+fn check_fine_bytes(payload: &[u8], name: &str, examined: &mut usize, highest: &mut u8) {
+    for lane in read_all_plocks(payload).unwrap() {
+        let Some(fine) = &lane.fine else { continue };
+        for (step, f) in fine.iter().enumerate() {
+            let Some(f) = f else { continue };
+            *examined += 1;
+            *highest = (*highest).max(*f);
+            assert!(
+                *f <= 127,
+                "{name}: param {:#04x} step {} has fine byte {f}, which sets the top bit — \
+                 the 128ths reading is wrong",
+                lane.param_id,
+                step + 1,
+            );
+        }
+    }
 }
