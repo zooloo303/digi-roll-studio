@@ -16,7 +16,7 @@
 //! carries a trig deleted before the capture (step 16), which is why its
 //! imported track has 15 notes and 16 steps' worth of stored lane bytes.
 
-use digi_core::device::{model_for_key, PatternRoute};
+use digi_core::device::{model_for_key, PatternRoute, PresetLoad};
 use digi_core::import::{patch_read_source, patch_read_source_named, Fetched, PatchReadError};
 use digi_core::model::{PatchSound, Source, TrackPatch};
 use digi_core::{two_box_session, DeviceId, ImportError, Note, PatternRef, Project, Session, TrackKind};
@@ -757,6 +757,8 @@ fn a_live_only_model_has_nothing_to_import_into() {
         default_track_kind: TrackKind::Audio,
         sysex: None,
         pattern_route: PatternRoute::LiveOnly,
+        // Nothing loads onto a box this build has no protocol for.
+        preset_load: PresetLoad::None,
         wire_slots: 0,
     };
     let spec = dt2_spec();

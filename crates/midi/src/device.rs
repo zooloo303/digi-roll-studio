@@ -54,7 +54,9 @@ use digi_protocol::drive::{
     API_FILE_WRITE, API_FILE_WRITE_CLOSE, API_FILE_WRITE_OPEN, READ_CHUNK,
 };
 use digi_protocol::query::{parse_query_reply, query_args, QueryValue, API_QUERY};
-use digi_protocol::a4_kit::{DUMP_A4_KIT_REQUEST, DUMP_A4_KIT_WORKING_REQUEST};
+use digi_protocol::a4_kit::{
+    build_working_kit, DUMP_A4_KIT_REQUEST, DUMP_A4_KIT_WORKING_REQUEST,
+};
 use digi_protocol::a4_pattern::{build_pattern, DUMP_A4_PATTERN_REQUEST};
 use digi_protocol::protocol::{
     build_api_message, build_dump_message, parse_sysex, API_DEVICE, API_RESPONSE, API_VERSION,
@@ -1091,10 +1093,13 @@ impl ElektronDevice {
     /// PLAN.md §10.6 step 6 is what walked through it: `preset_load` is the
     /// caller, and `ui::presets` is the button.
     ///
-    /// The A4 has no route here at all and never will: it answers no `0x6x`
-    /// request, so there is no `0x6b` for this to mirror. `Product::family` is
-    /// `None` for it, and `ui::presets::load_blocker` is where a user is told
-    /// so in words.
+    /// The A4 has no route *here*, and it is not because it cannot load a
+    /// preset — it does, since 2026-09-01. This message is a gen-2 one: `0x5b`
+    /// mirrors a `0x6b` kit-track read, and the A4's `0x6b` is its working
+    /// pattern. That box goes through [`Self::store_a4_working_kit`] instead,
+    /// which writes a whole kit with one sound spliced into it
+    /// (`crate::a4_preset_load`). Two routes, one feature, and
+    /// `core::device::PresetLoad` is the field that says which.
     ///
     /// # Why this is not `safe_write_tracks`
     ///
@@ -1117,6 +1122,62 @@ impl ElektronDevice {
             |chunk| conn.send(chunk).map_err(|e| MidiError::Send(e.to_string())),
             sleep,
         )
+    }
+
+    /// Put a whole **working kit** back onto an Analog Four — `0x58`, its edit
+    /// buffer, and the one write in this crate that is a read-modify-write.
+    ///
+    /// This is the A4's [`Self::store_kit_track_sound`], and the shape is
+    /// different because the box's messages are. A digi addresses one kit
+    /// track's sound; this box has no such message, so the object that moves is
+    /// the kit — 2,410 bytes, four sounds, the kit's name and the FX and CV
+    /// tracks' settings. **A caller must therefore send bytes it fetched from
+    /// this same box moments earlier** (`crate::a4_preset_load` is the caller,
+    /// and `a4_kit::splice_sound` is how it changes 350 of them); anything else
+    /// overwrites the three sounds nobody mentioned.
+    ///
+    /// The edit buffer and not the stored slot `0x52` names, deliberately: an
+    /// audition has to be recoverable, and what makes it so is the box
+    /// discarding an unsaved kit when the pattern is reloaded. Nothing in this
+    /// crate builds a `0x52`.
+    ///
+    /// DIN-paced through [`crate::a4_transfer::send_working_kit`], which also
+    /// re-verifies the frame immediately before the first byte leaves — the same
+    /// two requirements the pattern store has, for the same box: an unpaced
+    /// frame is the shape it has never accepted, and a body it cannot parse
+    /// wedges its SysEx API until a power cycle.
+    ///
+    /// No reply comes back, as for every store here, so the only way to know
+    /// what happened is to read the kit again.
+    pub fn store_a4_working_kit(&mut self, payload: &[u8]) -> Result<(), MidiError> {
+        let family = self.family()?;
+        if family != FAMILY_ANALOG_FOUR {
+            return Err(MidiError::Protocol(DeviceError::NotAnAnalogFour(family)));
+        }
+        // The firmware allowlist, exactly as `plan_store` and
+        // `plan_track_sound_store` apply it: an OS build whose format was never
+        // verified is the case no backup was taken for, and this path has no
+        // backup beyond the caller's own pre-read.
+        let gate = write_gate(self.identity.as_ref());
+        if !gate.ok {
+            return Err(MidiError::WriteRefused(gate.reason));
+        }
+        let msg = build_working_kit(payload).map_err(MidiError::WriteRefused)?;
+        let conn = &mut self.conn_out;
+        let cancel = std::sync::atomic::AtomicBool::new(false);
+        crate::a4_transfer::send_working_kit(
+            conn,
+            &msg,
+            crate::a4_transfer::Pacing::din(),
+            &cancel,
+            |_| {},
+        )
+        .map_err(|e| MidiError::Send(e.to_string()))?;
+        // The digis' settle, for the digis' reason: the caller re-reads to
+        // verify, and re-reading a kit the box has not finished swallowing
+        // would fail a load that worked.
+        sleep(SEND_SETTLE);
+        Ok(())
     }
 
     /// Store a pattern-kit in a slot on the box, overwriting whatever is there.

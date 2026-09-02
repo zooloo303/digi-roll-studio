@@ -7,9 +7,10 @@ those numbers are stable.
 
 Everything below was distilled from eighteen build sessions. **Almost every
 lesson here escaped a green test suite at least once**, most of them more than
-once. That is the whole reason this file exists. The exceptions are the two that
-a test suite could not have caught: §16, which needed the box's own screen, and
-§17, which was wrong prose about code the tests were passing over.
+once. That is the whole reason this file exists. The exceptions are the three that
+a test suite could not have caught: §16, which needed the box's own screen, §17,
+which was wrong prose about code the tests were passing over, and §19, which is
+a box accepting a write and quietly substituting something else.
 
 ---
 
@@ -17,8 +18,8 @@ a test suite could not have caught: §16, which needed the box's own screen, and
 
 ```sh
 cargo build --release
-cargo test -p digi_protocol --test all   # the dev loop: one crate, 330 tests, ~7s
-cargo test --workspace                   # before a commit; 1,810 tests, ~10s, no hardware
+cargo test -p digi_protocol --test all   # the dev loop: one crate, 345 tests, ~2s
+cargo test --workspace                   # before a commit; 1,843 tests, ~7s, no hardware
 cargo clippy --workspace --all-targets   # clean as of 2026-08-23; keep it that way
 cargo run -p digi_roll_studio
 ```
@@ -278,6 +279,10 @@ you deliberately want one, and they are ordered by what they can do to it.
     stay two events.
   - `a4_param_check` — **sends channel-voice messages**, so the box makes sound
     and its parameters move. It stores nothing.
+  - `a4_sound_pool_probe` — **read-only.** Reads the project's 128 pool sounds
+    (`0x63`) and the +Drive's bank A, and reports which sounds exist in both —
+    which is how the version-5-to-version-6 conversion the preset load needs was
+    measured off the box rather than derived. `--slots` limits the sweep.
 
   These write to the box, and are the reason the group is not simply "read-only":
 
@@ -287,6 +292,22 @@ you deliberately want one, and they are ordered by what they can do to it.
     `safe_write_track --write`: a throwaway slot, and a backup you took
     yourself.
   - `a4_test_sessions` — **writes project files on this machine**, not to a box.
+  - `a4_kit_store_probe` — **overwrites the kit the box is playing**, one sound
+    at a time, and it is the gentlest write in this group: the working kit is an
+    edit buffer, so reloading the pattern on the box discards everything it did.
+    Three stages of increasing consequence — read, store the box's own bytes
+    back, then load a real +Drive preset and revert it — and it stops at the
+    first stage that fails. `--read-only` stops before anything is sent and also
+    prints the *stored* kit beside the working one, which is what the box's undo
+    would bring back; `--restore` puts one slot back from that stored kit
+    without walking to the box; `--diff <path>` compares what the box now holds
+    against the file it was sent, which is the mode that found the init-sound
+    substitution (lesson 19).
+  - `a4_sound_convert_probe` — **overwrites the kit the box is playing**, three
+    times, then puts the slot back byte for byte. Asks what the box does with a
+    sound it is handed: it splices the box's *own* SYN1 into another slot, then
+    two different +Drive presets into that slot, and compares the box's two
+    answers **to each other**. Same edit-buffer caveat, same undo.
 
 - `cargo run -p digi_engine --example jitter --release -- "<DT2>" "<DN2>"` —
   **sends** clock and notes for ten seconds, so a box on external clock will start
@@ -429,8 +450,19 @@ The Presets panel's sibling sentence was subtler and worth the contrast. It read
 "The Analog Four answers no dump request for a kit track's sound", which is
 **strictly true** — the qualifier is doing real work. But it opens with the six
 words that had been the headline wrong claim about this box, and a person reads
-the head of a sentence before its tail. It now leads with the narrow fact ("has
-no message that puts a sound on one of its tracks") and lists what does work.
+the head of a sentence before its tail. It was reworded to lead with the narrow
+fact ("has no message that puts a sound on one of its tracks") and to list what
+does work.
+
+**And the narrow fact was still a refusal that outlived its evidence.** On
+2026-09-01 that paragraph was deleted: the A4 loads presets, through its *kit*
+rather than through a kit-track message (PLAN.md §10, "The A4 loads presets").
+Both rewordings were the box being described by which messages had been mapped
+of it, which is the failure mode this whole lesson is about — a narrower true
+sentence is still a claim about a box, and this one was three days from being
+false. What replaced it is a table row, `core::device::PresetLoad`: the panel now
+asks a field that says what the route *is* rather than a field it hopes implies
+what it is not.
 
 - **A refusal keyed on the wrong field goes stale silently, where a hardcoded
   string at least looks like something someone wrote.** `!device.can_sysex()`
@@ -1216,6 +1248,48 @@ It also produced the fixture that caught a real edge in the encoder an hour
 later: a pool holding an all-zero extension, which the round-trip test then
 failed on. **An experiment that corrupts state on purpose leaves behind the one
 input nobody would have thought to construct.**
+
+### 19. A box that accepts a write and substitutes something else is the failure a verify has to be aimed at
+
+The A4 takes a whole kit over `0x58` and stores it. Hand it one whose SYN4 holds
+a **struct version 5** sound — which is what every +Drive preset file on that box
+is — and it does not refuse the kit, log anything, or leave the slot alone. It
+stores the kit and puts an **init sound named `SOUND 4`** on that track. The
+user's sound is gone, the write "succeeded", and nothing on the wire said so.
+
+Everything that could plausibly have been checked instead would have passed:
+
+- the store went out, all 58 packets of it;
+- the box answered the next `0x68` immediately, so it had not wedged;
+- the kit that came back was 2,410 bytes and decoded;
+- SYN1–SYN3, the kit name and the FX and CV tracks were byte-perfect;
+- the *only* wrong byte range was the 350 that had been asked for.
+
+What caught it is that `load_a4_preset_onto_track` re-reads the kit and compares
+**the name the preset was supposed to have landed under**. That is the narrowest
+possible check and it is the only one that could have failed. The rule is not
+"verify after writing" — every write path here already did — it is that a verify
+must assert *the thing that was asked for*, not that the write happened. "The
+store went out" and "the box is still talking" are both about the transport, and
+this failure lives entirely on the other side of it.
+
+**Two readings fitted the evidence, and they were opposites**: the box converted
+the sound and merely renamed it (audition works, cosmetic problem), or the box
+refused the sound and re-initialised (no load path at all). Guessing either way
+would have shipped something — a name mismatch tolerated, or a feature abandoned.
+The experiment that separated them is worth keeping as a shape: **send two
+different inputs and compare the box's two answers to each other.** A conversion
+leaves two different slots; a substitution leaves the same slot twice. It was 0
+of 350 bytes apart, and 0 is not a number a conversion can produce.
+
+The fix then came from the box as well, which is the other half of the lesson.
+Rather than derive a version-5-to-6 conversion from the format, the A4's own
+sound pool was read: 128 version-6 sounds, 28 of them sharing a name with a
+version-5 +Drive file — the same sound in both versions, off the same box, with
+nobody's hands in it. The conversion is two bytes, and **one pair differs in
+nothing else**, which is what makes it a rule rather than a correlation. A box
+that has already done the conversion you need is a better oracle than the format
+document you do not have.
 
 ---
 

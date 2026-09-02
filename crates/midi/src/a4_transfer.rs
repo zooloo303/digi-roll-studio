@@ -121,6 +121,7 @@
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
+use digi_protocol::a4_kit::{parse_working_kit, A4Kit};
 use digi_protocol::a4_pattern::{is_a4_pattern, parse_pattern, A4Pattern, PAYLOAD_LEN};
 use digi_protocol::protocol::parse_sysex;
 
@@ -522,6 +523,41 @@ impl std::fmt::Display for SendError {
 
 impl std::error::Error for SendError {}
 
+/// The two checks that belong to *bytes about to go on a cable* rather than to
+/// any one format: the frame is `F0 … F7` shaped, and no byte inside it has its
+/// high bit set.
+///
+/// Shared by [`verify_before_send`] and [`verify_kit_before_send`] because it is
+/// the half that does not care which object is being sent — and because saying
+/// *which* byte is what makes it a diagnosis rather than a rejection.
+fn verify_frame(wire: &[u8]) -> Result<(), String> {
+    match (wire.first(), wire.last()) {
+        (Some(0xf0), Some(0xf7)) => {}
+        (Some(0xf0), _) => return Err("starts F0 but does not end F7 — truncated".into()),
+        _ => return Err("not an F0 … F7 frame".into()),
+    }
+    let body = &wire[1..wire.len() - 1];
+    if let Some(i) = body.iter().position(|b| b & 0x80 != 0) {
+        return Err(format!("byte {i} is {:#04x}: high bit set inside the frame", body[i]));
+    }
+    Ok(())
+}
+
+/// [`verify_before_send`]'s twin for a **working kit** — the `0x58` a preset
+/// load sends.
+///
+/// Parsed as the object it claims to be, immediately before it leaves, for the
+/// reason the pattern path documents at length: `a4_kit::build_working_kit`
+/// already checked these bytes when it built them, and a `Vec<u8>` can be
+/// sliced or edited between the two. The thing that must be true is not "the
+/// builder was correct" but "*these* bytes are well-formed", and a body this box
+/// cannot parse takes its whole SysEx API down until it is power-cycled
+/// (`DEVELOPMENT.md` lesson 13).
+pub fn verify_kit_before_send(wire: &[u8]) -> Result<A4Kit, String> {
+    verify_frame(wire)?;
+    parse_working_kit(wire)
+}
+
 /// Everything that must be true of a frame before one of its bytes leaves.
 ///
 /// **Deliberately duplicated.** `a4_pattern::build_pattern` already checked the
@@ -537,15 +573,7 @@ impl std::error::Error for SendError {}
 /// byte inside it may have its high bit set. A parser would reject the second
 /// eventually; saying *which* byte is what makes it a diagnosis.
 pub fn verify_before_send(wire: &[u8]) -> Result<A4Pattern, String> {
-    match (wire.first(), wire.last()) {
-        (Some(0xf0), Some(0xf7)) => {}
-        (Some(0xf0), _) => return Err("starts F0 but does not end F7 — truncated".into()),
-        _ => return Err("not an F0 … F7 frame".into()),
-    }
-    let body = &wire[1..wire.len() - 1];
-    if let Some(i) = body.iter().position(|b| b & 0x80 != 0) {
-        return Err(format!("byte {i} is {:#04x}: high bit set inside the frame", body[i]));
-    }
+    verify_frame(wire)?;
     let parsed = parse_pattern(wire)?;
     // `parse_pattern` checks this too. Repeated because it is the one invariant
     // every offset in `a4_pattern` is written against.
@@ -596,7 +624,7 @@ fn send_pattern_with(
     pacing: Pacing,
     consent: Consent,
     cancel: &AtomicBool,
-    mut on_progress: impl FnMut(SendProgress),
+    on_progress: impl FnMut(SendProgress),
     can_pace: bool,
 ) -> Result<SendReport, SendError> {
     let parsed = verify_before_send(wire).map_err(SendError::NotSendable)?;
@@ -607,6 +635,74 @@ fn send_pattern_with(
         });
     }
 
+    send_frame(sink, wire, pacing, cancel, on_progress, can_pace, parsed.slot)
+}
+
+/// Overwrite the **working kit** on an Analog Four — its edit buffer, and the
+/// destination a preset load splices into.
+///
+/// [`send_pattern`]'s sibling, and the differences are both about what is being
+/// written rather than about how:
+///
+/// * **No [`Consent`].** Consent names a slot, and this is not one: the working
+///   kit is the kit the box is playing, and the box's own undo — reloading the
+///   pattern, which discards an unsaved kit — is what makes an audition
+///   recoverable. That is the same recovery story `crate::preset_load`
+///   documents for a digi's active kit, and its store takes no consent object
+///   either. What a caller owes the user here is the sentence, and
+///   `ui::presets` says it on screen every time.
+/// * **A kit is 2,770 framed bytes against a pattern's 14,843**, so a DIN-paced
+///   send lands in under a second rather than in five. Nothing else changes:
+///   the pacing is the cable's, because it is the same cable and the same 2013
+///   box that has never once accepted an unpaced frame.
+pub fn send_working_kit(
+    sink: &mut impl A4Sink,
+    wire: &[u8],
+    pacing: Pacing,
+    cancel: &AtomicBool,
+    on_progress: impl FnMut(SendProgress),
+) -> Result<SendReport, SendError> {
+    send_working_kit_with(sink, wire, pacing, cancel, on_progress, CAN_PACE)
+}
+
+/// The body of [`send_working_kit`], with the platform rule as an argument —
+/// see [`send_pattern_with`] for why that seam exists.
+fn send_working_kit_with(
+    sink: &mut impl A4Sink,
+    wire: &[u8],
+    pacing: Pacing,
+    cancel: &AtomicBool,
+    on_progress: impl FnMut(SendProgress),
+    can_pace: bool,
+) -> Result<SendReport, SendError> {
+    let kit = verify_kit_before_send(wire).map_err(SendError::NotSendable)?;
+    send_frame(sink, wire, pacing, cancel, on_progress, can_pace, kit.index)
+}
+
+/// The paced loop itself, once the bytes have been verified as whatever they
+/// claim to be.
+///
+/// **Split out on 2026-09-01, when the kit send arrived, and split here on
+/// purpose.** Everything above this line is about one format — a pattern's
+/// slot, a kit's edit buffer, the consent one of them needs — and everything
+/// below it is about a cable: the chunking, the hold-off, the cancel between
+/// packets, the platform collapse. The two objects must not each grow their own
+/// copy of the second half, because the second half is where the failures cost a
+/// power cycle.
+///
+/// `slot` is only reported, never acted on: [`SendReport::slot`] is the
+/// message's own index byte, which is the pattern slot for a `0x54` and zero for
+/// a working kit.
+#[allow(clippy::too_many_arguments)]
+fn send_frame(
+    sink: &mut impl A4Sink,
+    wire: &[u8],
+    pacing: Pacing,
+    cancel: &AtomicBool,
+    mut on_progress: impl FnMut(SendProgress),
+    can_pace: bool,
+    slot: u8,
+) -> Result<SendReport, SendError> {
     // Resolved here rather than at the call site so no caller can construct a
     // pacing this platform will refuse mid-frame.
     let pacing = pacing.resolve(can_pace);
@@ -644,7 +740,7 @@ fn send_pattern_with(
         bytes: wire.len(),
         packets: packets_total,
         elapsed,
-        slot: parsed.slot,
+        slot,
         paced: packets_total > 1,
     })
 }

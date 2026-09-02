@@ -43,7 +43,8 @@
 use std::path::PathBuf;
 
 use digi_protocol::drive::{
-    container_offset, decode_drive_preset, file_declared_size, preset_load_payload, DriveError,
+    a4_preset_sound, container_offset, decode_drive_preset, file_declared_size,
+    preset_load_payload, DriveError,
 };
 use digi_protocol::sound::tag_names_for;
 
@@ -627,10 +628,17 @@ fn an_mk1_preset_on_a_dn2_browses_but_does_not_load() {
     }
 }
 
-/// The A4's file is refused here too, though the panel refuses it earlier and
-/// for the better reason: no `0x6b`, so no `0x5b` to send it under.
+/// The A4's file is refused by the **digis'** cut, and that refusal outlived the
+/// reason it was written for.
+///
+/// It used to read "the panel refuses it earlier and for the better reason: no
+/// `0x6b`, so no `0x5b` to send it under". The box does have a load path as of
+/// 2026-09-01 — [`a4_preset_sound`] and `a4_kit::splice_sound`, the test below —
+/// so what this now pins is the boundary between the two cuts: `0x5b` is a
+/// gen-2 message and an A4 container is not what it carries, whichever box the
+/// file came off.
 #[test]
-fn an_a4_preset_is_not_loadable_either() {
+fn an_a4_preset_is_not_loadable_through_the_digi_cut() {
     let file = fixture("analogfour-soundbanks-A-1-THE-SAW-2026-08-29.bin");
 
     assert_eq!(decode_drive_preset(&file).unwrap().name, "THE SAW");
@@ -638,6 +646,78 @@ fn an_a4_preset_is_not_loadable_either() {
         preset_load_payload(&file),
         Err(DriveError::NotTheBoxsOwnFormat { magic: 0xbeef_baba, at: 31 })
     ));
+}
+
+// `a4_preset_sound` is the other cut: 350 bytes for a kit slot rather than the
+// 366 the file declares. The splice it feeds is `a4_kit`'s and is tested there
+// against real kits; what is pinned here is the cut itself.
+
+/// **The declared length is not the struct's length on this box**, and this is
+/// the number that says so: 366 declared, 350 cut, and the sixteen bytes
+/// between them are the zero padding no kit slot has room for.
+#[test]
+fn an_a4_preset_cuts_to_the_350_bytes_a_kit_slot_holds() {
+    for name in [
+        "analogfour-soundbanks-A-1-THE-SAW-2026-08-29.bin",
+        "analogfour-soundbanks-A-5-SINGLE-CHORD-2026-08-29.bin",
+        "analogfour-soundbanks-A-8-JUST-BASS-2026-08-29.bin",
+    ] {
+        let file = fixture(name);
+        assert_eq!(file_declared_size(&file), Some(366), "{name}");
+
+        let sound = a4_preset_sound(&file).unwrap_or_else(|e| panic!("{name}: {e}"));
+
+        assert_eq!(sound.len(), 350, "{name}");
+        assert_eq!(&sound[..4], &0xBEEF_BABAu32.to_be_bytes(), "{name}: head");
+        assert_eq!(&sound[346..], &0xBABE_FACEu32.to_be_bytes(), "{name}: foot");
+        assert_eq!(sound, &file[31..381], "{name}: the file's own bytes, unaltered");
+        // The sixteen bytes the cut leaves behind, and why it can: they are
+        // inside the declared payload and outside the struct.
+        assert!(file[381..397].iter().all(|&b| b == 0), "{name}: padding is zeros");
+    }
+}
+
+/// A digi's preset through the A4 cut is refused with the same variant the
+/// mirror image gets — the format check keys on the container, so it is
+/// symmetrical by construction rather than by a second rule.
+#[test]
+fn a_digi_preset_is_not_spliceable_into_an_a4_kit() {
+    for (name, magic) in [
+        ("digitone2-soundbanks-A-1-HIDDEN-TEARS-2026-08-29.bin", 0xbeef_bace),
+        ("digitakt2-soundbanks-A-1-ACIDD-2026-08-29.bin", 0xbeef_bace),
+        ("digitone2-soundbanks-C-1-ORGANIC-2026-08-29.bin", 0x444e_3153),
+    ] {
+        match a4_preset_sound(&fixture(name)) {
+            Err(DriveError::NotTheBoxsOwnFormat { magic: found, .. }) => {
+                assert_eq!(found, magic, "{name}")
+            }
+            other => panic!("{name} must not splice into an A4 kit: {other:?}"),
+        }
+    }
+}
+
+/// A truncated A4 file is refused rather than cut short, and a file whose struct
+/// does not end where a kit slot's does is refused by the foot.
+///
+/// The second half is the one that matters. The cut's length is a constant, so
+/// nothing about a wrong file makes it *fail* — it would simply hand a kit 350
+/// bytes taken from the wrong place, which is how a spliced kit ends up with its
+/// slot boundaries moved and how this box's SysEx API gets wedged
+/// (DEVELOPMENT.md lesson 13).
+#[test]
+fn an_a4_file_that_is_not_the_measured_shape_is_refused() {
+    let mut short = fixture("analogfour-soundbanks-A-1-THE-SAW-2026-08-29.bin");
+    short.truncate(200);
+    assert!(matches!(
+        a4_preset_sound(&short),
+        Err(DriveError::UnsizedPayload { declared: Some(366), len: 200, .. })
+    ));
+
+    // The foot moved: the container is real and 350 bytes from its head is no
+    // longer the end of a struct.
+    let mut unfooted = fixture("analogfour-soundbanks-A-1-THE-SAW-2026-08-29.bin");
+    unfooted[377] = 0x00;
+    assert!(matches!(a4_preset_sound(&unfooted), Err(DriveError::NoFootMagic { at: 377 })));
 }
 
 /// A truncated file is refused rather than sliced short. The container magic is

@@ -1,5 +1,6 @@
 use digi_protocol::protocol::split_sysex_stream;
 
+pub mod a4_preset_load;
 pub mod a4_transfer;
 pub mod device;
 pub mod ports;

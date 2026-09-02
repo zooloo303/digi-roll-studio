@@ -46,7 +46,7 @@
 
 use crate::device::cstring;
 use crate::pattern::{u16_be, u32_be};
-use crate::sound::{decode_a4_sound, decode_dn1_sound, decode_sound, measure_struct_size, Sound, SoundError, DN1_SOUND_MAGIC_HEAD, SOUND_MAGIC_HEAD, SOUND_WRAPPER};
+use crate::sound::{decode_a4_sound, decode_dn1_sound, decode_sound, measure_struct_size, Sound, SoundError, A4_SOUND_MAGIC_FOOT, DN1_SOUND_MAGIC_HEAD, SOUND_MAGIC_HEAD, SOUND_WRAPPER};
 
 /// DirList request. Response comes back as `0x90`, per the API's
 /// request-plus-0x80 convention.
@@ -270,9 +270,9 @@ impl std::fmt::Display for DriveError {
             DriveError::NotASound(e) => write!(f, "container did not decode as a sound: {e}"),
             DriveError::NotTheBoxsOwnFormat { magic, at } => write!(
                 f,
-                "this preset is a {} file (container {magic:#010x} at {at}), which browses \
-                 and tags but has never been loaded onto a track by anything — refusing to \
-                 send a format the box's own kit does not use",
+                "this preset is a {} file (container {magic:#010x} at {at}), and this box's \
+                 own kit speaks a different container — refusing to send a format the \
+                 destination does not use",
                 match *magic {
                     DN1_SOUND_MAGIC_HEAD => "Digitone mk1",
                     A4_CONTAINER_MAGIC => "an Analog Four",
@@ -1191,6 +1191,30 @@ pub fn container_offset(file: &[u8]) -> Option<usize> {
 /// distinction put to better use.
 pub const A4_CONTAINER_MAGIC: u32 = 0xBEEF_BABA;
 
+/// The container magic **this box's own kit speaks** — the one format a load may
+/// put on one of its tracks.
+///
+/// Both load paths need this and neither can derive it: `preset_load_payload`
+/// keys on [`SOUND_MAGIC_HEAD`] and `a4_preset_sound` on
+/// [`A4_CONTAINER_MAGIC`], and a browser has to know *before* a click which of
+/// those the box in view wants — the answer is what puts the dim `mk1` and `A4`
+/// marks on the rows a load would refuse (`ui::presets::foreign_format`).
+///
+/// **A function of the slug rather than a field on a container**, because it is
+/// a fact about the destination and not about the file. The same +Drive preset
+/// is native on one box and foreign on the next, and every refusal in this
+/// module says which box it is speaking for.
+///
+/// `None` for a box this build has no load path for, which is also the honest
+/// answer for one it cannot name a format for.
+pub fn native_container_magic(slug: &str) -> Option<u32> {
+    match slug {
+        "digitakt2" | "digitone2" => Some(SOUND_MAGIC_HEAD),
+        "analogfour" => Some(A4_CONTAINER_MAGIC),
+        _ => None,
+    }
+}
+
 /// How long the sound struct at `body`'s front is, found by locating its foot
 /// magic.
 ///
@@ -1278,10 +1302,13 @@ fn head_hex(file: &[u8]) -> String {
 /// [`crate::sound::TAG_NAMES_A4`] is calibrated, and
 /// [`crate::sound::tag_names_for`] makes the table follow the box.
 ///
-/// So an A4 preset now **browses and tags** like a digi's. It still never
-/// **loads onto a track**, because the A4 answers no `0x6x` dump request and so
-/// has no `0x6b`, no `0x5b`, and no load path in this codebase — a complete and
-/// honest v1 for that box rather than a gap.
+/// So an A4 preset browses and tags like a digi's — and since 2026-09-01 it
+/// **loads onto a track** as well, which is the third correction this paragraph
+/// has needed. It said the A4 answers no dump request (it does, `0x60`–`0x6d`),
+/// then that having no `0x6b` kit-track read left it with no load path at all.
+/// The second was the better guess and still wrong: the box reaches a kit track
+/// through its *kit*, and [`a4_preset_sound`] is this module's half of that
+/// path — a different cut of the same file, for a different destination.
 pub fn decode_drive_preset(file: &[u8]) -> Result<Sound, DriveError> {
     let at = container_offset(file)
         .ok_or_else(|| DriveError::NoContainer { len: file.len(), head: head_hex(file) })?;
@@ -1354,9 +1381,9 @@ pub fn decode_drive_preset(file: &[u8]) -> Result<Sound, DriveError> {
 ///   that browse and tag perfectly, and it **ignores one sent under `0x5b`** —
 ///   probed 2026-08-29, see that variant. So this refuses something the box
 ///   would have refused anyway, which is the cheaper place to do it: no round
-///   trip, and a reason a browser can put on the row. The A4 reaches this too,
-///   though a caller should have refused it earlier and for the better reason:
-///   it answers no `0x6b`, so it has no `0x5b` to send this under.
+///   trip, and a reason a browser can put on the row. An A4 file reaches this
+///   too, and it is not a dead end for that box — it is the wrong *cut*, and
+///   [`a4_preset_sound`] is the right one.
 /// * **A file whose declared payload does not fit the layout every capture
 ///   has** — [`DriveError::UnsizedPayload`]. The cut is arithmetic on the
 ///   header; when the header is not what it should be, the arithmetic is not
@@ -1409,6 +1436,70 @@ pub fn preset_load_payload(file: &[u8]) -> Result<&[u8], DriveError> {
         }
         _ => Err(DriveError::UnsizedPayload { at, declared, len: file.len() }),
     }
+}
+
+/// The bytes to splice into a kit slot to put this **A4** preset on a track —
+/// the gen-1 twin of [`preset_load_payload`], and a different cut for a
+/// different reason.
+///
+/// # A digi copies a payload; this one cuts a struct out of one
+///
+/// [`preset_load_payload`] is a slice of the file's *whole declared payload*,
+/// because on a digi that payload and a `0x6b` kit-track reply are the same
+/// object byte for byte — 1,114 on a DT2, 364 on a DN2, measured from both ends.
+/// The A4 has no such reply to be equal to. What it has is a kit whose four
+/// sounds sit at a fixed [`crate::a4_kit::SOUND_SIZE`] stride, and the
+/// destination is one of those strides.
+///
+/// And the file's declaration does **not** name it. All eight A4 captures
+/// declare a 366-byte payload holding a 350-byte struct followed by sixteen
+/// zero bytes, so slicing the declared length would hand a kit sixteen bytes
+/// more than a slot holds and move every slot after it. The struct's own foot
+/// magic is what says where it ends, at 346 in all eight — so this cuts
+/// `SOUND_SIZE` and *checks* the foot landed, rather than trusting either
+/// number alone. [`crate::sound::A4_SOUND_MAGIC_FOOT`] has the whole argument.
+///
+/// # What is refused
+///
+/// * **A container that is not [`A4_CONTAINER_MAGIC`]** — a digi's or an mk1's
+///   file, reached only by pointing this at the wrong box's library, and refused
+///   with the same [`DriveError::NotTheBoxsOwnFormat`] the mirror image gets.
+/// * **A file whose A4 layout does not hold** —
+///   [`DriveError::UnsizedPayload`], the same shape check
+///   [`decode_drive_preset`] makes before it reads a name.
+/// * **A struct whose foot is not where a kit slot's is** —
+///   [`DriveError::NoFootMagic`]. This is the one that keeps a splice honest,
+///   and `a4_kit::splice_sound` checks it a second time immediately before the
+///   bytes are framed, for the same reason `plan_track_sound_store` re-checks a
+///   digi payload at the port: a `Vec<u8>` can be sliced by anything.
+///
+/// The sound is decoded too, through the same [`decode_drive_preset`] the
+/// browser already ran — so a file of the right shape that is not a sound is
+/// refused here rather than at the box.
+pub fn a4_preset_sound(file: &[u8]) -> Result<&[u8], DriveError> {
+    let at = container_offset(file)
+        .ok_or_else(|| DriveError::NoContainer { len: file.len(), head: head_hex(file) })?;
+    let magic = u32::from_be_bytes([file[at], file[at + 1], file[at + 2], file[at + 3]]);
+    if magic != A4_CONTAINER_MAGIC {
+        return Err(DriveError::NotTheBoxsOwnFormat { magic, at });
+    }
+    let size = crate::a4_kit::SOUND_SIZE;
+    let declared = file_declared_size(file);
+    let fits = declared.is_some_and(|n| n as usize >= size);
+    if at != FILE_HEADER_LEN || !fits || at + size > file.len() {
+        return Err(DriveError::UnsizedPayload { at, declared, len: file.len() });
+    }
+    let sound = &file[at..at + size];
+    if u32::from_be_bytes([sound[size - 4], sound[size - 3], sound[size - 2], sound[size - 1]])
+        != A4_SOUND_MAGIC_FOOT
+    {
+        return Err(DriveError::NoFootMagic { at: at + size - 4 });
+    }
+    // Decoded before it is returned, exactly as the digi cut does, and against
+    // the file's own declared length rather than the slice's: what is being
+    // checked is that this file holds a sound, not that the slice does.
+    decode_drive_preset(file)?;
+    Ok(sound)
 }
 
 #[cfg(test)]

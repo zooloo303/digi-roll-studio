@@ -10,7 +10,10 @@
 
 use std::time::Duration;
 
-use digi_core::device::{Device, DeviceIo, PortRef, A4, DN2, DT2};
+use digi_core::device::{
+    Device, DeviceIo, DeviceModel, PatternRoute, PortRef, PresetLoad, A4, DN2, DT2,
+};
+use digi_core::model::TrackKind;
 use digi_protocol::device::DeviceIdentity;
 use digi_protocol::drive::ListEntry;
 use digi_protocol::preset_index::{BankIndex, IndexEntry};
@@ -632,40 +635,30 @@ fn a_panel_opens_a_previously_scanned_library_with_the_box_switched_off() {
 // load path at all, and which track the gesture means. Both are refusals a
 // person meets by clicking, so both are tested where clicking is not needed.
 
-/// The A4 browses and does not load, and the two facts are independent.
+/// **The A4 loads presets, and this test used to assert the opposite.**
 ///
-/// This is the distinction the panel exists to state clearly: `blocker` is
-/// about *ports* and is a setup step; `load_blocker` is about the box and is
-/// permanent. An A4 with both ports set passes the first and fails the second.
+/// It was called `an_a4_browses_and_has_no_load_path` and it pinned a refusal
+/// through two rewordings — first "answers no dump request", then "no message
+/// that puts a sound on a track". Both were the box being described by what had
+/// been mapped of it. It reaches a kit track through its **kit**: `0x68` fetches
+/// the working one, 350 of its 2,410 bytes are replaced and `0x58` sends it
+/// back, verified on hardware on 2026-09-01 — THE SAW onto SYN4 of a real
+/// POLYTRON, read back twice, then reverted byte for byte.
+///
+/// What survives is the pair of independent facts the panel exists to state:
+/// `blocker` is about *ports* and is a setup step, `load_blocker` is about the
+/// box and is permanent. An A4 with both ports set now passes both.
 #[test]
-fn an_a4_browses_and_has_no_load_path() {
+fn an_a4_browses_and_loads_like_a_digi() {
     let a4 = wired(&A4, "A4");
 
     assert_eq!(blocker(&a4), None, "browsing needs ports and it has them");
-
-    let why = load_blocker(&a4).expect("an A4 cannot be loaded onto");
-    // **This asserted `why.contains("no dump request")` until 2026-09-01.** The
-    // box has answered dump requests since 2026-08-31, so the sentence led with
-    // a claim that was flatly false and the test was holding it there. What the
-    // refusal has to name is the *one* message that is missing — putting a sound
-    // on a track — not a capability the box turned out to have.
-    assert!(
-        !why.contains("answers no dump request"),
-        "the A4 answers dump requests; the refusal is narrower than that: {why}"
-    );
-    assert!(
-        why.contains("no message that puts a sound on"),
-        "it must say which half is missing: {why}"
-    );
-    assert!(
-        why.contains("browse") || why.contains("browses"),
-        "and that the rest of the panel still works: {why}"
-    );
+    assert_eq!(load_blocker(&a4), None, "and it has a load path of its own");
 }
 
-/// The digis have one. Checked so this cannot become a blanket refusal by
-/// accident — a `load_blocker` that returned `Some` for everything would make
-/// every test above still pass.
+/// The digis have one too, by the other route. Checked so this cannot become a
+/// blanket `None` by accident — the whole panel would then offer a load on a box
+/// that has none.
 #[test]
 fn both_digis_have_a_load_path() {
     assert_eq!(load_blocker(&wired(&DT2, "DT2")), None);
@@ -683,11 +676,39 @@ fn a_load_path_is_a_property_of_the_box_not_of_the_cable() {
     assert_eq!(load_blocker(&unwired), None, "and a load path all the same");
 }
 
+/// A box with no load route is still refused in words, which is what stops
+/// [`load_blocker`] having quietly become decoration when the A4 gained one.
+///
+/// The shipped roster has no such box — both routes are populated — so the model
+/// is built here. Its slug is a real one on purpose: that makes this test the
+/// *route* branch and not the "this build has no protocol for it" branch above
+/// it.
+#[test]
+fn a_box_with_no_load_route_is_still_refused_in_words() {
+    static NO_LOAD: DeviceModel = DeviceModel {
+        key: "TEST",
+        display: "Test Box",
+        slug: Some("digitone2"),
+        num_tracks: 16,
+        max_steps: 128,
+        default_track_kind: TrackKind::Audio,
+        sysex: None,
+        pattern_route: PatternRoute::LiveOnly,
+        preset_load: PresetLoad::None,
+        wire_slots: 0,
+    };
+
+    let why = load_blocker(&wired(&NO_LOAD, "TEST")).expect("no route means no load");
+    assert!(why.contains("Test Box"), "the box is named: {why}");
+    assert!(why.contains("browse"), "and the rest of the panel still works: {why}");
+}
+
 #[test]
 fn the_selected_track_is_the_one_a_load_lands_on() {
-    assert_eq!(load_target(Selection { device: 0, track: 0 }, 0), Ok(0));
-    assert_eq!(load_target(Selection { device: 1, track: 11 }, 1), Ok(11));
-    assert_eq!(load_target(Selection { device: 0, track: 15 }, 0), Ok(15));
+    let digi = PresetLoad::KitTrackSound { slots: 16 };
+    assert_eq!(load_target(Selection { device: 0, track: 0 }, 0, digi), Ok(0));
+    assert_eq!(load_target(Selection { device: 1, track: 11 }, 1, digi), Ok(11));
+    assert_eq!(load_target(Selection { device: 0, track: 15 }, 0, digi), Ok(15));
 }
 
 /// A kit holds sixteen tracks whatever the roll is showing, and the refusal
@@ -698,10 +719,31 @@ fn the_selected_track_is_the_one_a_load_lands_on() {
 /// store onto the first track of somebody's kit without a word.
 #[test]
 fn a_track_outside_a_kit_is_refused_by_the_number_on_screen() {
-    let err = load_target(Selection { device: 0, track: 16 }, 0).unwrap_err();
+    let digi = PresetLoad::KitTrackSound { slots: 16 };
+    let err = load_target(Selection { device: 0, track: 16 }, 0, digi).unwrap_err();
     assert!(err.contains("track 17"), "the human number, not the index: {err}");
 
-    assert!(load_target(Selection { device: 0, track: 300 }, 0).is_err());
+    assert!(load_target(Selection { device: 0, track: 300 }, 0, digi).is_err());
+}
+
+/// **The A4's kit holds four sounds for six tracks, and the two extra are not a
+/// shortfall.** SYN1–SYN4 have a sound; the FX and CV tracks sequence and never
+/// had one. Bounding this by the digis' sixteen — which is what it did until
+/// 2026-09-01 — would have put a preset on SYN1 because the CV track was
+/// selected.
+#[test]
+fn an_a4_has_four_sounds_for_six_tracks_and_says_so() {
+    let a4 = A4.preset_load;
+    assert_eq!(a4.slots(), 4);
+
+    for track in 0..4 {
+        assert_eq!(load_target(Selection { device: 0, track }, 0, a4), Ok(track as u8));
+    }
+    for track in 4..6 {
+        let err = load_target(Selection { device: 0, track }, 0, a4).unwrap_err();
+        assert!(err.contains(&format!("track {}", track + 1)), "{err}");
+        assert!(err.contains("FX and CV"), "the refusal must say what they are: {err}");
+    }
 }
 
 /// The panel follows the roll's selected box and has no picker of its own
@@ -709,7 +751,10 @@ fn a_track_outside_a_kit_is_refused_by_the_number_on_screen() {
 /// goes, which is why it is checked rather than assumed.
 #[test]
 fn a_selection_pointing_at_another_box_is_not_a_load_target() {
-    assert!(load_target(Selection { device: 1, track: 3 }, 0).is_err());
+    assert!(
+        load_target(Selection { device: 1, track: 3 }, 0, PresetLoad::KitTrackSound { slots: 16 })
+            .is_err()
+    );
 }
 
 // --- the formats a box's own kit will not take ------------------------------
@@ -720,17 +765,45 @@ fn a_selection_pointing_at_another_box_is_not_a_load_target() {
 // and it accepted the very next store on the same track, so that is a refusal
 // rather than a deaf box. These pin what the browser does about it.
 
+/// The magic each box's own kit speaks, which is what "native" means here.
+const DIGI: Option<u32> = Some(SOUND_MAGIC_HEAD);
+const A4_KIT: Option<u32> = Some(0xBEEF_BABA);
+
 #[test]
 fn a_native_preset_wears_no_mark() {
-    assert_eq!(foreign_format(Some(SOUND_MAGIC_HEAD)), None);
-    assert_eq!(foreign_format_reason(Some(SOUND_MAGIC_HEAD)), None);
+    assert_eq!(foreign_format(Some(SOUND_MAGIC_HEAD), DIGI), None);
+    assert_eq!(foreign_format_reason(Some(SOUND_MAGIC_HEAD), DIGI), None);
 }
 
+/// **Native is the destination's, not a constant** — the change of 2026-09-01,
+/// when the A4 gained a load path. The same A4 preset wears no mark in its own
+/// box's library and a mark in a DN2's, and a digi preset does the mirror of
+/// that. A single global notion of native would have to be wrong for one of the
+/// two boxes on this desk.
+#[test]
+fn native_is_the_box_s_own_format_and_not_a_constant() {
+    assert_eq!(foreign_format(A4_KIT, A4_KIT), None, "an A4 preset on an A4");
+    assert_eq!(foreign_format(A4_KIT, DIGI), Some("A4"), "the same file on a DN2");
+    assert_eq!(foreign_format(DIGI, A4_KIT), Some("digi"), "and the mirror");
+
+    let why = foreign_format_reason(DIGI, A4_KIT).expect("a reason");
+    assert!(why.contains("Digitakt or Digitone"), "named, not called unsupported: {why}");
+    let why = foreign_format_reason(A4_KIT, DIGI).expect("a reason");
+    assert!(why.contains("Analog Four"), "{why}");
+    assert!(
+        !why.contains("no message is known"),
+        "the A4 has a load path since 2026-09-01; the reason is about the destination: {why}"
+    );
+}
+
+/// An mk1 file is foreign to **both** shipped boxes, and that is the one
+/// container this app knows of that nothing on this desk can load.
 #[test]
 fn an_mk1_preset_is_marked_and_says_why() {
-    assert_eq!(foreign_format(Some(DN1_SOUND_MAGIC_HEAD)), Some("mk1"));
+    assert_eq!(foreign_format(Some(DN1_SOUND_MAGIC_HEAD), DIGI), Some("mk1"));
+    assert_eq!(foreign_format(Some(DN1_SOUND_MAGIC_HEAD), A4_KIT), Some("mk1"));
 
-    let why = foreign_format_reason(Some(DN1_SOUND_MAGIC_HEAD)).expect("a reason");
+    let why = foreign_format_reason(Some(DN1_SOUND_MAGIC_HEAD), DIGI).expect("a reason");
     assert!(why.contains("Digitone mk1"), "named, not called unsupported: {why}");
     assert!(
         why.contains("browses") || why.contains("browse"),
@@ -744,8 +817,8 @@ fn an_mk1_preset_is_marked_and_says_why() {
 /// the load path still checks.
 #[test]
 fn an_unrecorded_format_is_not_marked_and_is_not_refused() {
-    assert_eq!(foreign_format(None), None);
-    assert_eq!(foreign_format_reason(None), None);
+    assert_eq!(foreign_format(None, DIGI), None);
+    assert_eq!(foreign_format_reason(None, DIGI), None);
 }
 
 /// A magic nobody has mapped is marked. "Unrecognised" is a stronger reason not
@@ -753,8 +826,8 @@ fn an_unrecorded_format_is_not_marked_and_is_not_refused() {
 /// through to the native branch.
 #[test]
 fn an_unmapped_container_is_marked_rather_than_assumed_native() {
-    assert_eq!(foreign_format(Some(0xdead_beef)), Some("other"));
-    let why = foreign_format_reason(Some(0xdead_beef)).expect("a reason");
+    assert_eq!(foreign_format(Some(0xdead_beef), DIGI), Some("other"));
+    let why = foreign_format_reason(Some(0xdead_beef), DIGI).expect("a reason");
     assert!(why.contains("0xdeadbeef"), "the magic names itself: {why}");
 }
 
@@ -772,8 +845,8 @@ fn a_scanned_row_carries_its_container_format() {
     let organic = rows.iter().find(|r| r.name == "ORGANIC").expect("the mk1 one");
     let deep = rows.iter().find(|r| r.name == "DEEP SPACE").expect("the native one");
 
-    assert_eq!(foreign_format(organic.format), Some("mk1"));
-    assert_eq!(foreign_format(deep.format), None);
+    assert_eq!(foreign_format(organic.format, DIGI), Some("mk1"));
+    assert_eq!(foreign_format(deep.format, DIGI), None);
 }
 
 /// A row from a listing has no format, because a listing never opened the file.

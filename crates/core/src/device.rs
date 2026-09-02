@@ -99,6 +99,71 @@ impl PatternRoute {
     }
 }
 
+/// How a **preset** gets from a box's +Drive onto one of its tracks — the
+/// browser's double-click, and a second axis from [`PatternRoute`] rather than a
+/// consequence of it.
+///
+/// **Added 2026-09-01, when the A4 turned out to have a path after all.** Until
+/// then `ui::presets` keyed this off `pattern_route()`, on the reasoning that
+/// the gen-2 dump namespace is where the kit-track read/store pair lives and
+/// only the digis speak it. The first half of that is still true and the
+/// conclusion was still wrong: the A4 reaches a kit track through its *kit*
+/// (`0x68` → splice → `0x58`), which is a different message and the same
+/// feature. Two boxes now load presets by two routes, so the route is a field
+/// on the row — PLAN.md §6's carried-forward decision, for the third time.
+///
+/// Each variant carries how many of the box's tracks have a sound at all, which
+/// is not `num_tracks`: an A4 sequences six and its kit holds four.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PresetLoad {
+    /// No path mapped. A live-only box, or one whose +Drive this build can
+    /// browse and whose kit it cannot write.
+    None,
+    /// **One kit track's sound, addressed directly** — `0x6b` reads it and
+    /// `0x5b` puts one back, and a load is `midi::preset_load`'s five round
+    /// trips. Both digis.
+    KitTrackSound { slots: usize },
+    /// **A whole working kit, read-modify-written** — `0x68` fetches the box's
+    /// edit buffer, 350 of its 2,410 bytes are replaced, and `0x58` sends it
+    /// back (`midi::a4_preset_load`). The Analog Four.
+    ///
+    /// The same recovery story as the other route, because both write the kit
+    /// the box is playing rather than a stored slot: reloading the pattern on
+    /// the box discards an unsaved kit, and that is the undo.
+    WorkingKitSplice { slots: usize },
+}
+
+impl PresetLoad {
+    /// Whether a preset can be put on one of this box's tracks at all.
+    pub fn loads(self) -> bool {
+        !matches!(self, Self::None)
+    }
+
+    /// How many of this box's tracks a kit has a sound for. Zero when nothing
+    /// loads.
+    pub fn slots(self) -> usize {
+        match self {
+            Self::None => 0,
+            Self::KitTrackSound { slots } | Self::WorkingKitSplice { slots } => slots,
+        }
+    }
+
+    /// What the tracks past [`Self::slots`] are, for a refusal that has to say
+    /// why a selected track has no slot — or `None` where every track has one.
+    ///
+    /// A sentence rather than a count because the answer is about the box: the
+    /// A4's fifth and sixth tracks are not missing sounds, they are the FX and
+    /// CV tracks and have never had one.
+    pub fn extra_tracks(self) -> Option<&'static str> {
+        match self {
+            Self::WorkingKitSplice { .. } => {
+                Some("the FX and CV tracks sequence, and have no sound to put a preset on")
+            }
+            _ => None,
+        }
+    }
+}
+
 /// Everything the model needs to know about a box.
 ///
 /// `sysex: None` means the box has no **gen-2** pattern `Spec`. That is *not*
@@ -120,6 +185,9 @@ pub struct DeviceModel {
     pub sysex: Option<SpecFn>,
     /// How a whole pattern gets on and off this box.
     pub pattern_route: PatternRoute,
+    /// How a +Drive preset gets onto one of this box's tracks, and how many of
+    /// its tracks have a sound.
+    pub preset_load: PresetLoad,
     /// How many slots a dump request can name on this box — what the `from`
     /// picker of a fetch and the `to` picker of a send offer. The digis' wire
     /// index spans sixteen banks of sixteen; the A4's spans eight
@@ -147,6 +215,11 @@ impl DeviceModel {
         self.pattern_route
     }
 
+    /// How a preset gets from this box's +Drive onto one of its tracks.
+    pub fn preset_load(&self) -> PresetLoad {
+        self.preset_load
+    }
+
     /// The byte-level spec for this box, or `None` for a live-only model.
     /// `core` treats this as an opaque handle and never parses with it.
     pub fn spec(&self) -> Option<&'static digi_protocol::pattern::Spec> {
@@ -170,6 +243,7 @@ pub static DT2: DeviceModel = DeviceModel {
     default_track_kind: TrackKind::Audio,
     sysex: Some(dt2_spec),
     pattern_route: PatternRoute::Request,
+    preset_load: PresetLoad::KitTrackSound { slots: 16 },
     wire_slots: 256,
 };
 
@@ -182,6 +256,7 @@ pub static DN2: DeviceModel = DeviceModel {
     default_track_kind: TrackKind::Audio,
     sysex: Some(dn2_spec),
     pattern_route: PatternRoute::Request,
+    preset_load: PresetLoad::KitTrackSound { slots: 16 },
     wire_slots: 256,
 };
 
@@ -217,6 +292,10 @@ pub static A4: DeviceModel = DeviceModel {
     default_track_kind: TrackKind::Audio,
     sysex: None,
     pattern_route: PatternRoute::RequestGen1,
+    // Four sounds for six tracks: SYN1-SYN4 have one and the FX and CV tracks
+    // do not. `protocol::a4_kit::NUM_SOUNDS` is the same number where the
+    // offsets are.
+    preset_load: PresetLoad::WorkingKitSplice { slots: 4 },
     wire_slots: 128,
 };
 
@@ -381,6 +460,10 @@ impl Device {
     }
 
     /// How a whole pattern moves between this box and the app.
+    pub fn preset_load(&self) -> PresetLoad {
+        self.model.preset_load
+    }
+
     pub fn pattern_route(&self) -> PatternRoute {
         self.model.pattern_route
     }

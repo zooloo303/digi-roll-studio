@@ -31,10 +31,26 @@ use crate::pattern::{chars16, u32_be, KitSpec};
 pub const SOUND_MAGIC_HEAD: u32 = 0xBEEF_BACE;
 pub const SOUND_MAGIC_FOOT: u32 = 0xBACE_F00C;
 
-/// The A4's head magic, one nibble off the digis' and followed by **no foot at
-/// all**. The first three fields still sit where the diagram above puts them —
-/// that is what all eight A4 captures decode to. See [`decode_a4_sound`].
+/// The A4's head magic, one nibble off the digis'. The first three fields still
+/// sit where the diagram above puts them — that is what all eight A4 captures
+/// decode to. See [`decode_a4_sound`].
 pub const A4_SOUND_MAGIC_HEAD: u32 = 0xBEEF_BABA;
+
+/// The A4 sound struct's foot magic, and **the witness that its extent is 350
+/// bytes**.
+///
+/// This was recorded as "no foot at all" for two days, and the correction is
+/// not a detail: [`decode_a4_sound`] does not need a foot, because
+/// `drive::decode_drive_preset` takes the struct's size from the file header's
+/// declared payload length. A **splice** does need one. A +Drive preset file
+/// declares 366 bytes of payload and the box's own kit gives each sound 350, so
+/// the declaration cannot say where the struct ends — this magic can, and it
+/// lands at 346 in all eight +Drive captures and in all 512 kit-embedded
+/// containers of the project stream.
+///
+/// `drive::a4_preset_sound` is the caller, and [`crate::a4_kit::SOUND_SIZE`] is
+/// the length it confirms.
+pub const A4_SOUND_MAGIC_FOOT: u32 = 0xBABE_FACE;
 
 /// A Digitone **mk1** sound, as stored on a DN2's +Drive. ASCII `DN1S`, not a
 /// `0xBEEF…` value at all — the only container magic on any box that is legible

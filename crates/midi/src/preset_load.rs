@@ -2,7 +2,10 @@
 //! the only write in this codebase that is not [`digi_protocol::safe_write`].
 //!
 //! [`load_preset_onto_track`] is five round trips: read the track, read the
-//! file, send the payload, read the track twice. `preset_scan` is the sibling
+//! file, send the payload, read the track twice. **The gen-2 half of the
+//! feature**: the Analog Four reaches a kit track through its whole kit and has
+//! its own module, [`crate::a4_preset_load`], which documents what differs and
+//! why the panel above both did not have to change. `preset_scan` is the sibling
 //! module and the shape is deliberately the same — a trait so the decisions can
 //! be tested without a box, and the loop that matters kept out of the panel.
 //!
@@ -121,8 +124,11 @@ pub struct LoadReport {
 pub enum LoadError {
     /// The +Drive read failed, or the store did.
     Wire(MidiError),
-    /// The preset file is not one this box's kit can be handed — the mk1 and A4
-    /// containers, and the malformed. Carries `drive`'s own words.
+    /// The preset file is not one this box's kit can be handed — the mk1
+    /// container, an A4's, and the malformed. Carries `drive`'s own words.
+    ///
+    /// An A4 file reaching here is the wrong *box*, not a dead end: that
+    /// container loads onto an A4 through [`crate::a4_preset_load`].
     Preset(DriveError),
     /// The track's current sound did not decode, so there is no backup and no
     /// length to check against.

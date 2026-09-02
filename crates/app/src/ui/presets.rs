@@ -148,6 +148,25 @@
 //     not native** — an index from before the field reads as `None`, draws no
 //     mark, and is backfilled by the next READ TAGS.
 //
+//     **That decision paid on 2026-09-01, which is the day the policy changed.**
+//     `BEEFBABA` was a mark on every row that carried it; it is now native on an
+//     A4 and foreign on a DN2, and [`foreign_format`] takes the destination's
+//     own magic (`drive::native_container_magic`) to decide. Every index written
+//     before that day is still right, because what they recorded is what the
+//     file *is* rather than what some earlier build thought could be done with
+//     it. A `loadable: bool` would have had to be rescanned across 869 presets.
+//
+// 10. **Two load routes, one gesture, and the panel does not know which it
+//     used.** A digi addresses one kit track's sound (`0x6b`/`0x5b`); an A4
+//     fetches its whole working kit, replaces 350 of its 2,410 bytes and sends
+//     it back (`0x68`/`0x58`). Both end in the same `LoadReport` — the preset's
+//     name, what it displaced, and the bytes to put back — so the double-click,
+//     the pick, the backup map and REVERT are written against that report and
+//     not against a protocol. The route is a field on the model row
+//     (`core::device::PresetLoad`), which is where the *slot count* comes from
+//     as well: sixteen on a digi, four on an A4, whose FX and CV tracks have no
+//     sound to put one on.
+//
 // ## What has been verified, and what has not
 //
 // **On hardware, 2026-08-29:** bank select, LIST and READ TAGS on a DT2 and a DN2
@@ -160,10 +179,24 @@
 // **The load runs, on both digis, from this panel** — 2026-08-29, the day it was
 // built: a double-click put the selected preset onto the selected track of a DT2
 // (0071) and a DN2 (0050). That is the whole path rather than the `0x5b` under
-// it, which two boxes had already answered. **The A4's refusal is legible** on
-// the same day's testing: double-clicking one of its presets shows the LOAD
-// section explaining that the box has no such message, which is decision 4
-// holding on the box that taught it.
+// it, which two boxes had already answered.
+//
+// **And on the A4 since 2026-09-01**, where the refusal used to be. `THE SAW`
+// off `/soundbanks/A/1` onto SYN4 of a live POLYTRON kit, read back twice, then
+// reverted byte for byte — `examples/a4_kit_store_probe`, on 0195. Three
+// findings came out of getting there and two of them are behaviour:
+//
+//   * the box **stores a `0x58` working kit** and leaves the other three sounds,
+//     the kit name and the FX and CV tracks' bytes exactly as they were;
+//   * a +Drive preset file is struct **version 5** and a kit slot takes version
+//     6, and the box does not refuse the mismatch — it stores the kit and
+//     replaces that track with an **init sound named `SOUND n`**. A load that
+//     skipped `a4_kit::sound_for_kit` would report success and have thrown the
+//     user's sound away, which is the worst failure this panel could have;
+//   * the conversion is **two bytes**, measured off the box rather than guessed:
+//     the A4's own sound pool holds version-6 renderings of 28 of its +Drive
+//     files, and one pair differs in nothing but the version word and one byte
+//     (`examples/a4_sound_pool_probe`).
 //
 // **The mk1 refusal has met a user** — Neil found it before decision 9 existed,
 // which is how decision 9 came to. **The marks have not met a screen**, let
@@ -179,13 +212,16 @@ use std::sync::mpsc::{channel, Receiver, Sender};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use digi_core::device::{Device, PortRef};
+use digi_core::device::{Device, PortRef, PresetLoad};
 use digi_core::{DeviceId, Session};
+use digi_midi::a4_preset_load::{load_a4_preset_onto_track, revert_a4_track};
 use digi_midi::preset_load::{load_preset_onto_track, revert_track};
 use digi_midi::preset_scan::{scan_bank, ScanError};
-use digi_midi::{ElektronDevice, KIT_TRACKS};
+use digi_midi::ElektronDevice;
 use digi_protocol::device::{product_for_slug, DeviceIdentity};
-use digi_protocol::drive::{parse_list_entries, ListEntry, A4_CONTAINER_MAGIC};
+use digi_protocol::drive::{
+    native_container_magic, parse_list_entries, ListEntry, A4_CONTAINER_MAGIC,
+};
 use digi_protocol::preset_index::{BankIndex, PresetIndex};
 use digi_protocol::sound::{tag_names_for, DN1_SOUND_MAGIC_HEAD, SOUND_MAGIC_HEAD};
 pub use digi_protocol::sound::tag_names;
@@ -556,30 +592,49 @@ pub fn blocker(device: &Device) -> Option<String> {
 /// was stored knows nothing, and drawing nothing is honest where drawing
 /// "native" would be a guess. `BankIndex::missing` backfills those on the next
 /// READ TAGS.
-pub fn foreign_format(format: Option<u32>) -> Option<&'static str> {
-    match format? {
-        SOUND_MAGIC_HEAD => None,
-        DN1_SOUND_MAGIC_HEAD => Some("mk1"),
-        A4_CONTAINER_MAGIC => Some("A4"),
+pub fn foreign_format(format: Option<u32>, native: Option<u32>) -> Option<&'static str> {
+    let format = format?;
+    // **Native is the box's, not this function's**, since 2026-09-01: the A4
+    // loads its own presets now, so `BEEFBABA` is native on that box and
+    // foreign on a DN2, and the same file has to draw a mark on one and none on
+    // the other. Before that this keyed on the digis' magic alone, which was
+    // right for as long as only the digis could load.
+    if native == Some(format) {
+        return None;
+    }
+    Some(match format {
+        SOUND_MAGIC_HEAD => "digi",
+        DN1_SOUND_MAGIC_HEAD => "mk1",
+        A4_CONTAINER_MAGIC => "A4",
         // A magic nobody has mapped. Marked, because "unrecognised" is a
         // stronger reason not to send something than "recognised and foreign".
-        _ => Some("other"),
-    }
+        _ => "other",
+    })
 }
 
 /// The sentence a row's format earns when a load would refuse it.
-pub fn foreign_format_reason(format: Option<u32>) -> Option<String> {
-    Some(match format? {
-        SOUND_MAGIC_HEAD => return None,
+pub fn foreign_format_reason(format: Option<u32>, native: Option<u32>) -> Option<String> {
+    let format = format?;
+    if native == Some(format) {
+        return None;
+    }
+    Some(match format {
         DN1_SOUND_MAGIC_HEAD => "This is a Digitone mk1 preset. It browses, searches and tags \
              like any other, and the box will not take one onto a kit track — asked \
              directly on 2026-08-29, it ignores the store. Load it from the box's own \
              browser instead."
             .to_string(),
-        A4_CONTAINER_MAGIC => "This is an Analog Four preset, and no message is known that \
-             puts one on a track — the A4's 0x6b is not the kit-track read a load is built \
-             on, and no store path for a sound has been found."
-            .to_string(),
+        // Reworded 2026-09-01, when the sentence stopped being true. It used to
+        // say no message was known that puts an A4 preset on a track; the A4
+        // splices one into its working kit now, and what is left is the boring
+        // half — an A4 file in a digi's library is a file that box's kit does
+        // not speak, and the same the other way round.
+        SOUND_MAGIC_HEAD | A4_CONTAINER_MAGIC => format!(
+            "This is {} preset, and this box's kit speaks its own format. It browses, \
+             searches and tags here like any other — it just cannot be put on one of \
+             these tracks. Load it on the box it belongs to.",
+            if format == A4_CONTAINER_MAGIC { "an Analog Four" } else { "a Digitakt or Digitone" }
+        ),
         magic => format!(
             "This preset's container is {magic:#010x}, which this build does not recognise. \
              It is not sent under a store opcode for that reason."
@@ -591,28 +646,22 @@ pub fn foreign_format_reason(format: Option<u32>) -> Option<String> {
 ///
 /// **Stricter than [`blocker`], and the extra refusal is permanent rather than a
 /// setup step.** Browsing needs two ports and nothing else. Loading needs the
-/// box to answer `0x6b` with a **kit-track sound** — a load reads the track
-/// before it writes it, and there is no other way to know what a track held or
-/// what length it wants — and only the gen-2 boxes do.
+/// box to have a message that puts a sound on one of its tracks, and
+/// [`PresetLoad`] is the field that says which one — a table row, per PLAN.md
+/// §6, rather than a capability inferred from a neighbouring one.
 ///
-/// The box refused is the Analog Four, and the reason had to be *re*-stated on
-/// 2026-08-31: this function keyed on "no dump family" until the A4 turned out
-/// to have one and answer requests on it. Its `0x6b` is not this message —
-/// it returns the current *pattern* with the index ignored (`0x65`'s twin),
-/// not a kit track's sound — and no `0x5b` store path is known. So the
-/// discriminator is now the pattern route: the gen-2 dump namespace is where
-/// the kit-track read/store pair lives, and `PatternRoute::Request` is the row
-/// that speaks it.
+/// # This function has been wrong twice, in opposite directions
 ///
-/// The distinction matters because everything *else* about the A4 here works:
-/// it lists, it reads, it decodes, it tags, and its presets sit in this browser
-/// next to a DN2's — since 2026-08-31 its *patterns* fetch and write from the
-/// Setup panel too. So the refusal has to say which half is missing, or it
-/// reads as the browser being broken on that box.
+/// It keyed on "no dump family" until the A4 turned out to have one and answer
+/// requests on it. It then keyed on `pattern_route() == Request`, on the
+/// reasoning that the gen-2 dump namespace is where the kit-track read/store
+/// pair lives — true, and still the wrong question. The A4 reaches a kit track
+/// through its **kit**: `0x68` fetches the working one, 350 of its 2,410 bytes
+/// are replaced and `0x58` sends it back, verified on hardware on 2026-09-01.
+/// Same feature, different message, and a load route is therefore its own field.
 ///
-/// **There is nothing to enable here.** No cable, port, OS build or setting
-/// changes it: the box does not have the message. That is why this is a
-/// sentence and not a disabled control with a tooltip.
+/// What is left here is the box this build has no protocol for at all, which is
+/// a real category and the only honest thing this can still refuse.
 pub fn load_blocker(device: &Device) -> Option<String> {
     if device.model.slug.is_none() || product_for_slug(device.model.slug.expect("checked")).is_none()
     {
@@ -622,19 +671,15 @@ pub fn load_blocker(device: &Device) -> Option<String> {
             device.model.display
         ));
     }
-    match device.model.pattern_route() {
-        digi_core::device::PatternRoute::Request => None,
-        _ => Some(format!(
-            "The {} has no message that puts a sound on one of its tracks. It answers \
-             dump requests perfectly well — its patterns fetch and write from Setup, and \
-             its presets browse, search and tag here like any other box's — but the \
-             kit-track sound a load reads before it writes is not among them: this box's \
-             0x6b returns its current pattern, and no store path for a sound has been \
-             found. Loading a preset onto a track is the one thing this protocol does not \
-             give it, and no cable or OS build changes that.",
-            device.model.display
-        )),
+    if device.preset_load().loads() {
+        return None;
     }
+    Some(format!(
+        "This build has no message that puts a sound on one of the {}'s tracks. Its \
+         presets browse, search and tag here like any other box's; loading one onto a \
+         track is the part that is missing.",
+        device.model.display
+    ))
 }
 
 /// The track a load would land on, given the roll's selection and the box in
@@ -642,22 +687,41 @@ pub fn load_blocker(device: &Device) -> Option<String> {
 ///
 /// **A function so the rule is testable, because it is the one place two
 /// different numbering schemes meet.** The roll counts a device's tracks from
-/// zero and a box's kit holds [`KIT_TRACKS`] of them; a session may hold a model
-/// with fewer, and a selection may still be pointing at a track index the roll
-/// allows and a kit does not. The panel must not silently store onto track 1
-/// because track 17 was selected.
-pub fn load_target(selection: Selection, device_index: usize) -> Result<u8, String> {
+/// zero and a box's kit holds [`PresetLoad::slots`] of them; a session may hold
+/// a model with fewer, and a selection may still be pointing at a track index
+/// the roll allows and a kit does not. The panel must not silently store onto
+/// track 1 because track 17 was selected.
+///
+/// **The bound is the box's, not [`digi_midi::KIT_TRACKS`]** — that constant is the digis'
+/// sixteen and it was this function's bound until 2026-09-01. An A4 sequences
+/// six tracks and its kit holds four sounds, so a selection on T5 there is not
+/// a load waiting for a bigger number: it is the FX track, which has no sound at
+/// all. Getting this wrong on that box would have put a preset on SYN1 because
+/// the CV track was selected.
+pub fn load_target(
+    selection: Selection,
+    device_index: usize,
+    load: PresetLoad,
+) -> Result<u8, String> {
     if selection.device != device_index {
         // Not reachable while the panel follows the selection's own box, and
         // checked anyway: this decides where a *write* goes.
         return Err("the selected box is not the one this browser is showing".into());
     }
+    let slots = load.slots();
     match u8::try_from(selection.track) {
-        Ok(track) if track < KIT_TRACKS => Ok(track),
+        Ok(track) if usize::from(track) < slots => Ok(track),
         _ => Err(format!(
-            "track {} is outside the {KIT_TRACKS} a kit holds, so there is no kit slot to \
-             load onto",
-            selection.track + 1
+            "track {} is outside the {slots} sounds this box's kit holds, so there is no \
+             slot to load onto{}",
+            selection.track + 1,
+            // The A4's fifth and sixth tracks are not a shortfall — they are the
+            // FX and CV tracks and have never had a sound. A count alone reads
+            // as a limitation of this app.
+            match load.extra_tracks() {
+                Some(why) => format!(" — {why}"),
+                None => String::new(),
+            }
         )),
     }
 }
@@ -1154,6 +1218,7 @@ fn scan_worker(
 /// write because of what the write *does*: a store aimed at a DN2 that reaches
 /// a DT2 puts a Digitone sound in a Digitakt's kit, and there is no `0x50` to
 /// put a working buffer back.
+#[allow(clippy::too_many_arguments)]
 fn load_worker(
     input: PortRef,
     output: PortRef,
@@ -1161,6 +1226,7 @@ fn load_worker(
     display: String,
     path: String,
     track: u8,
+    route: PresetLoad,
     events: Sender<Event>,
 ) {
     let (mut device, _identity) = match open(&input, &output, expected, &display) {
@@ -1171,14 +1237,32 @@ fn load_worker(
         }
     };
 
-    let _ = match load_preset_onto_track(&mut device, &path, track) {
+    // **The two routes end in the same report and that is the whole reason this
+    // panel did not need rewriting for the A4.** One is five round trips on a
+    // `0x6b`/`0x5b` pair and the other is four on a whole kit; both hand back a
+    // preset's name, the name of what it displaced, and the bytes to put back.
+    // Everything above this line — the pick, the double-click, the backup map,
+    // REVERT — is written against that report and not against a protocol.
+    let outcome = match route {
+        PresetLoad::KitTrackSound { .. } => {
+            load_preset_onto_track(&mut device, &path, track).map_err(|e| e.to_string())
+        }
+        PresetLoad::WorkingKitSplice { .. } => {
+            load_a4_preset_onto_track(&mut device, &path, track).map_err(|e| e.to_string())
+        }
+        // Unreachable: `load_blocker` refuses this box before a port is opened.
+        // Checked rather than asserted, because what is on the other side is a
+        // write.
+        PresetLoad::None => Err(format!("{display}: this build has no load path for this box")),
+    };
+    let _ = match outcome {
         Ok(report) => events.send(Event::Loaded {
             track,
             loaded: report.loaded,
             replaced: report.replaced,
             backup: report.backup,
         }),
-        Err(why) => events.send(Event::Failed(why.to_string())),
+        Err(why) => events.send(Event::Failed(why)),
     };
 }
 
@@ -1195,6 +1279,7 @@ fn revert_worker(
     expected: Option<&'static str>,
     display: String,
     backups: Vec<(u8, Vec<u8>)>,
+    route: PresetLoad,
     events: Sender<Event>,
 ) {
     let (mut device, _identity) = match open(&input, &output, expected, &display) {
@@ -1207,8 +1292,20 @@ fn revert_worker(
 
     let (mut restored, mut failed) = (Vec::new(), Vec::new());
     for (track, bytes) in backups {
-        match revert_track(&mut device, track, &bytes) {
-            Ok(_) => restored.push(track),
+        // The backup's shape is the route's: a `0x6b` payload on a digi, a kit
+        // slot's 350 bytes on an A4. They are never mixed, because the map they
+        // come out of is keyed by box.
+        let put_back = match route {
+            PresetLoad::KitTrackSound { .. } => {
+                revert_track(&mut device, track, &bytes).map(|_| ()).map_err(|e| e.to_string())
+            }
+            PresetLoad::WorkingKitSplice { .. } => {
+                revert_a4_track(&mut device, track, &bytes).map(|_| ()).map_err(|e| e.to_string())
+            }
+            PresetLoad::None => Err("this build has no load path for this box".to_string()),
+        };
+        match put_back {
+            Ok(()) => restored.push(track),
             Err(why) => failed.push(format!("T{}: {why}", track + 1)),
         }
     }
@@ -1723,7 +1820,12 @@ impl PresetsPanel {
         let show_bank = matches!(self.view, View::All);
         let slug = self.library.slug.clone();
         let picked = self.picked.clone();
-        let target = load_target(selection, selection.device).ok();
+        // The format this box's own kit speaks, so a row can wear a mark before
+        // anybody clicks it. Per box, not per file — the same A4 preset is
+        // native here and foreign in a DN2's library.
+        let native = device.model.slug.and_then(native_container_magic);
+        let route = device.preset_load();
+        let target = load_target(selection, selection.device, route).ok();
         let mut clicked: Option<(String, u32)> = None;
         let mut double_clicked: Option<(String, u32)> = None;
 
@@ -1757,7 +1859,7 @@ impl PresetsPanel {
                                         .size(10.0)
                                         .color(super::TEXT_DIMMER),
                                 );
-                                let foreign = foreign_format(row.format);
+                                let foreign = foreign_format(row.format, native);
                                 let name = egui::RichText::new(&row.name).size(11.0).color(
                                     match (is_picked, foreign.is_some()) {
                                         (true, _) => super::CYAN,
@@ -1798,7 +1900,10 @@ impl PresetsPanel {
                 // "double-click to load" over a preset that will refuse is the
                 // tooltip actively misleading, and on a DN2 that is a third of
                 // them.
-                let gesture = match (foreign_format(row.format), target) {
+                let gesture = match (foreign_format(row.format, native), target) {
+                    _ if !route.loads() => {
+                        String::from("this build cannot put a preset on this box's tracks")
+                    }
                     (Some(mark), _) => format!("{mark} format — cannot be loaded onto a track"),
                     (None, Some(track)) => format!("double-click to load onto T{}", track + 1),
                     (None, None) => String::from("no track selected to load onto"),
@@ -1850,7 +1955,7 @@ impl PresetsPanel {
         rows: &[Row],
     ) {
         ui.add_space(6.0);
-        let target = load_target(selection, selection.device);
+        let target = load_target(selection, selection.device, device.preset_load());
         let caption = match &target {
             Ok(track) => format!("T{}", track + 1),
             Err(_) => String::from("no track"),
@@ -1877,7 +1982,8 @@ impl PresetsPanel {
         // preset the box will not take is refused here rather than five round
         // trips later. That round trip is what made the refusal feel like a
         // fault the first time anyone met it.
-        let foreign = picked_row.as_ref().and_then(|r| foreign_format_reason(r.format));
+        let native = device.model.slug.and_then(native_container_magic);
+        let foreign = picked_row.as_ref().and_then(|r| foreign_format_reason(r.format, native));
 
         let in_flight = self.job.is_some();
         let ready = !blocked
@@ -1901,7 +2007,8 @@ impl PresetsPanel {
                 .on_hover_text(
                     "Writes: puts the picked preset onto the selected track of the kit \
                      the box is playing right now. Double-clicking a row does the same \
-                     thing. About a kilobyte, and it is read back to prove it landed.",
+                     thing. A kilobyte or two, and it is read back — twice — to prove the \
+                     preset is the sound that track now holds.",
                 )
                 .clicked()
                 {
@@ -2069,7 +2176,7 @@ impl PresetsPanel {
             self.load_note = Some(Note::Warn(why));
             return;
         }
-        let track = match load_target(selection, selection.device) {
+        let track = match load_target(selection, selection.device, device.preset_load()) {
             Ok(track) => track,
             Err(why) => {
                 self.load_note = Some(Note::Bad(why));
@@ -2085,7 +2192,9 @@ impl PresetsPanel {
             .iter()
             .find(|r| r.bank == bank && r.slot == slot)
             .and_then(|r| r.format);
-        if foreign_format_reason(format).is_some() {
+        if foreign_format_reason(format, device.model.slug.and_then(native_container_magic))
+            .is_some()
+        {
             // **Picked, and not also noted.** The LOAD section draws this
             // preset's reason as its standing line for as long as the row is
             // picked, so a note here would print the same sentence twice — once
@@ -2109,8 +2218,9 @@ impl PresetsPanel {
         let (tx, rx) = channel();
         let (expected, display) = (device.model.slug, device.model.display.to_string());
         let sent = path.clone();
+        let route = device.preset_load();
         std::thread::spawn(move || {
-            load_worker(input, output, expected, display, sent, track, tx);
+            load_worker(input, output, expected, display, sent, track, route, tx);
         });
         self.job = Some(Job {
             device: device.id,
@@ -2145,8 +2255,9 @@ impl PresetsPanel {
         let tracks = backups.len();
         let (tx, rx) = channel();
         let (expected, display) = (device.model.slug, device.model.display.to_string());
+        let route = device.preset_load();
         std::thread::spawn(move || {
-            revert_worker(input, output, expected, display, backups, tx);
+            revert_worker(input, output, expected, display, backups, route, tx);
         });
         self.job = Some(Job {
             device: device.id,
@@ -2341,8 +2452,10 @@ fn reference_prose(ui: &mut Ui) {
     super::consequence_line(
         ui,
         "Double-click a preset to load it onto the selected track, or click one and press \
-         LOAD. It goes onto the kit the box is playing right now — about a kilobyte, and \
-         it is read back to prove it landed.",
+         LOAD. It goes onto the kit the box is playing right now, and it is read back — \
+         twice — to prove the preset is the sound that track holds. On an Analog Four the \
+         whole kit makes the trip, so SYN1 to SYN4 can be loaded onto and the FX and CV \
+         tracks cannot: they have no sound of their own.",
     );
     super::consequence_line(
         ui,
