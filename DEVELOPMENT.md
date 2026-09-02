@@ -1326,6 +1326,43 @@ string, and assert `ui.min_rect().width() <= 320.0`. That measures 347.8 before
 the fix and fails, which is a better report than the screenshot was — the
 screenshot showed clipped headings and pointed at the wrong file.
 
+### 21. The machine that builds it has never been the machine that runs it
+
+Lesson 20 came off a Linux desk. The two bugs *after* it came off Linux CI, on
+the first run of the two new jobs — and neither could have been found on the
+desk, because both are things a developer's machine already has and a bare one
+does not.
+
+**The Arch job could not build.** `alsa-sys`'s build script stopped at `Package
+'alsa' not found`. The PKGBUILD declares `alsa-lib` in `depends`, which is
+correct, but `build-pkg.sh` passes `--nodeps`, so makepkg installs nothing and
+the container has to arrive with it. It built fine on the desk for the only
+reason that matters here: a machine that has ever built this app has `alsa-lib`
+on it already. **A build dependency is only honestly stated by a machine that
+does not have it.**
+
+**The Linux job could not enumerate.** `enumerating_ports_never_fails_without_hardware`
+asserts that listing ports on a machine with no MIDI hardware returns an empty
+list rather than an error. On CoreMIDI and WinMM that holds. On ALSA, midir
+enumerates by opening `/dev/snd/seq` — a node belonging to the `snd-seq` kernel
+module, which a runner has no reason to load — so `MidiInput::new` fails before
+it can report anything.
+
+The interesting half is that **the app was already right and the test was
+already wrong.** `ui::ports` puts that error in the panel, and "MIDI would not
+start" is a better report than "no boxes found": it sends you to the missing
+module instead of to your USB cable. Swallowing it to make the test pass would
+have made a broken MIDI stack indistinguishable from an unplugged box. So the
+test grew the precondition it always had — it holds wherever the sequencer
+exists, which is every machine that can run this app and not the one that
+builds it.
+
+Both cost one rehearsal and no tag, which is lesson 9 again — a path nobody has
+run is a claim nobody is checking, and a CI job is a path: **`workflow_dispatch`
+before the tag, every time.** A tag that fails takes its version number with it,
+and `draft-release` needs all four jobs, so either of these alone would have
+produced a release with no assets at all.
+
 ---
 
 ---

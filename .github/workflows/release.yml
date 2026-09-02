@@ -153,8 +153,17 @@ jobs:
       # Before the checkout, because `build-pkg.sh` builds its source tarball
       # with `git ls-files` — without git present, actions/checkout falls back
       # to downloading a tarball and there is no repository for it to read.
+      #
+      # `alsa-lib` is in the PKGBUILD's `depends`, which is where it belongs —
+      # but `build-pkg.sh` passes `--nodeps`, so makepkg installs nothing and
+      # the container has to arrive with it. On Arch the one package carries the
+      # library *and* `alsa.pc`, so this is both the build and the runtime
+      # requirement; without it `alsa-sys`'s build script stops at "Package
+      # 'alsa' not found". A dev machine that has ever built this has alsa-lib
+      # already, which is exactly why a bare container had to be the one to say
+      # so.
       - name: Toolchain
-        run: pacman -Syu --noconfirm --needed git rust
+        run: pacman -Syu --noconfirm --needed git rust alsa-lib
 
       - uses: actions/checkout@v4
 

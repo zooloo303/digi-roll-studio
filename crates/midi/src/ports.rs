@@ -222,8 +222,24 @@ mod tests {
 
     // Enumeration must work on a machine with no MIDI hardware at all — CI runs
     // there. An empty list is a valid answer; an error is not.
+    //
+    // "No hardware" and "no MIDI subsystem" are different machines, though, and
+    // ALSA is where they come apart. midir enumerates by opening the sequencer
+    // at /dev/snd/seq, and that node belongs to the `snd-seq` kernel module,
+    // which a GitHub runner has no reason to load — so there, `MidiInput::new`
+    // fails before it can report an empty list. That failure is *correct*, and
+    // the app already treats it as such: `ui::ports` puts the message in the
+    // panel, and "MIDI would not start" sends you to the missing module rather
+    // than to your USB cable. What it is not is testable, so the claim below is
+    // made only where the sequencer exists — which is every machine that could
+    // ever run this app, and not the one that builds it. Found by the first CI
+    // run on Linux, 2026-09-02.
     #[test]
     fn enumerating_ports_never_fails_without_hardware() {
+        if cfg!(target_os = "linux") && !std::path::Path::new("/dev/snd/seq").exists() {
+            eprintln!("skipped: no ALSA sequencer at /dev/snd/seq to enumerate");
+            return;
+        }
         assert!(list_inputs().is_ok());
         assert!(list_outputs().is_ok());
     }
