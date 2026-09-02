@@ -323,14 +323,34 @@ fn picker(
         // dragged to: a fixed width either overflows a narrow panel or leaves a
         // gap in a wide one, and port names are long.
         let width = (ui.available_width() - 4.0).max(90.0);
-        egui::ComboBox::from_id_salt(("device-port", device.0, label))
+        // **`.truncate()`, and this is the line that keeps the panel 320px
+        // wide.** A `ComboBox` in a horizontal layout inherits `Extend`, and
+        // `Extend` lays the closed picker out at the full width of the name it
+        // is showing — `width` is only a *minimum*. On macOS that is invisible:
+        // CoreMIDI calls the socket "Elektron Digitone II" and it fits. ALSA
+        // calls the same socket "Elektron Digitone II:Elektron Digitone II MIDI
+        // 1 28:0", which is ~348px, so the row pushed the Setup panel ~28px
+        // wider than `exact_size` and every heading in it lost its first two
+        // characters under the workspace that egui had already been told to
+        // draw up to the un-grown edge. Reported from an Omarchy desk,
+        // 2026-09-02.
+        let response = egui::ComboBox::from_id_salt(("device-port", device.0, label))
             .selected_text(selected_text(current.as_ref()))
             .width(width)
+            .truncate()
             .show_ui(ui, |ui| {
                 for (port, text) in &choices {
                     ui.selectable_value(&mut chosen, port.clone(), text);
                 }
-            });
+            })
+            .response;
+        // Truncation costs the tail of the name, and on ALSA the tail is the
+        // `client:port` numbers that tell two identically-named sockets apart.
+        // The hover gives them back, so nothing the picker can show is only
+        // available by widening a panel that does not widen.
+        if let Some(port) = &current {
+            response.on_hover_text(&port.name);
+        }
     });
 
     // `set_device_port` is the one that decides whether this is a change at all —
@@ -726,6 +746,48 @@ mod tests {
 
     fn info(id: &str, name: &str) -> PortInfo {
         PortInfo { id: id.into(), name: name.into(), slug: None }
+    }
+
+    /// ALSA names a port with the client name, the port name and the
+    /// `client:port` numbers — "Elektron Digitone II:Elektron Digitone II MIDI
+    /// 1 28:0" — where CoreMIDI names the same socket "Elektron Digitone II".
+    /// A strip that lays itself out to fit that string is wider than the Setup
+    /// panel it lives in, and since the panel is `exact_size` the extra pixels
+    /// are not the panel getting wider: they are the workspace drawn over the
+    /// left edge of every heading in it. Which is what the Linux build looked
+    /// like, and the macOS build never did.
+    #[test]
+    fn the_strip_stays_inside_the_panel_with_a_linux_length_port_name() {
+        const ALSA_IN: &str = "Elektron Digitone II:Elektron Digitone II MIDI 1 28:0";
+        const ALSA_OUT: &str = "Elektron Digitone II:Elektron Digitone II MIDI 1 28:1";
+        // `ui::setup`'s own `Panel::right("setup").exact_size(320.0)`, less the
+        // panel frame's margins — what the strip is actually handed.
+        const PANEL_W: f32 = 320.0;
+
+        let ctx = egui::Context::default();
+        let engine = EngineLink::default();
+        let mut session = digi_core::two_box_session();
+        let dn2 = session.devices[1].id;
+        session.set_device_port(dn2, PortEnd::Input, Some(PortRef { id: "in-1".into(), name: ALSA_IN.into() }));
+        session.set_device_port(dn2, PortEnd::Output, Some(PortRef { id: "out-1".into(), name: ALSA_OUT.into() }));
+        let inputs = [info("in-1", ALSA_IN)];
+        let outputs = [info("out-1", ALSA_OUT)];
+
+        let mut width = 0.0;
+        let mut out = ctx.run_ui(egui::RawInput::default(), |parent| {
+            let rect = egui::Rect::from_min_size(parent.max_rect().min, egui::vec2(PANEL_W, 900.0));
+            parent.scope_builder(egui::UiBuilder::new().max_rect(rect), |ui| {
+                super::ui(ui, &mut session, &engine, &inputs, &outputs);
+                width = ui.min_rect().width();
+            });
+        });
+        out.textures_delta.clear();
+
+        assert!(
+            width <= PANEL_W,
+            "the strip laid itself out {width}px wide inside a {PANEL_W}px panel — \
+             every heading in Setup loses its first characters by that much"
+        );
     }
 
     #[test]
