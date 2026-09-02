@@ -162,7 +162,14 @@ fn tmp_stash(tag: &str) -> Stash {
 /// long, on the grid. The shape most of these tests want, so the four-field
 /// [`A4Step`] does not clutter every one of them.
 fn note(pitch: u8) -> Option<A4Step> {
-    Some(A4Step { note: pitch, velocity: 100, length: 0x0e, micro_timing: 0, condition: None })
+    Some(A4Step {
+        note: pitch,
+        velocity: 100,
+        length: 0x0e,
+        micro_timing: 0,
+        condition: None,
+        arp_notes: [None; 3],
+    })
 }
 
 /// A write of SYN2 (empty in A01): three notes on steps 0, 4 and 63.
@@ -492,11 +499,13 @@ fn two_tracks_go_as_one_slot_write_with_one_backup() {
 /// alone became the lossy choice instead: a condition removed in the roll would
 /// come straight back off the box on the next write.
 ///
-/// The arp note lanes are the case that *did* keep the old answer, and they are
-/// here as the contrast: named, mapped, and still uncarried, because this app's
-/// model has nowhere to put them.
+/// The arp note lanes kept the old answer for a day longer — named, mapped, and
+/// uncarried, because this app's model had nowhere to put them. Since
+/// 2026-09-02 a same-step chord *is* where they go, and they follow the
+/// condition's rule exactly: an authored step writes all three, `FF` for OFF,
+/// and a cleared step keeps what the box had.
 #[test]
-fn a_write_replaces_conditions_and_still_leaves_the_arp_notes_alone() {
+fn a_write_replaces_conditions_and_arp_notes_on_the_steps_it_authors() {
     use digi_protocol::a4_pattern::{set_trig_condition, ARP_NOTE_LANES, CONDITION_LANE};
 
     let mut box_ = FakeA4::new();
@@ -506,7 +515,11 @@ fn a_write_replaces_conditions_and_still_leaves_the_arp_notes_alone() {
     set_trig_condition(slot, 1, 0, Some(0x0b)).unwrap();
     set_trig_condition(slot, 1, 7, Some(0x1f)).unwrap();
     let base = track_base(1);
+    // The box's own offsets: NO2 and NO4 on the authored step, NO2 on the
+    // cleared one.
     slot[base + ARP_NOTE_LANES[0]] = 0x3d;
+    slot[base + ARP_NOTE_LANES[2]] = 0x50;
+    slot[base + ARP_NOTE_LANES[0] + 7] = 0x3d;
 
     let stash = tmp_stash("conditions");
     let mut hooks = Recorder::default();
@@ -518,6 +531,8 @@ fn a_write_replaces_conditions_and_still_leaves_the_arp_notes_alone() {
         micro_timing: 0,
         // 0x16 is FILL.
         condition: Some(0x16),
+        // A minor third and a fifth: NO2 and NO3, and NO4 off.
+        arp_notes: [Some(3), Some(7), None],
     });
     let write = A4TrackWrite { index: 0, track_index: 1, steps, plocks: None };
     a4_safe_write_tracks(&mut box_, &stash, &[write], &mut hooks, NOW).unwrap();
@@ -528,7 +543,10 @@ fn a_write_replaces_conditions_and_still_leaves_the_arp_notes_alone() {
         after[base + CONDITION_LANE + 7], 0x1f,
         "a cleared step keeps its lanes — `clear_trig` touches the trig bytes and nothing else"
     );
-    assert_eq!(after[base + ARP_NOTE_LANES[0]], 0x3d, "the arp note the box had");
+    assert_eq!(after[base + ARP_NOTE_LANES[0]], 0x43, "NO2 is +3 from the 0x40 centre");
+    assert_eq!(after[base + ARP_NOTE_LANES[1]], 0x47, "NO3 is +7");
+    assert_eq!(after[base + ARP_NOTE_LANES[2]], 0xff, "NO4 was not drawn, so the box's 0x50 went");
+    assert_eq!(after[base + ARP_NOTE_LANES[0] + 7], 0x3d, "the cleared step keeps the box's offset");
 }
 
 /// The four fields an `A4Step` carries arrive on the box as the four lanes,
@@ -541,7 +559,14 @@ fn an_authored_trig_lands_in_all_four_lanes() {
     let mut hooks = Recorder::default();
     let mut steps = vec![None; 64];
     steps[3] =
-        Some(A4Step { note: 64, velocity: 1, length: 0x7f, micro_timing: -23, condition: None });
+        Some(A4Step {
+            note: 64,
+            velocity: 1,
+            length: 0x7f,
+            micro_timing: -23,
+            condition: None,
+            arp_notes: [None; 3],
+        });
     let write = A4TrackWrite { index: 0, track_index: 1, steps, plocks: None };
 
     a4_safe_write_tracks(&mut box_, &stash, &[write], &mut hooks, NOW).unwrap();

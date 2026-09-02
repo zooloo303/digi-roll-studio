@@ -421,6 +421,25 @@ impl TransferPanel {
                         report.conditions
                     ));
                 }
+                // The A4's chords: ARP NO2–NO4 offsets, drawn as the upper notes
+                // of a chord. Worth a line because whether they *sound* is the
+                // kit's business — a polyphonic kit with the arp off plays the
+                // chord, a mono kit plays the root alone — and the roll cannot
+                // show that.
+                if report.chord_notes > 0 {
+                    ui.weak(format!(
+                        "{} note(s) came in as ARP NO2–NO4 offsets and are drawn as chords — they \
+                         sound as chords on a polyphonic kit with the arp MOD off",
+                        report.chord_notes
+                    ));
+                }
+                if report.chord_notes_dropped > 0 {
+                    ui.weak(format!(
+                        "{} ARP offset(s) were not drawn — off the keyboard, or doubling a pitch \
+                         the step already holds",
+                        report.chord_notes_dropped
+                    ));
+                }
                 // This one *is* a caution, and it is about the format rather
                 // than the pattern: the menu's length rests on four labels read
                 // off the box, so a byte past its end means the table is short.

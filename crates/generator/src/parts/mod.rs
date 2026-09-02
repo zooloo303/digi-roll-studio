@@ -4,6 +4,7 @@
 // this into pattern state a slot can hold.
 
 pub mod bass;
+pub mod chord_lead;
 pub mod chords;
 pub mod drums;
 pub mod lead;

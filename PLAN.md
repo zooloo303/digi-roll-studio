@@ -576,6 +576,13 @@ The elements:
   response also closes onto a chord tone where the call deliberately steps off
   the root. Avoidance was never enough for this: two parts not colliding is not
   two parts taking turns.
+
+  **Chord lead** (2026-09-02) is a transcription of the Analog Four's factory
+  A01: straight eighths, two pedal tones held per bar while the root leaps
+  octaves under them, the voicing thinning where the root reaches the pedals.
+  Its chords are ordinary same-step notes, which an A4 export carries as the
+  trig's note plus ARP NO2–NO4 offsets — the box's own way of playing a chord on
+  a polyphonic kit with the arp off. §10, "Chords reach the A4".
 - **Transport** — play/stop/continue, tempo, swing, FILL, panic, clock
   master/slave.
 
@@ -1521,6 +1528,12 @@ same day: double-clicking an A4 preset shows the LOAD section explaining that th
 box has no such message. That is decision 4's lesson holding on the exact box
 that taught it, and it was the item on this list with a precedent for going
 wrong.
+
+> **The refusal was the thing that was wrong, 2026-09-01.** The A4 loads from
+> this panel now — see "The A4 loads presets, and struct version 5 is why it
+> looked like it could not" in §10. What this entry got right is that a legible
+> refusal is worth building; what it shows is that a refusal is also a claim,
+> and this one had a three-day life.
 
 What one more session should close, in the order that a wrong answer would
 matter — **none of it touched by the run above**, which exercised the happy path
@@ -3053,6 +3066,7 @@ The map, all checksums and counts verified, every reply saved under
 | `0x66` | `0x56`, 366 B | project settings — 1 per project | |
 | `0x67` | `0x57`, 2,277 B | global — **4 per project**, the box's exact GLOBAL slot count | |
 | `0x68`–`0x6d` | `0x58`–`0x5d` | the same six objects, **current state** | index ignored, echoed as 0 |
+| `0x58` sent | — | **stores the working kit** | verified 2026-09-01; the preset-load path |
 | `0x6e` | silent | — | |
 | `0x6f` | untried | excluded from the sweep; `0x60` already streams the project | |
 
@@ -3355,9 +3369,11 @@ own and no conversion at the boundary. `0x7f` is `INF`, which is why
 held trigs of SYN1, SYN3 and SYN4 and lit in that order. They had been called
 "chord notes 2-4", from the nesting correlation — right about the shape, wrong
 about the field, because the A4 is monophonic per track and its chords come from
-the arpeggiator. The unit is still open: a fresh one takes `0x40` first, which
-reads like the centre of an offset range rather than a note, and no screen was
-read at that moment.
+the arpeggiator. The unit was open for a day: a fresh one takes `0x40` first,
+which reads like the centre of an offset range rather than a note, and no screen
+was read at that moment. **Closed 2026-09-02** — see "Chords reach the A4"
+below: `0x40` is zero semitones, the menu runs -64..+63, and it was the factory
+A01 that fixed it rather than a screen.
 
 **There is no retrig on the A4.** The first guess for the last unnamed lane was
 retrig; the box does not have it, and neither the DT2 nor the DN2 path in this
@@ -4025,6 +4041,169 @@ What is left, and it is not blocking anything:
 - The FX and CV tracks are untouched by all of this: read-only, byte-exact, by
   the decision recorded above.
 
+### The A4 loads presets, and struct version 5 is why it looked like it could not — 2026-09-01, A4 0195
+
+The last thing the digis could do that this box could not, and the last entry in
+the sequence of things "the A4 cannot do" that turned out to be things nobody had
+asked it. `ui::presets` shipped a whole paragraph explaining the refusal — "no
+message that puts a sound on one of its tracks … no cable or OS build changes
+that" — and it was wrong the same way the two before it were: right about the
+*message* it named, wrong about the feature.
+
+**A digi addresses one kit track's sound; this box only addresses a kit.**
+`0x6b`/`0x5b` is a gen-2 pair and the A4's `0x6b` is its working pattern. What it
+has instead was already committed and unmined: a kit dump carries its four synth
+sounds as 350-byte `0xBEEFBABA` containers at a fixed stride (§10, "The A4 reads
+its patch names"), and a +Drive preset file holds the same container. So a load
+is a **read-modify-write**: fetch the working kit with `0x68`, replace 350 of its
+2,410 bytes, send it back as `0x58`.
+
+Three findings on the way, and the middle one is the reason this took a day
+rather than an hour.
+
+**1. The box stores a `0x58` working kit.** `examples/a4_kit_store_probe`, in
+three stages of increasing consequence. A kit sent back unchanged came back
+byte-identical; a sound copied from SYN1 into SYN4 landed **byte for byte** with
+the other three sounds, the kit's name and the FX and CV tracks' 978 bytes
+untouched. The reply opcode doubling as the store opcode was a prediction from
+gen-2 arithmetic; it holds here.
+
+The probe was written only after `a4_kit::build_working_kit` was shown to
+reproduce the box's own `0x58` message **byte for byte** against the committed
+capture. That test is what made sending anything defensible: DEVELOPMENT.md
+lesson 13 is that a body this box cannot parse takes its whole SysEx API down
+until it is power-cycled.
+
+**2. A +Drive preset is struct version 5, a kit slot takes version 6 — and the
+box does not refuse the mismatch.** It stores the kit and replaces that track
+with an **init sound named `SOUND 4`**. First run of the full load reported
+exactly that: `SYN4 reads "SOUND 4" and not "THE SAW"`.
+
+That is the worst failure mode available to this feature, and it is worth being
+precise about why: had the verify compared anything weaker than the *name* — a
+"the store went out" check, a byte count — the load would have reported success
+with the user's sound thrown away. Two readings fitted the evidence and they were
+opposites, so `examples/a4_sound_convert_probe` asked the one question that
+separates them: **load two different presets onto the same slot and compare what
+the box ends up holding.** A conversion leaves two different slots; a refusal
+leaves the same init sound twice. It was 0 of 350 bytes different — a refusal.
+
+**3. The conversion is two bytes, and the box supplied the evidence for it.** The
+A4's project sound pool (`0x63` → `0x53`, 350 B, 128 slots) holds **version-6**
+sounds, and on this box 28 of them share a name with a +Drive file — the same
+sound in both versions, which is the pair needed to see what the conversion is
+without guessing (`examples/a4_sound_pool_probe`). Across all 28:
+
+| | version 5 (file) | version 6 (pool) |
+|---|---|---|
+| version word at `+4` | 5 | 6 |
+| byte `+235` | **184**, every time | **0**, every time |
+| everything else | the sound's own | the sound's own |
+
+**And one pair differs in nothing else at all** — `DUAL OSCS`, where the box's
+own version-6 sound is byte-for-byte the file with those two fields changed. That
+is what makes this a conversion rather than a correlation: a byte belonging to a
+universal rule would have to differ in *that* pair too, and none does. The bytes
+that differ in the other 27 differ because the pool copy was edited — `+126`
+moves in both directions across the set, which no version rule does.
+
+`a4_kit::sound_for_kit` is those two bytes, and the pool probe checks it the only
+way it can be checked: on the unedited pair it must reproduce the box's own
+version-6 bytes exactly. It does.
+
+**Then the load ran.** `THE SAW` off `/soundbanks/A/1` onto SYN4 of a live
+POLYTRON kit, read back twice, then reverted byte for byte from the backup the
+load handed back. The stored kit still held `BRE` throughout, which is the
+recovery story this panel has always told — reloading the pattern discards an
+unsaved kit — witnessed from the protocol side for the first time here, and
+`--restore` puts one slot back from the stored kit without walking to the box.
+
+What shipped with it:
+
+- `protocol::a4_kit`: `sound_slot`, `splice_sound`, `sound_for_kit`,
+  `build_working_kit`. The splice touches exactly its slot's stride and refuses
+  anything that is not 350 bytes with the head magic at one end and the foot
+  magic at the other — plus, since finding 2, anything that is not version 6.
+- `protocol::drive::a4_preset_sound`: the **other cut** of a preset file. The
+  digis' `preset_load_payload` slices the file's whole declared payload because
+  on those boxes that payload *is* a `0x6b` reply; here the declaration says 366
+  and a kit slot takes 350, so the cut is the stride and the **foot magic** is
+  the witness that it came from the right place (`sound::A4_SOUND_MAGIC_FOOT`,
+  recorded as "no foot at all" for two days).
+- `midi::a4_preset_load`: the flow — four round trips, the echo defence over
+  `0x68`/`0x58` that `preset_load` documents for `0x6b`/`0x5b`, and the same
+  `LoadReport` the gen-2 path returns.
+- `core::device::PresetLoad`: the route as a table row. `ui::presets` keyed this
+  off `pattern_route()` and had to be told twice that a load route is its own
+  axis; the field also carries the **slot count**, which is four here against a
+  digi's sixteen, because the FX and CV tracks have no sound to put a preset on.
+
+**Not verified:** nobody has *heard* one. The parameters that land are the file's
+own bytes and the box accepts them as version 6 — and the unedited pair says
+those bytes are what the box itself would have written — but that is an argument
+about bytes, not an ear on a speaker. Also unverified on this route: the
+OS-build gate speaking through it, and a load onto a box whose pattern is playing
+at the time.
+
+### Chords reach the A4, and a Chord lead role — 2026-09-02
+
+**The ask** was a new generator role, "specific to the A4", that captures the
+sound of the box's factory pattern A01 SYN1 — which, Neil pointed out, plays
+chords through the ARP page's NO2/NO3/NO4 on a box whose tracks hold one note
+per step. He expected two tranches: three new p-lock lanes in the roll, then the
+role. The first tranche came out differently, and smaller.
+
+**What A01 SYN1 actually is**, decoded off the fixture already on disk. Thirty-two
+trigs on every odd step, velocity 127 throughout, no conditions, no micro timing,
+lengths of 1.75–1.81 steps under a two-step gap. Only NO2 and NO3 are used, never
+NO4. Under `0x40` as zero semitones the offsets resolve, bar by bar, to **two
+pedal tones at fixed pitches while the root leaps octaves under them**: E6 and C7
+over A4, A5, A6, A4, A5, A6; E6 and B6 over G6, G4, G5, …; E6 and C7 then A6 and
+D6 over D; G6 and C7 over F; A6 and B6 over G. Common tones carry across the bar
+line, and every third trig — where the root reaches the pedals' own register —
+the voicing thins to one pedal. The harmony is A minor, i VII IV VI VII. **No
+other centre than `0x40` makes 57 offsets reconstruct to the same pitches from
+roots an octave apart**, which is how the unit was fixed without a screen; the
+menu's range, -64..+63, Neil read off the box. Two facts from him the same day,
+both required: **the chord needs a polyphonic kit** (a mono kit plays the root
+alone — the kit is called POLYTRON for a reason), and it sounds with the arp MOD
+off.
+
+**Tranche 1 was not three lanes.** This app already models a chord as up to four
+notes on one step — `MAX_CHORD_NOTES` is 4 because both digis hold four notes per
+trig — and root plus NO2, NO3, NO4 is the same four. So `core::a4_transfer` now
+carries a same-step chord as the lowest note plus ascending offsets, and brings
+NO2–NO4 in as the upper notes of a chord on import. Fetching A01 draws 89 notes on
+SYN1 where it drew 32; the "only the lowest goes" warning is gone, replaced by
+two honest ones (a fifth distinct note, a note more than 63 semitones above the
+root). The write puts all three lanes on every authored step, `FF` for OFF, by
+the condition lane's rule: a lane left alone would keep the destination's offset
+and sound a chord nobody drew. Cleared steps keep the box's bytes, as before. The
+roll, chord draw, the Harmony panel and the existing Chords role all reach the A4
+through this with no new UI. What the round trip does not preserve is the box's
+own NO2/NO3 *order* on the two A01 steps that store the higher offset first;
+ascending sounds the same with the arp off.
+
+**Tranche 2 is `parts::chord_lead`**, a transcription rather than a port:
+straight eighths, flat velocity, a length that breathes a quarter step before
+the next trig, two pedals per bar chosen from the chord's tones and its ninth,
+sixth and seventh, voice-led by least movement from the bar before, the root
+cycling three octaves and occasionally leaping a fourth, the voicing thinning at
+the top. One grammar in every genre — it is one pattern's idiom, not a genre's —
+borrowing only the genre's chord p-lock lanes. Named **Chord lead**, Neil's
+choice, and **not gated to the A4**: the notes are ordinary same-step chords, a
+DN2 plays them natively, and Neil's correction stands that a DT2's *sample*
+tracks are monophonic (its NO2–NO4 are a MIDI-track feature) — which is a
+question for `core::export`'s treatment of chords on a DT2, not for this role.
+A01's progression joined the library as `i VII IV VI`.
+
+**Heard, the same day.** Neil ran both tests on the box: A01 fetched, written to
+a spare slot on the POLYTRON kit and played — the chords are the chords — and
+then a generated Chord lead row sent the same way, which he called better than
+expected. Still open: the kit's poly config lives in the unmapped 978-byte tail,
+so the app cannot yet say whether a destination kit will sound the chord or the
+root alone — the import line and the role's docs say so in words instead.
+
 ### 10.5 What saving a kit will cost, when it comes
 
 Recorded now so v2 starts from evidence:
@@ -4074,8 +4253,11 @@ Recorded now so v2 starts from evidence:
    step 4 needs — see §10.2.
 3. ~~Probe `0x5b` as a per-track sound store (§10.4). Decide the load path on
    the result.~~ **Done — positive on a DT2 2026-08-28 and on a DN2 2026-08-29**,
-   see §9 and §10.4. The load path is `0x5b` on both digis, wrapped payload,
-   and the A4 has no `0x6b` to mirror so it has no load path at all.
+   see §9 and §10.4. The load path is `0x5b` on both digis, wrapped payload.
+   ~~The A4 has no `0x6b` to mirror so it has no load path at all.~~ **It has
+   one, 2026-09-01**, by the other route: `0x68` fetches its working kit, one
+   sound is spliced in and `0x58` sends it back. See "The A4 loads presets, and
+   struct version 5 is why it looked like it could not" above.
 4. ~~The tag index: scan, persist, cancel, resume per bank.~~ **Done
    2026-08-29** — `preset_index.rs` persists one file per (device, bank) and
    `preset_scan.rs` fills it, cancellable per slot and resuming from what the
@@ -4173,8 +4355,12 @@ Recorded now so v2 starts from evidence:
 
    **Run on hardware the same day** — a double-click loaded the selected preset
    onto a track of a DT2 (0071) and a DN2 (0050), which is the whole path and not
-   just the `0x5b` under it. The A4 does not load, as designed. §9 has what that
-   run covered and the four refusals it did not.
+   just the `0x5b` under it. ~~The A4 does not load, as designed.~~ **All three
+   boxes load, 2026-09-01**: the A4 by the other route — `0x68` fetch, splice,
+   `0x58` — through the same panel and the same double-click, verified on 0195.
+   §9 has what the digi run covered and the four refusals it did not; §10's "The
+   A4 loads presets" has the A4's, including the init-sound trap that made the
+   first attempt look like a refusal.
 
    Five things the work settled that this section had wrong or open:
 

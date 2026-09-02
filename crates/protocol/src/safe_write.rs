@@ -840,6 +840,15 @@ pub struct A4Step {
     /// condition through a round trip, so "no condition here" is now something
     /// a caller can actually mean rather than something it cannot express.
     pub condition: Option<u8>,
+    /// The ARP menu's NO2/NO3/NO4, in semitones from `note`, `None` for OFF.
+    ///
+    /// **How a chord travels to this box.** A session step holding several
+    /// notes becomes the lowest as `note` and the rest as offsets here, and on a
+    /// polyphonic kit with the arp MOD off the box plays all of them at once —
+    /// the factory A01's own trick. Written explicitly on every authored step,
+    /// `None` as `FF`, so a destination's own offsets cannot sound under a note
+    /// that was drawn alone.
+    pub arp_notes: [Option<i8>; 3],
 }
 
 /// One track's worth of gen-1 write, as `core` describes it.
@@ -847,12 +856,12 @@ pub struct A4Step {
 /// The A4 twin of [`TrackWrite`]. It carries note, velocity, length, micro
 /// timing and trig condition per step — the five lanes hardware named on
 /// 2026-09-01 — and, since the pool writer landed the same day, the track's
-/// p-lock lanes. Not the ARP note lanes, which are named and have no
-/// representation in this app's model; those keep the destination's own bytes.
+/// p-lock lanes. Since 2026-09-02 also the three ARP note lanes, which is how a
+/// chord reaches this box: see [`A4Step::arp_notes`].
 ///
-/// Chords and notes past step 64 were resolved by the caller, whose warnings
-/// ride beside the write — the same split `core::export` makes for a gen-2
-/// track.
+/// Notes past step 64 and chords too wide for the ARP menu were resolved by the
+/// caller, whose warnings ride beside the write — the same split
+/// `core::export` makes for a gen-2 track.
 #[derive(Debug, Clone)]
 pub struct A4TrackWrite {
     /// Destination slot, 0–127 — the box's eight banks of sixteen.
@@ -914,11 +923,10 @@ pub fn a4_safe_write_tracks(
     hooks: &mut impl WriteHooks,
     now: Timestamp,
 ) -> Result<WriteResult, WriteError> {
-use crate::a4_pattern::{
-        clear_trig, read_track_trigs, set_note_trig, set_trig_condition, set_trig_length,
-    set_trig_micro_timing, set_trig_velocity, slot_name, trig_offset, trig_state, TrigState,
-    NUM_STEPS, NUM_TRACKS,
-        PAYLOAD_LEN, SLOT_MARKER,
+    use crate::a4_pattern::{
+        clear_trig, read_track_trigs, set_note_trig, set_trig_arp_notes, set_trig_condition,
+        set_trig_length, set_trig_micro_timing, set_trig_velocity, slot_name, trig_offset,
+        trig_state, TrigState, NUM_STEPS, NUM_TRACKS, PAYLOAD_LEN, SLOT_MARKER,
     };
 
     let gate = write_gate(device.identity());
@@ -1086,6 +1094,11 @@ use crate::a4_pattern::{
                     // be the lossy choice — a condition removed in the roll
                     // would come straight back off the box.
                     set_trig_condition(&mut payload, track, step, trig.condition)
+                        .map_err(WriteError::Encode)?;
+                    // All three, `FF` included, for the reason the condition
+                    // is: a lane left alone here would keep the destination's
+                    // offset and sound a chord under a note drawn alone.
+                    set_trig_arp_notes(&mut payload, track, step, trig.arp_notes)
                         .map_err(WriteError::Encode)?;
                     written += 1;
                 }

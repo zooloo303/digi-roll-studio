@@ -42,6 +42,7 @@ use crate::context::{resolve_context, GenContext, Part, PartId, ResolvedContext}
 use crate::genres::{role_profile, Role};
 use crate::parts::{
     bass::generate_bass,
+    chord_lead::generate_chord_lead,
     chords::generate_chords,
     drums::generate_drums,
     lead::{generate_lead, generate_lead_voice, CallVoice, LeadVoice},
@@ -91,6 +92,7 @@ fn generate_for_role(
     match role {
         Role::Bass => generate_bass(ctx, &profile, octave, density, rng, busy).into(),
         Role::Chords => generate_chords(ctx, &profile, octave, density, rng, busy).into(),
+        Role::ChordLead => generate_chord_lead(ctx, &profile, octave, density, rng, busy).into(),
         Role::Lead => GeneratedPart::from(generate_lead(ctx, &profile, octave, density, rng, busy)).into(),
         // The pair. A call leaves its turns behind for whatever answers it;
         // a response is handed the nearest call above it, or `None` — which

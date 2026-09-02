@@ -88,6 +88,12 @@ impl GenreId {
 pub enum Role {
     Bass,
     Chords,
+    /// A chord part shaped like the Analog Four's factory A01: straight
+    /// eighths, two pedal tones held per bar while the root leaps octaves
+    /// under them. Added 2026-09-02 for the A4, whose ARP NO2/NO3/NO4 carry
+    /// the upper notes — see `parts::chord_lead` — and not gated to it: the
+    /// notes are ordinary same-step chords any polyphonic track can play.
+    ChordLead,
     Lead,
     /// One half of a call-and-response pair — see `parts::lead`'s "Taking
     /// turns". A pair is two ordinary rows, paired by row order the way
@@ -110,9 +116,10 @@ impl Role {
     /// Melodic first, then the drum voices in kit order — which is the order
     /// the panel's role picker draws, so a kick sits next to a snare rather
     /// than next to whatever was added last.
-    pub const ALL: [Self; 14] = [
+    pub const ALL: [Self; 15] = [
         Self::Bass,
         Self::Chords,
+        Self::ChordLead,
         Self::Lead,
         Self::LeadCall,
         Self::LeadResponse,
@@ -132,7 +139,8 @@ impl Role {
     /// whether a part needs an octave and a key at all. A call and a
     /// response are leads, so they are here: both pick a register and both
     /// resolve degrees against the bar's chord.
-    pub const MELODIC: [Self; 5] = [Self::Bass, Self::Chords, Self::Lead, Self::LeadCall, Self::LeadResponse];
+    pub const MELODIC: [Self; 6] =
+        [Self::Bass, Self::Chords, Self::ChordLead, Self::Lead, Self::LeadCall, Self::LeadResponse];
     pub const DRUM_VOICES: [Self; 9] = [
         Self::Kick,
         Self::Snare,
@@ -153,6 +161,7 @@ impl Role {
         match self {
             Self::Bass => "bass",
             Self::Chords => "chords",
+            Self::ChordLead => "chord_lead",
             Self::Lead => "lead",
             Self::LeadCall => "lead_call",
             Self::LeadResponse => "lead_response",
@@ -174,6 +183,7 @@ impl Role {
         match self {
             Self::Bass => "Bass",
             Self::Chords => "Chords",
+            Self::ChordLead => "Chord lead",
             Self::Lead => "Lead",
             Self::LeadCall => "Lead (call)",
             Self::LeadResponse => "Lead (response)",
@@ -364,7 +374,8 @@ pub struct RoleProfile {
     pub velocity: Velocity,
     /// Bass-only: how often an approach tone leans into the next chord.
     pub approach: Option<f64>,
-    /// Bass-only: how often the anchor leaps an octave.
+    /// Bass: how often the anchor leaps an octave. Chord lead: how often the
+    /// root, already at the top of its cycle, leaps one octave further.
     pub octave_leap: Option<f64>,
     /// Chords-only: strum stagger, in fractions of a step.
     pub strum: Option<f64>,
@@ -510,6 +521,26 @@ pub fn role_profile(id: GenreId, role: Role) -> RoleProfile {
         // without it two identical velocity curves alternating read as one
         // lead with holes in it.
         (g, Role::LeadCall) => role_profile(g, Role::Lead),
+        // **The chord lead is one grammar in every genre**, because it is a
+        // transcription of one pattern — the Analog Four's factory A01 — rather
+        // than a genre's idiom: straight eighths, flat velocity, no conditions,
+        // a length that breathes before the next trig. What a genre lends it is
+        // its chord lanes, so a DN2 row still gets a filter to move.
+        (g, Role::ChordLead) => RoleProfile {
+            weights: [1.0, 0.0, 0.9, 0.0, 1.0, 0.0, 0.9, 0.0, 1.0, 0.0, 0.9, 0.0, 1.0, 0.0, 0.9, 0.0],
+            trigs_per_bar: (4, 8),
+            span: 36,
+            anchor_len: None,
+            len: LenProfile::Plain { normal: 1.75, ghost: None, max: 4.0 },
+            velocity: Velocity { accent: 118, normal: 110, ghost: 96 },
+            approach: None,
+            octave_leap: Some(0.12),
+            strum: None,
+            spread: None,
+            motif: None,
+            conditions: &[],
+            lanes: role_profile(g, Role::Chords).lanes,
+        },
         (g, Role::LeadResponse) => {
             let lead = role_profile(g, Role::Lead);
             let softer = |v: u8| v.saturating_sub(6).max(1);

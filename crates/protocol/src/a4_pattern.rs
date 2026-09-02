@@ -66,9 +66,9 @@
 //!   +448   11         per-track defaults: 30 64 0e 00 00 00 10 00 00 00 01
 //!   +459   64         per-step lane, FF-filled when cleared     unnamed
 //!   +523   9          per-track, unnamed: 00 05 02 00 0e 64 40 40 40
-//!   +532   64         one ordered group of three — ARP notes?   unnamed
-//!   +596   64                                                   unnamed
-//!   +660   64                                                   unnamed
+//!   +532   64         ARP NO2, 0x40 + semitones, FF = OFF          hardware
+//!   +596   64         ARP NO3                                      hardware
+//!   +660   64         ARP NO4                                      hardware
 //!   +724   27         per-track tail                            unnamed
 //! ```
 //!
@@ -190,6 +190,38 @@ pub const MICRO_TIMING_LANE: usize = 320;
 pub const CONDITION_LANE: usize = 384;
 /// The ARP menu's NO2/NO3/NO4, one per-step lane each, in menu order.
 pub const ARP_NOTE_LANES: [usize; 3] = [532, 596, 660];
+
+/// The byte an arp note lane holds for an offset of zero semitones. A stored
+/// byte is `0x40 + offset`, so the menu's -64..+63 fills exactly `0x00..=0x7f`
+/// and `FF` stays free to mean OFF.
+///
+/// Fixed by the factory A01 rather than by a screen. SYN1's upper voices
+/// reconstruct to the *same* pitches from roots an octave apart — E6 and C7 over
+/// A4, A5 and A6 in bar 1, E6 and B6 over G4, G5 and G6 in bar 2 — and no other
+/// centre makes 57 offsets do that. The range was read off the box 2026-09-02.
+pub const ARP_NOTE_CENTRE: u8 = 0x40;
+/// The bottom of the NO2/NO3/NO4 menu, in semitones.
+pub const ARP_OFFSET_MIN: i8 = -64;
+/// The top of the NO2/NO3/NO4 menu, in semitones.
+pub const ARP_OFFSET_MAX: i8 = 63;
+
+/// One arp note lane byte as semitones from the trig's note, `None` for `FF`.
+pub fn arp_offset_from_byte(byte: u8) -> Option<i8> {
+    (byte != NO_NOTE).then(|| {
+        (i16::from(byte) - i16::from(ARP_NOTE_CENTRE))
+            .clamp(i16::from(ARP_OFFSET_MIN), i16::from(ARP_OFFSET_MAX)) as i8
+    })
+}
+
+/// The lane byte for an offset, clamped to the menu; `None` is OFF.
+pub fn arp_offset_to_byte(offset: Option<i8>) -> u8 {
+    match offset {
+        None => NO_NOTE,
+        Some(o) => {
+            (i16::from(ARP_NOTE_CENTRE) + i16::from(o.clamp(ARP_OFFSET_MIN, ARP_OFFSET_MAX))) as u8
+        }
+    }
+}
 
 /// The quietest a trig can be, read off the knob at its minimum. **Not zero**:
 /// the box stops at 1, so a velocity of 0 is a value this format cannot hold
@@ -386,8 +418,9 @@ pub const LANES: [Lane; 9] = [
     // monophonic per track and its chords come from the arpeggiator.
     //
     // The first value a fresh one takes is `0x40`, which reads as the centre of
-    // an offset range rather than a note — but no screen was read at that
-    // moment, so the *unit* is unmapped and these stay unresolved values.
+    // an offset range rather than a note. It is: see [`ARP_NOTE_CENTRE`] for
+    // how the factory A01 fixed the unit, and [`Trig::arp_notes`] for what the
+    // three mean on a polyphonic kit with the arp MOD off — a chord.
     Lane { offset: 532, name: "arp note 2", evidence: LaneEvidence::Hardware, cleared: NO_NOTE, default_index: None },
     Lane { offset: 596, name: "arp note 3", evidence: LaneEvidence::Hardware, cleared: NO_NOTE, default_index: None },
     Lane { offset: 660, name: "arp note 4", evidence: LaneEvidence::Hardware, cleared: NO_NOTE, default_index: None },
@@ -576,6 +609,15 @@ pub struct Trig {
     /// of this single byte. **The menu order behind the index is not mapped** —
     /// see [`CONDITION_SEEN_MAX`].
     pub condition: Option<u8>,
+    /// The ARP menu's NO2, NO3 and NO4 on this trig, in semitones from the
+    /// note; `None` where the lane reads `FF`, which the menu shows as OFF.
+    ///
+    /// **On a polyphonic kit with the arp MOD off these sound *with* the note**,
+    /// which is how the factory A01 plays three-note chords on a box whose
+    /// tracks hold one note per step — confirmed on the box 2026-09-02, and the
+    /// poly kit is required: a mono kit plays the note alone. With the arp on
+    /// they are the arpeggio's other notes, in NO2, NO3, NO4 order.
+    pub arp_notes: [Option<i8>; 3],
     /// The two bytes as stored. Kept because the `0xC0` half of byte 1 is
     /// unexplained and a round trip has to reproduce it.
     pub bytes: (u8, u8),
@@ -761,6 +803,7 @@ pub fn read_track_trigs(payload: &[u8], track: usize) -> Result<Vec<Trig>, Strin
                     length: unless_unset(at(LENGTH_LANE)),
                     micro_timing: at(MICRO_TIMING_LANE) as i8,
                     condition: unless_unset(at(CONDITION_LANE)),
+                    arp_notes: ARP_NOTE_LANES.map(|lane| arp_offset_from_byte(at(lane))),
                     bytes: (b0, b1),
                 }
             })
@@ -980,6 +1023,26 @@ pub fn set_trig_condition(
         return Err("FF is the encoding for no condition; pass None".into());
     }
     set_lane_byte(payload, track, step, CONDITION_LANE, condition.unwrap_or(NO_NOTE))
+}
+
+/// Set or clear one step's ARP NO2/NO3/NO4, in place — the three lanes at
+/// once, because they are one ordered group on the box and a caller means the
+/// whole chord. Each offset is clamped to the menu's
+/// [`ARP_OFFSET_MIN`]..=[`ARP_OFFSET_MAX`]; `None` writes `FF`, which is OFF.
+///
+/// All three are written every time, `FF` included: an authored step that left a
+/// lane alone would keep whatever offset the destination had there, and sound a
+/// chord nobody drew.
+pub fn set_trig_arp_notes(
+    payload: &mut [u8],
+    track: usize,
+    step: usize,
+    offsets: [Option<i8>; 3],
+) -> Result<(), String> {
+    for (lane, offset) in ARP_NOTE_LANES.into_iter().zip(offsets) {
+        set_lane_byte(payload, track, step, lane, arp_offset_to_byte(offset))?;
+    }
+    Ok(())
 }
 
 fn set_lane_byte(

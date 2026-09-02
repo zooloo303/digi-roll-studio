@@ -36,6 +36,11 @@ pub const PROGRESSIONS: &[ProgressionEntry] = &[
         note: "rocking minor vamp, stays close to home",
     },
     ProgressionEntry {
+        text: "i VII IV VI",
+        genres: &[Dnb, Breaks, Electro, Techno],
+        note: "Elektron's own — the Analog Four's factory A01 walks Am G D F under a chord lead",
+    },
+    ProgressionEntry {
         text: "i iv VI v",
         genres: &[Breaks, Dnb],
         note: "minor with a real subdominant — more movement, more soul",

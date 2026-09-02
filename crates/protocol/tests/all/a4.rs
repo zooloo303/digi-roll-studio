@@ -195,6 +195,73 @@ fn a01_syn1_is_an_arpeggio_with_a_chord_change() {
     );
 }
 
+/// **What fixed the arp lanes' unit.** Under `0x40` as zero, A01 SYN1's NO2 and
+/// NO3 resolve to the *same two pitches* from roots an octave apart, bar by bar:
+/// E6 and C7 over every A of bar 1, E6 and B6 over every G of bar 2. That is a
+/// musician's voicing — pedal tones held while the root leaps octaves — and no
+/// other centre produces it. NO4 is never used; the third trig of each
+/// three-step cycle, where the root reaches the top octave, keeps one pedal
+/// tone rather than two.
+#[test]
+fn a01_syn1_holds_two_pedal_tones_over_a_root_that_leaps_octaves() {
+    use digi_protocol::a4_pattern::ARP_NOTE_CENTRE;
+    use std::collections::BTreeSet;
+
+    assert_eq!(ARP_NOTE_CENTRE, 0x40);
+    let p = a4_pattern(A01);
+    let trigs = read_track_trigs(&p.payload, 0).unwrap();
+    let sounded = |t: &digi_protocol::a4_pattern::Trig| -> BTreeSet<String> {
+        let root = i16::from(t.note.unwrap());
+        t.arp_notes
+            .iter()
+            .flatten()
+            .map(|o| note_name(u8::try_from(root + i16::from(*o)).unwrap()))
+            .collect()
+    };
+    let bar = |b: usize| trigs.iter().filter(move |t| (t.step - 1) / 16 == b);
+
+    let pedals = |b: usize| -> BTreeSet<String> { bar(b).flat_map(&sounded).collect() };
+    let names = |v: &[&str]| v.iter().map(|s| s.to_string()).collect::<BTreeSet<_>>();
+    assert_eq!(pedals(0), names(&["C7", "E6"]), "Am: E and C held over A4, A5, A6");
+    assert_eq!(pedals(1), names(&["B6", "E6"]), "G6: B and E held over G4, G5, G6");
+    assert_eq!(pedals(3), names(&["A6", "B6", "C7", "G6"]), "F9 then Gadd9, half a bar each");
+
+    assert!(trigs.iter().all(|t| t.arp_notes[2].is_none()), "NO4 is never used");
+    assert!(trigs.iter().all(|t| t.arp_notes[0].is_some()), "every trig has at least NO2");
+    let counts: Vec<usize> = bar(0).map(|t| t.arp_notes.iter().flatten().count()).collect();
+    assert_eq!(counts, [2, 2, 1, 2, 2, 1, 2, 2], "three notes, three, then two");
+}
+
+/// The offset codec, at the centre and both ends of the menu the box showed.
+#[test]
+fn arp_offsets_sit_on_a_0x40_centre_and_clamp_to_the_menu() {
+    use digi_protocol::a4_pattern::{
+        arp_offset_from_byte, arp_offset_to_byte, set_trig_arp_notes, ARP_NOTE_LANES,
+    };
+
+    assert_eq!(arp_offset_from_byte(0x40), Some(0));
+    assert_eq!(arp_offset_from_byte(0x3d), Some(-3));
+    assert_eq!(arp_offset_from_byte(0x00), Some(-64));
+    assert_eq!(arp_offset_from_byte(0x7f), Some(63));
+    assert_eq!(arp_offset_from_byte(NO_NOTE), None);
+    assert_eq!(arp_offset_to_byte(None), NO_NOTE);
+    assert_eq!(arp_offset_to_byte(Some(19)), 0x53);
+    assert_eq!(arp_offset_to_byte(Some(-64)), 0x00);
+    assert_eq!(arp_offset_to_byte(Some(63)), 0x7f);
+    assert_eq!(arp_offset_to_byte(Some(i8::MIN)), 0x00, "clamped, not wrapped");
+    assert_eq!(arp_offset_to_byte(Some(i8::MAX)), 0x7f);
+
+    let mut payload = a4_pattern(CLEAR).payload;
+    set_trig_arp_notes(&mut payload, 2, 4, [Some(4), None, Some(-12)]).unwrap();
+    let base = TRACK_BASE + 2 * TRACK_STRIDE + 4;
+    assert_eq!(payload[base + ARP_NOTE_LANES[0]], 0x44);
+    assert_eq!(payload[base + ARP_NOTE_LANES[1]], NO_NOTE);
+    assert_eq!(payload[base + ARP_NOTE_LANES[2]], 0x34);
+    set_note_trig(&mut payload, 2, 4, Some(60)).unwrap();
+    let trig = read_track_trigs(&payload, 2).unwrap().remove(0);
+    assert_eq!(trig.arp_notes, [Some(4), None, Some(-12)]);
+}
+
 /// The two-byte diff that refuted the model PLAN.md had built off 51 agreeing
 /// trigs in A01. A cleared A16 with one deliberate trigless trig on SYN1 step 1
 /// changed byte 1 to `0x02` — and byte 0 **stayed clear**, where the old model

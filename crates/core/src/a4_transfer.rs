@@ -60,16 +60,22 @@
 //! do is *author* a new lane from a named knob: that needs the id, and the id is
 //! what is missing.
 //!
-//! Not the ARP note lanes, and not the unnamed `+459`; a write leaves the
-//! destination's own bytes there.
+//! **And chords, since 2026-09-02.** An A4 step holds one note, and the A4 is
+//! not polyphonic per track — but its ARP menu's NO2/NO3/NO4 are three per-step
+//! note offsets, and on a polyphonic kit with the arp MOD off the box plays them
+//! *with* the note. That is how the factory A01 sounds three-note chords, and it
+//! is how a same-step chord travels here: the lowest note is the trig, the rest
+//! are offsets from it. Up to four notes, the same ceiling the roll's chord draw
+//! already keeps for the digis; a fifth or a note more than 63 semitones above
+//! the root is past what the menu holds, and the warning says so. The one thing
+//! this cannot promise is the sound: whether the box plays a chord or the root
+//! alone is the kit's poly config, which lives in the kit's unmapped tail.
 //!
-//! An A4 step holds **one note**. A session track can hold a chord, so an
-//! export has to drop notes, and the warning counts the steps that lost
-//! something rather than letting them vanish.
+//! Not the unnamed `+459`; a write leaves the destination's own bytes there.
 
 use digi_protocol::a4_pattern::{
-    effective_length, effective_note, effective_velocity, read_track_trigs, A4Pattern, NUM_STEPS,
-    NUM_TRACKS, PAYLOAD_LEN, TRACK_NAMES,
+    effective_length, effective_note, effective_velocity, read_track_trigs, A4Pattern,
+    ARP_OFFSET_MAX, NUM_STEPS, NUM_TRACKS, PAYLOAD_LEN, TRACK_NAMES,
 };
 use digi_protocol::a4_conditions::{self, A4Cond};
 use digi_protocol::a4_kit::{A4Kit, NUM_SOUNDS};
@@ -106,6 +112,16 @@ pub struct A4ImportReport {
     /// a logic or ratio condition. Not a loss; a count, so the panel can say
     /// the pattern has conditions in it.
     pub conditions: usize,
+    /// Notes that arrived as ARP NO2/NO3/NO4 offsets and were drawn as the
+    /// upper notes of a chord on their trig's step. Included in `notes`. Worth
+    /// saying because they sound only on a polyphonic kit with the arp off, and
+    /// a person hearing a single line from a roll full of chords needs to know
+    /// where to look.
+    pub chord_notes: usize,
+    /// Offsets that could not become a note: off the keyboard once added to the
+    /// root, or landing on a pitch the step already holds. The box would still
+    /// sound the latter as a doubled voice; this model has no doubled voice.
+    pub chord_notes_dropped: usize,
     /// P-lock lanes carried in, across every track. An extension is not counted
     /// separately: it is half of a value, not a lane of automation.
     pub plock_lanes: usize,
@@ -192,6 +208,8 @@ pub fn a4_pattern_to_model(
         trigless_dropped: 0,
         notes_from_track_default: 0,
         conditions: 0,
+        chord_notes: 0,
+        chord_notes_dropped: 0,
         conditions_off_the_menu: 0,
         plock_lanes: 0,
         trigless_plock_lanes: 0,
@@ -244,19 +262,43 @@ pub fn a4_pattern_to_model(
                 .map_err(A4ImportError::BadPayload)?;
             let length = effective_length(&dump.payload, t, trig)
                 .map_err(A4ImportError::BadPayload)?;
-            let mut note = Note::new(
-                // `Trig::step` is one-based, as the box counts; the model is
-                // zero-based, as the roll draws.
-                (trig.step - 1) as f64,
-                pitch,
-                length_byte_to_steps(length),
-                velocity,
-                micro_byte_to_steps(trig.micro_timing as u8),
-            );
-            note.prob = prob;
-            note.fill = fill;
-            note.cond = cond;
-            notes.push(note);
+            let make = |pitch: u8| {
+                let mut note = Note::new(
+                    // `Trig::step` is one-based, as the box counts; the model is
+                    // zero-based, as the roll draws.
+                    (trig.step - 1) as f64,
+                    pitch,
+                    length_byte_to_steps(length),
+                    velocity,
+                    micro_byte_to_steps(trig.micro_timing as u8),
+                );
+                note.prob = prob;
+                note.fill = fill;
+                note.cond = cond.clone();
+                note
+            };
+            notes.push(make(pitch));
+            // NO2/NO3/NO4 become the chord's upper notes, sharing everything
+            // but pitch with the trig — velocity, length, micro timing and the
+            // condition are the trig's on the box, so they are the trig's here.
+            let mut pitches = vec![pitch];
+            for offset in trig.arp_notes.into_iter().flatten() {
+                let sounded = i16::from(pitch) + i16::from(offset);
+                let sounded = match u8::try_from(sounded) {
+                    Ok(p) if p <= 127 => p,
+                    _ => {
+                        report.chord_notes_dropped += 1;
+                        continue;
+                    }
+                };
+                if pitches.contains(&sounded) {
+                    report.chord_notes_dropped += 1;
+                    continue;
+                }
+                pitches.push(sounded);
+                notes.push(make(sounded));
+                report.chord_notes += 1;
+            }
         }
 
         report.notes += notes.len();
@@ -573,10 +615,13 @@ impl std::error::Error for A4ExportError {}
 /// One session track described as an A4 write: 64 steps, each a note or a
 /// clear.
 ///
-/// Pure and payload-free — the module doc has the split. Chords resolve to
-/// their lowest note, because note order in a track is an artefact of editing
-/// history and "the root of the chord" is at least a musical answer a person
-/// can predict. A track with no notes is a valid write that clears the track,
+/// Pure and payload-free — the module doc has the split. A chord goes as its
+/// lowest note plus ARP NO2/NO3/NO4 offsets, ascending — the lowest is the trig
+/// because note order in a track is an artefact of editing history and "the
+/// root of the chord" is at least a musical answer a person can predict, and
+/// the trig's velocity, length and condition are that note's, since taking the
+/// lowest pitch but some other note's velocity would author a trig neither note
+/// describes. A track with no notes is a valid write that clears the track,
 /// exactly as a gen-2 [`crate::export::track_write`] with no notes is.
 pub fn a4_track_write(
     pattern: &Pattern,
@@ -594,13 +639,9 @@ pub fn a4_track_write(
         .filter(|i| usize::from(*i) < A4.wire_slots)
         .ok_or(A4ExportError::NotOnTheWire(into))?;
 
-    let mut steps: Vec<Option<A4Step>> = vec![None; NUM_STEPS];
-    let mut per_step = vec![0usize; NUM_STEPS];
+    let mut per_step: Vec<Vec<&Note>> = vec![Vec::new(); NUM_STEPS];
     let mut past_end = 0usize;
     let mut off_grid = 0usize;
-    let mut rounded_prob = 0usize;
-    let mut crowded = 0usize;
-    let mut dropped_conds: Vec<String> = Vec::new();
     for note in &track.notes {
         let step = note.step.round();
         if !(0.0..NUM_STEPS as f64).contains(&step) {
@@ -610,45 +651,75 @@ pub fn a4_track_write(
         if step != note.step {
             off_grid += 1;
         }
-        let step = step as usize;
-        per_step[step] += 1;
+        per_step[step as usize].push(note);
+    }
+
+    let mut steps: Vec<Option<A4Step>> = vec![None; NUM_STEPS];
+    let mut rounded_prob = 0usize;
+    let mut crowded = 0usize;
+    let mut dropped_conds: Vec<String> = Vec::new();
+    let mut over_four = 0usize;
+    let mut out_of_reach = 0usize;
+    for (step, notes) in per_step.iter_mut().enumerate() {
+        if notes.is_empty() {
+            continue;
+        }
+        // Lowest first, one of each pitch: the box has no doubled voice, and a
+        // step holding the same pitch twice is an editing accident, not a chord.
+        notes.sort_by_key(|n| n.pitch);
+        notes.dedup_by_key(|n| n.pitch);
+        let root = notes[0];
         // The gen-2 codecs, because the A4 shares the encodings — the same
-        // functions `core::export` hands a Digitakt II note to.
-        let (condition, loss) = a4_condition_for(note);
+        // functions `core::export` hands a Digitakt II note to. The condition
+        // is the root's; notes on one step agree on it in this model, so reading
+        // it once is reading it for the chord.
+        let (condition, loss) = a4_condition_for(root);
         match loss {
             Some(ConditionLoss::Rounded) => rounded_prob += 1,
             Some(ConditionLoss::NoEquivalent(key)) => dropped_conds.push(key),
             Some(ConditionLoss::OnlyOneFits) => crowded += 1,
             None => {}
         }
-        let authored = A4Step {
-            note: note.pitch,
-            velocity: note.velocity,
-            length: steps_to_length_byte(note.len),
-            micro_timing: micro_steps_to_byte(note.micro) as i8,
+        // The upper notes as NO2/NO3/NO4, ascending. The root is the lowest, so
+        // an offset is never negative and the only edge is the menu's top.
+        let mut arp_notes = [None; 3];
+        let mut filled = 0usize;
+        for upper in &notes[1..] {
+            let offset = upper.pitch - root.pitch;
+            if offset > ARP_OFFSET_MAX as u8 {
+                out_of_reach += 1;
+                continue;
+            }
+            if filled == arp_notes.len() {
+                over_four += 1;
+                continue;
+            }
+            arp_notes[filled] = Some(offset as i8);
+            filled += 1;
+        }
+        steps[step] = Some(A4Step {
+            note: root.pitch,
+            velocity: root.velocity,
+            length: steps_to_length_byte(root.len),
+            micro_timing: micro_steps_to_byte(root.micro) as i8,
             condition,
-        };
-        // Chords resolve to the lowest note, and the *whole* trig is that
-        // note's: taking the lowest pitch but some other note's velocity would
-        // author a trig neither note describes.
-        steps[step] = Some(match steps[step] {
-            None => authored,
-            Some(existing) if authored.note < existing.note => authored,
-            Some(existing) => existing,
+            arp_notes,
         });
     }
 
     let mut warnings = Vec::new();
-    // Counted per *step*, not per surplus note: two chords of three notes is
-    // two steps that lost something, which is what a person is looking at on
-    // the box.
-    let chord_steps = per_step.iter().filter(|&&n| n > 1).count();
-    if chord_steps > 0 {
+    if over_four > 0 {
         warnings.push(format!(
-            "{chord_steps} step{} hold{} a chord and an A4 step plays one note — only the \
-             lowest goes",
-            if chord_steps == 1 { "" } else { "s" },
-            if chord_steps == 1 { "s" } else { "" },
+            "{over_four} note{} sat fifth or higher in a chord — the A4 plays a note plus \
+             NO2–NO4, four at most, so the highest did not go",
+            if over_four == 1 { "" } else { "s" },
+        ));
+    }
+    if out_of_reach > 0 {
+        warnings.push(format!(
+            "{out_of_reach} note{} sat more than 63 semitones above the chord's root, past \
+             what NO2–NO4 can reach — not sent",
+            if out_of_reach == 1 { "" } else { "s" },
         ));
     }
     if past_end > 0 {
@@ -869,11 +940,16 @@ mod tests {
     fn a01_imports_the_trigs_the_box_shows_and_not_the_residue() {
         let (pattern, report) = a4_pattern_to_model(&A4, &a01()).unwrap();
         // The counts the front panel shows, and the ones two earlier trig models
-        // got wrong: SYN1 32, SYN4 4, nothing else.
-        assert_eq!(pattern.track(0).unwrap().notes.len(), 32, "SYN1");
+        // got wrong: SYN1 32 trigs, SYN4 4, nothing else. SYN1's 32 trigs carry
+        // 57 NO2/NO3 offsets between them, so the roll draws 89 notes there.
+        let syn1 = pattern.track(0).unwrap();
+        assert_eq!(syn1.notes.iter().filter(|n| n.step as usize % 2 == 0).count(), 89, "SYN1");
+        assert_eq!(syn1.notes.len(), 89, "SYN1");
         assert_eq!(pattern.track(3).unwrap().notes.len(), 4, "SYN4");
         assert_eq!(pattern.track(1).unwrap().notes.len(), 0, "SYN2");
-        assert_eq!(report.notes, 36);
+        assert_eq!(report.notes, 93);
+        assert_eq!(report.chord_notes, 57);
+        assert_eq!(report.chord_notes_dropped, 0);
         assert_eq!(report.tracks_with_notes, 2);
     }
 
@@ -899,7 +975,11 @@ mod tests {
         // shorter ones really are shorter — a sixteenth of a step shorter,
         // which is the resolution the curve has up there and exactly what a
         // played-in phrase looks like.
-        let lengths: Vec<f64> = syn1.notes.iter().map(|n| n.len).collect();
+        // One length per trig: a chord's upper notes share their trig's.
+        let mut seen = std::collections::HashSet::new();
+        let lengths: Vec<f64> =
+            syn1.notes.iter().filter(|n| seen.insert(n.step as usize)).map(|n| n.len).collect();
+        assert_eq!(lengths.len(), 32);
         assert_eq!(lengths.iter().filter(|&&l| l == 1.8125).count(), 25);
         assert_eq!(lengths.iter().filter(|&&l| l == 1.75).count(), 7);
 
@@ -1037,7 +1117,7 @@ mod tests {
         let t = s.device(id).unwrap().pattern(slot.slot()).unwrap().track(0).unwrap();
         assert_eq!(t.channel, 9, "an import must not re-route a working desk");
         assert!(t.mute);
-        assert_eq!(t.notes.len(), 32, "and must still have imported");
+        assert_eq!(t.notes.len(), 89, "and must still have imported — 32 trigs, 57 arp notes");
     }
 
     // --- the write plan --------------------------------------------------------
@@ -1075,8 +1155,11 @@ mod tests {
         assert!(export.write.steps.iter().all(|s| s.is_none()), "SYN2 is empty in A01");
     }
 
+    /// A chord is the lowest note as the trig and the rest as NO2/NO3/NO4,
+    /// ascending — whatever order the notes were drawn in — and it is not a
+    /// loss any more, so there is nothing to warn about.
     #[test]
-    fn a_chord_resolves_to_its_root_and_the_warning_counts_steps_not_notes() {
+    fn a_chord_goes_as_its_root_plus_arp_offsets_in_ascending_order() {
         let (mut s, id) = imported();
         {
             let d = s.device_mut(id).unwrap();
@@ -1084,15 +1167,69 @@ mod tests {
             for pitch in [64, 60, 67] {
                 t.notes.push(Note::new(0.0, pitch, 1.0, 100, 0.0));
             }
+            // A doubled pitch is an editing accident, not a fourth voice.
+            t.notes.push(Note::new(0.0, 64, 1.0, 100, 0.0));
         }
         let export = s.a4_track_write(id, PatternRef::new(0, 0), 1, PatternRef::new(0, 0)).unwrap();
-        assert_eq!(
-            export.write.steps[0].map(|s| s.note),
-            Some(60),
-            "the root survives, whatever the edit order"
-        );
-        assert_eq!(export.warnings.len(), 1);
-        assert!(export.warnings[0].contains("1 step holds a chord"), "{}", export.warnings[0]);
+        let step = export.write.steps[0].expect("a trig on step 1");
+        assert_eq!(step.note, 60, "the root survives, whatever the edit order");
+        assert_eq!(step.arp_notes, [Some(4), Some(7), None]);
+        assert!(export.warnings.is_empty(), "{:?}", export.warnings);
+    }
+
+    /// The menu's two edges: a fifth distinct note has no lane, and a note more
+    /// than 63 semitones over the root is past the top of NO2–NO4. Both are
+    /// said, neither is silently folded into range.
+    #[test]
+    fn a_fifth_note_and_a_note_past_the_menus_reach_are_warned_about() {
+        let (mut s, id) = imported();
+        {
+            let d = s.device_mut(id).unwrap();
+            let t = d.pattern_mut(0).unwrap().track_mut(1).unwrap();
+            for pitch in [36, 40, 43, 47, 50] {
+                t.notes.push(Note::new(0.0, pitch, 1.0, 100, 0.0));
+            }
+            t.notes.push(Note::new(2.0, 24, 1.0, 100, 0.0));
+            t.notes.push(Note::new(2.0, 100, 1.0, 100, 0.0));
+        }
+        let export = s.a4_track_write(id, PatternRef::new(0, 0), 1, PatternRef::new(0, 0)).unwrap();
+        assert_eq!(export.write.steps[0].unwrap().arp_notes, [Some(4), Some(7), Some(11)]);
+        assert_eq!(export.write.steps[2].unwrap().arp_notes, [None; 3]);
+        assert_eq!(export.warnings.len(), 2, "{:?}", export.warnings);
+        assert!(export.warnings[0].contains("1 note sat fifth"), "{}", export.warnings[0]);
+        assert!(export.warnings[1].contains("63 semitones"), "{}", export.warnings[1]);
+    }
+
+    /// The factory A01's SYN1 comes in as the chords it plays — A4 with E6 and
+    /// C7 over it on step 1 — and goes back out as the same offsets. What does
+    /// not survive is the box's own NO2/NO3 order on the steps where it stored
+    /// the higher offset first; the write is ascending, which sounds the same
+    /// with the arp off and differs only if someone turns it on.
+    #[test]
+    fn a01_syn1_imports_as_chords_and_exports_as_the_same_offsets() {
+        let (s, id) = imported();
+        let step_one: Vec<u8> = {
+            let d = s.device(id).unwrap();
+            let t = d.pattern(0).unwrap().track(0).unwrap();
+            let mut p: Vec<u8> = t.notes.iter().filter(|n| n.step == 0.0).map(|n| n.pitch).collect();
+            p.sort_unstable();
+            p
+        };
+        // The box labels these A4, E6 and C7 (`a4_pattern::note_name`, which
+        // counts C5 as 60); the model holds the bytes.
+        assert_eq!(step_one, [57, 76, 84], "A4 E6 C7 in the box's own labelling");
+
+        let export = s.a4_track_write(id, PatternRef::new(0, 0), 0, PatternRef::new(0, 0)).unwrap();
+        let first = export.write.steps[0].unwrap();
+        assert_eq!((first.note, first.arp_notes), (57, [Some(19), Some(27), None]));
+        // Step 7 is stored on the box as +27 then +19; this writes it ascending.
+        let seventh = export.write.steps[6].unwrap();
+        assert_eq!((seventh.note, seventh.arp_notes), (57, [Some(19), Some(27), None]));
+        assert!(export.warnings.is_empty(), "{:?}", export.warnings);
+        // Every trig on SYN1 has at least one offset in A01, none has three.
+        let authored: Vec<A4Step> = export.write.steps.iter().flatten().copied().collect();
+        assert_eq!(authored.len(), 32);
+        assert!(authored.iter().all(|s| s.arp_notes[0].is_some() && s.arp_notes[2].is_none()));
     }
 
     #[test]

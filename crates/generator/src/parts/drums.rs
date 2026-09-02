@@ -394,6 +394,10 @@ mod tests {
                     let notes: Vec<NoteSpec> = match role {
                         Role::Bass => generate_bass(&ctx, &profile, 2, 100, &mut rng_for(seed, "sprinkle-mel"), &HashSet::new()).notes,
                         Role::Chords => generate_chords(&ctx, &profile, 2, 100, &mut rng_for(seed, "sprinkle-mel"), &HashSet::new()).notes,
+                        // Deliberately lock-free — a transcription of A01,
+                        // which has none — so it has no sprinkle to compare
+                        // and would only dilute the melodic rate here.
+                        Role::ChordLead => continue,
                         // The three lead voices share one generator; which
                         // turn each plays in is `LeadVoice`'s business, and
                         // the lock rate this test measures is the same for
@@ -401,7 +405,7 @@ mod tests {
                         Role::Lead | Role::LeadCall | Role::LeadResponse => {
                             generate_lead(&ctx, &profile, 2, 100, &mut rng_for(seed, "sprinkle-mel"), &HashSet::new()).notes
                         }
-                        _ => unreachable!("Role::MELODIC only ever yields the bass, the chords and the leads"),
+                        _ => unreachable!("Role::MELODIC only ever yields the bass, the two chord roles and the leads"),
                     };
                     melodic_trigs += notes.len();
                     melodic_locks += locks(&notes);
