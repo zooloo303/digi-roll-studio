@@ -1,15 +1,24 @@
 # Packaging
 
-Two downloads, built two different ways, named so the install page can find
+Four downloads, built four different ways, named so the install page can find
 them.
 
 | Platform | Artefact | Built by | Runs where |
 |---|---|---|---|
 | macOS, Apple Silicon | `Digi-Roll-Studio-<version>-macOS-AppleSilicon.dmg` | `macos/build-dmg.sh` | any arm64 Mac |
 | Windows x64 | `Digi-Roll-Studio-<version>-Windows-x64-Setup.exe` | `windows/build-installer.ps1` | Windows only |
+| Linux x86_64 | `Digi-Roll-Studio-<version>-Linux-x86_64.tar.gz` | `linux/build-tarball.sh` | glibc 2.35+ (Debian 12, Ubuntu 22.04, Fedora 36) |
+| Arch x86_64 | `digi-roll-studio-<version>-1-x86_64.pkg.tar.zst` | `linux/build-pkg.sh` | Arch and derivatives |
 
-Both land in `dist/`, which is gitignored. `.github/workflows/release.yml` runs
-both on a `v*` tag and hangs the results off a **draft** release.
+All four land in `dist/`, which is gitignored. `.github/workflows/release.yml`
+runs all four on a `v*` tag and hangs the results off a **draft** release.
+
+**Why Linux is two downloads.** The tarball runs anywhere and can only *describe*
+what it needs at runtime; the Arch package declares it, so `pacman -U` refuses
+to install onto a machine that would then crash inside `dlopen`. Where pacman is
+what you have, the package is the better install — and it is the one Linux
+install this app has actually been run from. Neither is a different build: same
+commit, same `cargo build --release`, different wrapper.
 
 ## The asset names are load-bearing
 
@@ -20,6 +29,19 @@ asset *name*:
 { el: 'dl-mac', test: n => /\.(dmg)$/.test(n) || (/\.(zip|tar\.gz)$/.test(n) && /(mac|osx|darwin|apple|aarch64|arm64|universal)/.test(n)) }
 { el: 'dl-win', test: n => /\.(exe|msi)$/.test(n) || (/\.zip$/.test(n) && /(win|windows|x86_64-pc|x64)/.test(n)) }
 ```
+
+**Linux has no button yet.** The page predates the Linux build, so its two
+assets are only reachable from the release's file list. The matcher the page
+needs, written to sit *after* the macOS one so the `.tar.gz` alternative there
+gets first refusal on a Mac-named archive:
+
+```js
+{ el: 'dl-linux', test: n => /\.pkg\.tar\.zst$/.test(n) || (/\.tar\.gz$/.test(n) && /linux/i.test(n)) }
+```
+
+Which is also why `build-tarball.sh` names its output `-Linux-x86_64`: the
+macOS matcher takes any `.tar.gz` whose name says mac, darwin, apple, arm64 or
+universal, and a Linux asset must not be able to answer to that.
 
 A name that stops matching does not break the page — the buttons keep their
 hardcoded fallback of `/releases/latest`, so people land on a file list and have
@@ -73,6 +95,28 @@ prompt. An unsigned installer asking for admin gets the red *unknown publisher*
 dialog, which would stack a second scary prompt on top of the SmartScreen
 warning the page already walks people through.
 
+## Linux: what the tarball has to say that a package does not
+
+Only `libasound` is linked. Everything else — Wayland, X11, xkbcommon, Vulkan,
+EGL, D-Bus — is `dlopen`'d at runtime by eframe and wgpu, which means:
+
+- `ldd` on the binary lists four libraries and tells you nothing about what it
+  actually needs. `build-tarball.sh` runs it anyway, as a check that this is
+  still true rather than as a dependency list.
+- A machine missing one gets no link error and no useful message. It gets the
+  app quitting inside `dlopen` at launch, which reads as a broken download.
+
+The Arch package solves this by declaring all of them in `depends` — the
+PKGBUILD's header lists where each SONAME came from. The tarball cannot, so it
+carries an `INSTALL.md` naming them per distro, and an `install.sh` that puts
+the binary, the icon and the desktop entry under `~/.local` without root.
+
+`install.sh` rewrites the entry's `Exec=` to an absolute path. The committed
+`.desktop` says `Exec=digi_roll_studio`, which is right for the package's
+`/usr/bin` and wrong for `~/.local/bin`: a session's launcher does not reliably
+have that directory on `$PATH`, and a menu entry that silently does nothing is
+worse than no menu entry.
+
 ## Regenerating the icons
 
 Both platforms build their icon from the committed PNGs in `icons/`, so the art
@@ -100,15 +144,15 @@ has one home.
 #    another.
 git tag v0.1.0
 git push origin v0.1.0
-# 3. The workflow tests, builds both, and drafts a release.
-# 4. Open the draft, check both assets are there, Publish.
+# 3. The workflow tests, builds all four, and drafts a release.
+# 4. Open the draft, check all four assets are there, Publish.
 ```
 
 Publishing is the step that changes the site: the page reads
 `/releases/latest`, which ignores drafts.
 
 To rehearse without spending a tag, run the workflow manually — it builds and
-uploads both artefacts and stops before the release.
+uploads all four artefacts and stops before the release.
 
 ## Building either one by hand
 
@@ -121,6 +165,18 @@ packaging/macos/build-dmg.sh --no-build   # reuse the existing release binary
 packaging\windows\build-installer.ps1     # needs Windows + Inno Setup 6.3+
 packaging\windows\build-installer.ps1 -NoBuild
 ```
+
+```sh
+packaging/linux/build-tarball.sh          # needs Linux + libasound2-dev
+packaging/linux/build-tarball.sh --no-build
+packaging/linux/build-pkg.sh              # needs Arch: makepkg, base-devel
+```
+
+`build-pkg.sh` stamps the PKGBUILD's `pkgver` from `Cargo.toml` and its
+`sha256sums` from the tarball it just made, so neither can drift from the
+version being built. It passes `--nodeps` because the toolchain on a dev
+machine is rustup's, not pacman's `rust`; the runtime `depends` are still
+declared and still checked by `pacman -U` at install.
 
 There is deliberately no mingw cross-compile from macOS to Windows: it would
 mean a toolchain on every dev machine, and `build.rs` skips the resource

@@ -5,6 +5,13 @@
 # packaging/ and attached to the GitHub release, never committed.
 /dist/
 
+# packaging/linux — makepkg's working directories and its output; the .desktop
+# file and PKGBUILD are the committed build inputs.
+/packaging/linux/src/
+/packaging/linux/pkg/
+/packaging/linux/*.pkg.tar.zst
+/packaging/linux/*.tar.gz
+
 # OS
 .DS_Store
 

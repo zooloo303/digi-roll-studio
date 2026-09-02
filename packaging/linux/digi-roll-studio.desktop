@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=Digi-Roll Studio
+Comment=Native Rust desktop sequencer for the Elektron Digitakt II, Digitone II and Analog Four
+Exec=digi_roll_studio
+Icon=digi-roll-studio
+Terminal=false
+Categories=AudioVideo;Audio;Music;Sequencer;
