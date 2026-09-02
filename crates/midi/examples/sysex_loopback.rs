@@ -9,6 +9,11 @@
 // different problems with no overlap in what you do next. A loopback separates
 // them without a capture, a click or a power cycle.
 //
+// Unix only. The virtual destination comes from `midir`'s ALSA/CoreMIDI-only
+// `VirtualInput`; Windows MME has no equivalent, so there is nothing to gate on
+// but the target. It is compiled away there rather than left to break the
+// workspace build, because `cargo test --workspace` builds examples too.
+//
 //   cargo run -p digi_midi --example sysex_loopback
 //       Sweeps sizes from 16 bytes to 32 KiB and reports the largest that
 //       arrives byte-exact.
@@ -23,18 +28,26 @@
 //       *data* byte, and a packet with no status byte is exactly the kind of
 //       thing a MIDI stack is entitled to drop.
 
+#[cfg(unix)]
 use std::sync::{Arc, Mutex};
+#[cfg(unix)]
 use std::time::Duration;
 
+#[cfg(unix)]
 use digi_midi::sysex_stream::SysExReassembler;
+#[cfg(unix)]
 use midir::os::unix::VirtualInput;
+#[cfg(unix)]
 use midir::{Ignore, MidiInput, MidiOutput};
 
+#[cfg(unix)]
 const PORT: &str = "digi-roll-loopback";
 /// How long to wait for a message to come back. A long SysEx is delivered over
 /// several driver callbacks, so this is generous on purpose.
+#[cfg(unix)]
 const SETTLE: Duration = Duration::from_millis(600);
 
+#[cfg(unix)]
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let arg = args.iter().find(|a| !a.starts_with("--")).cloned();
@@ -139,4 +152,9 @@ fn main() {
             println!("\nlargest size that survived: {largest} bytes");
         }
     }
+}
+
+#[cfg(not(unix))]
+fn main() {
+    eprintln!("sysex_loopback needs a virtual MIDI destination, which exists only on ALSA and CoreMIDI.");
 }
