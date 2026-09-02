@@ -571,7 +571,33 @@ pub fn send_pattern(
     pacing: Pacing,
     consent: Consent,
     cancel: &AtomicBool,
+    on_progress: impl FnMut(SendProgress),
+) -> Result<SendReport, SendError> {
+    send_pattern_with(sink, wire, pacing, consent, cancel, on_progress, CAN_PACE)
+}
+
+/// The body of [`send_pattern`], with the platform rule as an argument.
+///
+/// **`can_pace` is a parameter rather than a read of [`CAN_PACE`] so that both
+/// platforms' rules can be tested on either platform**, for the same reason
+/// `device::paced_send` takes its chunk size as one. Without this seam the
+/// multi-packet failure modes below — a cancel between packets, a wire error on
+/// packet 2 — are unreachable on Windows, where [`CAN_PACE`] is false and every
+/// frame goes out as a single packet. They were not merely untested there: they
+/// asserted the opposite of what happens, and failed the release build twice.
+///
+/// This is private, so the invariant [`send_pattern`] documents still holds for
+/// every real caller: none of them can construct a pacing this platform will
+/// refuse mid-frame.
+#[allow(clippy::too_many_arguments)]
+fn send_pattern_with(
+    sink: &mut impl A4Sink,
+    wire: &[u8],
+    pacing: Pacing,
+    consent: Consent,
+    cancel: &AtomicBool,
     mut on_progress: impl FnMut(SendProgress),
+    can_pace: bool,
 ) -> Result<SendReport, SendError> {
     let parsed = verify_before_send(wire).map_err(SendError::NotSendable)?;
     if parsed.slot != consent.slot() {
@@ -583,7 +609,7 @@ pub fn send_pattern(
 
     // Resolved here rather than at the call site so no caller can construct a
     // pacing this platform will refuse mid-frame.
-    let pacing = pacing.resolve(CAN_PACE);
+    let pacing = pacing.resolve(can_pace);
     let packets_total = pacing.packets(wire.len());
     let chunk = if pacing.chunk == 0 { wire.len().max(1) } else { pacing.chunk };
     let mut elapsed = Duration::ZERO;
@@ -948,16 +974,30 @@ mod tests {
         assert!(err.contains("truncated"), "{err}");
     }
 
+    // The four tests below pass `can_pace` explicitly rather than letting
+    // `send_pattern` read `CAN_PACE`. Following the platform constant is what
+    // made the first two assert the opposite of the truth on Windows, where a
+    // frame is never split and there is no packet 2 to drop and no gap between
+    // packets to cancel in. Both rules now run on both platforms.
+
     #[test]
     fn a_cancelled_send_says_the_box_holds_half_a_message() {
         let wire = a4_frame(0);
         let cancel = AtomicBool::new(false);
         let mut sink = FakeSink::default();
-        let err = send_pattern(&mut sink, &wire, Pacing::din(), Consent::given_for(0), &cancel, |p| {
-            if p.packets_sent == 3 {
-                cancel.store(true, Ordering::Relaxed);
-            }
-        })
+        let err = send_pattern_with(
+            &mut sink,
+            &wire,
+            Pacing::din(),
+            Consent::given_for(0),
+            &cancel,
+            |p| {
+                if p.packets_sent == 3 {
+                    cancel.store(true, Ordering::Relaxed);
+                }
+            },
+            true,
+        )
         .expect_err("cancelling mid-frame is a failure, not a tidy stop");
         assert!(matches!(err, SendError::Cancelled { packets_sent: 3, .. }));
         assert!(err.to_string().contains("power-cycled"));
@@ -967,16 +1007,57 @@ mod tests {
     fn a_wire_failure_names_the_packet_and_the_recovery() {
         let wire = a4_frame(0);
         let mut sink = FakeSink { fail_on: Some(2), ..Default::default() };
-        let err = send_pattern(
+        let err = send_pattern_with(
             &mut sink,
             &wire,
             Pacing::din(),
             Consent::given_for(0),
             &AtomicBool::new(false),
             |_| {},
+            true,
         )
         .expect_err("a dropped packet is not a partial success");
         assert!(matches!(err, SendError::Wire { packet: 2, .. }));
         assert!(err.to_string().contains("power-cycled"));
+    }
+
+    #[test]
+    fn an_unpaced_wire_failure_still_names_a_packet_and_the_recovery() {
+        // Windows' rule: one packet, so the only packet that can fail is the
+        // first, and its failure is the whole write failing.
+        let wire = a4_frame(0);
+        let mut sink = FakeSink { fail_on: Some(1), ..Default::default() };
+        let err = send_pattern_with(
+            &mut sink,
+            &wire,
+            Pacing::din(),
+            Consent::given_for(0),
+            &AtomicBool::new(false),
+            |_| {},
+            false,
+        )
+        .expect_err("a refused single packet is not a partial success either");
+        assert!(matches!(err, SendError::Wire { packet: 1, packets_total: 1, .. }), "{err:?}");
+        assert!(err.to_string().contains("power-cycled"));
+    }
+
+    #[test]
+    fn an_unpaced_send_cancelled_before_it_starts_sends_nothing() {
+        // The one cancel an unpaced send can honour: there is no gap between
+        // packets, so a mind changed after the call is a mind changed too late.
+        let wire = a4_frame(0);
+        let mut sink = FakeSink::default();
+        let err = send_pattern_with(
+            &mut sink,
+            &wire,
+            Pacing::din(),
+            Consent::given_for(0),
+            &AtomicBool::new(true),
+            |_| {},
+            false,
+        )
+        .expect_err("a cancel already set before the first packet stops the send");
+        assert!(matches!(err, SendError::Cancelled { packets_sent: 0, packets_total: 1 }), "{err:?}");
+        assert!(sink.packets.is_empty(), "nothing should have reached the box");
     }
 }
