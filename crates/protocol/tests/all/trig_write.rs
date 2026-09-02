@@ -294,7 +294,7 @@ fn a_write_to_one_track_scrubs_no_further_than_that_track() {
 // --- the apply functions on their own ------------------------------------------
 //
 // The write-half cases of `test/conditions.test.js`, ported here rather than
-// into tests/trig_cond.rs so that file stays the read half's. These pin the
+// into tests/all/trig_cond.rs so that file stays the read half's. These pin the
 // appliers alone, without an encode in front of them.
 
 #[test]

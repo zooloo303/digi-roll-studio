@@ -1,7 +1,7 @@
 //! The Harmony panel's decisions, driven without a window — and the two claims
 //! that only exist once a panel, a roll and a session are in the same room.
 //!
-//! `core`'s `tests/chords.rs` owns the pitch math and what `harmonise` does to a
+//! `core`'s `tests/all/chords.rs` owns the pitch math and what `harmonise` does to a
 //! note array. What is here is everything that needs the app:
 //!
 //!   * the harmonise button aiming at the *selected* track of the *selected* box,

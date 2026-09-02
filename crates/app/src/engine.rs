@@ -7,7 +7,7 @@
 // is editing into the `Arc` snapshot the engine reads. That is this file.
 //
 // No egui here. The decisions are testable without a window (see
-// `tests/engine_link.rs`) and the widget in `ui::transport` is only buttons.
+// `tests/all/engine_link.rs`) and the widget in `ui::transport` is only buttons.
 
 use crate::plocks::CuratedPLocks;
 use std::sync::Arc;

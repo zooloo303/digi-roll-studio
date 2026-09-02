@@ -89,7 +89,7 @@ pub struct CopyResult {
     pub notes: Vec<(Note, TrigSetting)>,
     /// Notes [`encode_track_notes`] itself could not place.
     ///
-    /// **Provably 0 today, and no test in `tests/copy_track.rs` can witness a bug
+    /// **Provably 0 today, and no test in `tests/all/copy_track.rs` can witness a bug
     /// that forces it to 0** — said plainly because a deliberate-bug pass planted
     /// exactly that and the suite stayed green. Truncation runs first, with the
     /// target's own `trig.max_notes`, and both boxes hold 128 steps, so there is

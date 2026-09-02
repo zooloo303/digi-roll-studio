@@ -25,7 +25,7 @@
 // `Session::import_pattern`, which ends with the box's pattern sitting in a slot
 // of a real session. That last step is what PLAN.md §5 had listed as missing;
 // everything the import model does is unit-tested against the committed
-// fixtures (`core/tests/import.rs`), and this is where it meets a box.
+// fixtures (`core/tests/all/import.rs`), and this is where it meets a box.
 //
 // Run with:
 //   cargo run -p digi_roll_studio --example fetch_pattern_kit

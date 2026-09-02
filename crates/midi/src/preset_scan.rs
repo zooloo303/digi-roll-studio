@@ -39,7 +39,7 @@
 //! matter because the file header declares the extent; and the
 //! uncalibrated tag mask at `+8`, which was the real blocker and is now
 //! calibrated against the A4's own filter grid — `sound::TAG_NAMES_A4`, checked
-//! by `protocol/tests/drive_preset.rs` on eight captures.
+//! by `protocol/tests/all/drive_preset.rs` on eight captures.
 //!
 //! The variant stays, because the *situation* is real and will recur: the next
 //! box to land will announce a container magic nobody has mapped, and it should

@@ -8,7 +8,7 @@
 //!
 //! These drive the *real* [`safe_write_track`] rather than re-applying its steps,
 //! against a fake box that keeps its slots in a map — the pattern
-//! `protocol/tests/safe_write.rs` established. Two reasons: the apply order is
+//! `protocol/tests/all/safe_write.rs` established. Two reasons: the apply order is
 //! part of what is being tested (conditions after the encode, lanes after that),
 //! and a test that copied the order would keep passing after the real one
 //! changed.

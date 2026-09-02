@@ -93,7 +93,7 @@ fn tmp_dir(tag: &str) -> PathBuf {
 }
 
 /// A session with the things most likely to be lost in translation actually set
-/// — the same argument as `core/tests/session.rs`'s seeded fixture, and for the
+/// — the same argument as `core/tests/all/session.rs`'s seeded fixture, and for the
 /// same reason: a round-trip assertion only witnesses what the fixture sets.
 fn seeded() -> Session {
     let mut s = two_box_session();

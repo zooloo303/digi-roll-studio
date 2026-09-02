@@ -17,8 +17,8 @@ a test suite could not have caught: §16, which needed the box's own screen, and
 
 ```sh
 cargo build --release
-cargo test -p digi_protocol --test all   # the dev loop: one crate, ~7s
-cargo test --workspace                   # before a commit; ~11s, no hardware
+cargo test -p digi_protocol --test all   # the dev loop: one crate, 330 tests, ~7s
+cargo test --workspace                   # before a commit; 1,810 tests, ~10s, no hardware
 cargo clippy --workspace --all-targets   # clean as of 2026-08-23; keep it that way
 cargo run -p digi_roll_studio
 ```
@@ -89,9 +89,10 @@ them into a Rust test — `node --input-type=module -e` against its `js/**` is t
 cheapest hardware-verified oracle available. Three rules came out of using it:
 
 - **Where there is no oracle, say so in the file.**
-  `crates/engine/tests/scheduler.rs` has none — `js/midi.js` sequences one track
-  of one box, so nothing there can derive polymeter or two-port output — and its
-  header says so in the first paragraph. Same for `crates/app/tests/engine_link.rs`.
+  `crates/engine/tests/all/scheduler.rs` has none — `js/midi.js` sequences one
+  track of one box, so nothing there can derive polymeter or two-port output —
+  and its header says so in the first paragraph. Same for
+  `crates/app/tests/all/engine_link.rs`.
 - **Check the oracle covers what you are porting before trusting it.**
   digi-roll's `test/copy-track.test.js` contains no occurrence of `plock`, `lane`
   or `prob`, so the three hardest things `copyTrack` does had no test on either
@@ -118,6 +119,20 @@ you deliberately want one, and they are ordered by what they can do to it.
   two API requests per box.
 - `cargo run -p digi_roll_studio --example fetch_pattern_kit` — read-only; adds
   one 0x60 pattern-kit request per box.
+- **The dump-namespace probes** — `fetch_preset_pool`, `probe_dump_types`,
+  `probe_dump_args`, `sweep_dump_indices`, `probe_sound_library`. **Read-only,
+  structurally:** every request goes through `assert_request_opcode`, which
+  admits only `0x60`–`0x6e`, the *request* half of the protocol. Storing is
+  `0x5n` and there is no `0x5n` in any of them. `0x6f` (whole project) is never
+  sent by the sweeps either — it is not a store, but it streams megabytes where
+  they want one small answer per opcode. Between them they are how the dump
+  namespace was mapped: which opcodes answer, at which indices, with what
+  payload in the request, and what collection `0x6b` turned out to address.
+- `cargo run -p digi_roll_studio --example probe_query` — **read-only.** Probes
+  the `0x09` Query API, the third read mechanism this protocol has, for anything
+  preset-shaped. `digi_protocol::query` implements request-build and reply-parse
+  and nothing else; the API has no documented write counterpart to have built
+  one for.
 - `cargo run -p digi_roll_studio --example trig_write_dry_run` — **read-only.**
   Fetches A01 off each box, runs the trig-condition write half over the real
   payload *in memory*, prints which bytes moved and whether minimal diff held.
@@ -135,9 +150,31 @@ you deliberately want one, and they are ordered by what they can do to it.
   the +Drive through the `0x53` file API. Every call goes through
   `assert_read_only_file_op`, the allowlist admitting List, Open, Read and Close
   and nothing else.
+- `cargo run -p digi_roll_studio --example probe_drive` — **read-only.** Walks
+  the +Drive tree with `0x10` DirList only. The mutating opcodes of *that*
+  numbering — `0x11` DirCreate, `0x12` DirDelete, `0x20` FileDelete, `0x21`
+  ItemRename, the whole `0x4n` family — are not implemented in
+  `digi_protocol::drive` at all. This is the run that found the split: a DT2
+  answers `0x10` and a DN2 does not implement it.
+- `cargo run -p digi_roll_studio --example probe_drive_read` — **read-only, and
+  guarded rather than merely intended.** Derived the argument layouts of `0x54`
+  Open, `0x55` Read and `0x56` Close by asking a box, because the source
+  document names all three and specifies the layout of none. Every request goes
+  out through `drive_file_request`, so `assert_read_only_file_op` sees the
+  opcode — which is the safety property here, not "this file contains no write
+  opcode", since in this namespace `0x5C` **deletes**.
+- `cargo run -p digi_roll_studio --example read_drive_preset` — **read-only**,
+  same allowlist. Reads whole preset files off three boxes and prints a report.
+  The parsers' unit tests would pass just as happily if the read loop asked for
+  the wrong chunk or closed a reader the box thought was open; this is what
+  sees that.
 - `cargo run -p digi_roll_studio --example capture_drive_file` /
-  `capture_drive_project` — **read-only**, same allowlist. The project one takes
-  `--port` and reads megabytes, so it does not fan out across the desk.
+  `capture_drive_project` / `capture_drive_presets` — **read-only**, same
+  allowlist. The project one takes `--port` and reads megabytes, so it does not
+  fan out across the desk. The presets one writes the bytes it reads **to disk
+  on this machine**, which is how the container layer got built at a desk with
+  no box on it — the captures under `crates/protocol/tests/fixtures/drive/` came
+  from it.
 - `cargo run -p digi_roll_studio --example recover_drive_write -- --port "<box>"` —
   **read-only as shown.** Diagnoses a box left deaf by an interrupted write:
   asks `0x53` and `0x01` and reports which answers. Adding `--close` sends
@@ -145,7 +182,9 @@ you deliberately want one, and they are ordered by what they can do to it.
   in whatever slot the abandoned WriteOpen named.
 - `cargo run -p digi_roll_studio --example probe_drive_write -- --port "<box>"
   --into <path> --from <path>` — **writes a file to the +Drive.** The only thing
-  outside the app that does. It refuses a target the listing reports occupied,
+  in this repo that does: `drive_write_file` lives in `digi_midi` and **no path
+  in `crates/app` reaches it**, so nothing a user can press writes a +Drive
+  file. It refuses a target the listing reports occupied,
   so it cannot overwrite; `0x59` is the commit and every failure path returns
   before it; and it verifies by reading back. Guarded by `assert_write_file_op`,
   a **second and disjoint** allowlist admitting WriteOpen, Write and WriteClose
@@ -155,6 +194,26 @@ you deliberately want one, and they are ordered by what they can do to it.
   **A malformed write can take a box's whole SysEx API down** until it is
   power-cycled — see lesson 13. That is a property of the box, not of this
   example, but this is the file that can provoke it.
+- **The `0x5b` sound stores** — `probe_sound_store` and `probe_mk1_store`.
+  These **put a sound onto one track of the box's active kit**, which is a
+  different and smaller thing than the entries above: the active kit is the
+  box's working state, so nothing reaches the card unless somebody saves the
+  kit afterwards. Both are **read-only until told otherwise** — without
+  `--write` they print what would be sent — and `--write` requires `--box <name
+  fragment>` matching exactly one box, so a store can never fan out across the
+  desk.
+
+  **Both restore the original themselves, after every outcome including the
+  negative ones**, and both write the restore to disk *before* the first byte
+  goes out, so a process that dies mid-probe leaves the restore reachable
+  rather than in a dead process. `--hold` pauses before restoring, which is the
+  only way to actually read the box's screen — without it the restore lands in
+  under a second and nobody sees anything.
+
+  Treat them as `safe_write_track --write` anyway: a throwaway project, and a
+  backup you took yourself. `probe_sound_store` settled whether `0x5b` stores
+  at all (it does, on both digis); `probe_mk1_store` asks whether it will take
+  a Digitone mk1 sound, which is what a third of a DN2's library is.
 - `python3 local/decode_mmon.py <capture.mmon>` — **reads a file, touches no
   port.** Decodes a MIDI Monitor capture into raw SysEx messages and reports
   framing rather than assuming it. `decode7(data, msb_first=)` takes the bit
@@ -188,6 +247,10 @@ you deliberately want one, and they are ordered by what they can do to it.
 - **The Analog Four's probes**, which were absent from this list until
   2026-09-01 — a gap worth naming, since this list is where someone looks
   *before* touching a box and eight A4 examples had grown up outside it.
+
+  That entry then claimed the gap was closed and it was not: **twelve more
+  examples were still missing**, added 2026-09-01 in the same pass that audited
+  the docs. Two of them store. The lesson is the one below the list.
 
   Read-only, and none of them ever makes the box save:
 
@@ -243,6 +306,26 @@ you deliberately want one, and they are ordered by what they can do to it.
   API requests — but it is the first thing here that talks to a box without being
   pressed, so it is worth knowing about before wondering who is holding a socket.
   The checkbox is at the bottom of BOXES.
+
+**This list has to be complete or it is worse than absent**, and it has now been
+incomplete twice — eight A4 examples in one pass, twelve more in the next,
+including two that store into a box's active kit. A reader who consults it and
+finds nothing concludes the example is safe, which is the one wrong answer a
+safety register can give. So the check is mechanical and belongs with adding an
+example, not with auditing the docs:
+
+```sh
+# Every example, against every example named here. Empty output is the invariant.
+comm -23 <(ls crates/*/examples/*.rs | xargs -n1 basename | sed 's/\.rs$//' | sort -u) \
+         <(grep -o '`[a-z0-9_]*`\|example [a-z0-9_]*' DEVELOPMENT.md \
+           | sed 's/^example //; s/`//g' | sort -u)
+```
+
+The failure is not that somebody forgot. It is that **an example is added for a
+question about a box, and the question is the interesting part** — the file gets
+a header arguing its own safety case, at length, and that header is mistaken for
+the place the safety case lives. It is not; this list is, because this list is
+the one a person reads before the cable goes in.
 
 ## The desk's own configuration, which the app cannot read or write
 

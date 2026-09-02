@@ -10,12 +10,19 @@ studio: several boxes in one session, each with its own pattern, all playing to
 a shared clock. A DT2 and a DN2 together is the target case — 32 tracks — and an
 A4 adds six more.
 
-**The three boxes are not supported to the same depth, on purpose.** The two
-digis get everything: fetch a pattern off the box, edit it, write it back. The
-Analog Four is **sequence-live-only** — it plays notes, takes the clock, and
-answers its published CC and NRPN, but it is never read from or written to,
-because the box itself reports that it supports no dump request at all. The app
-says so in place rather than failing at write time.
+**All three boxes fetch, edit and write**, through the same panels and the same
+write ceremony. The two digis speak Elektron's gen-2 dump protocol; the Analog
+Four speaks gen-1, which is a different pattern format and a slower wire, and
+the app hides both facts behind one button.
+
+The A4 was shipped live-only in August 2026 on the strength of its own reply
+listing no dump request. **That was a misread** — the list describes the file
+API namespace, not the dump namespace — and it took two corrections to notice.
+The box answers `0x60`–`0x6d`, and since 2026-08-31 its patterns, per-step lanes
+and p-locks round-trip like a Digitakt's. What is still not gen-2 about it is
+recorded in `PLAN.md` §10: its FX and CV tracks' p-lock parameters have never
+been swept, so those two tracks are carried back byte-exact rather than
+interpreted.
 
 The protocol work this stands on is ported from
 **[elk-herd](https://github.com/mzero/elk-herd) by mzero** (BSD-2-Clause), which
@@ -27,8 +34,10 @@ there is nothing here. See [`CREDITS.md`](CREDITS.md) for what came from where.
 ## ⚠ This app can change what is on a box's card
 
 From the moment a box has an out port and Play is pressed it sends clock and
-notes. SEND TO BOX overwrites one track of one pattern slot; BACKUPS replaces a
-whole slot — all sixteen tracks, the kit and its sounds.
+notes. Three things store bytes on a card: **SEND TO BOX** overwrites one track
+of one pattern slot, **SYNC EVERY TRACK** does that to every track of every box
+in one press, and **BACKUPS** replaces a whole slot — all sixteen tracks, the
+kit and its sounds. All three work on an Analog Four as well as a digi.
 
 Every write goes through five rules that cannot be skipped:
 
@@ -60,15 +69,17 @@ socket. The checkbox is at the bottom of BOXES.
 | Core model | several boxes, track count and pattern length per model (16/128 on the digis, 6/64 on the A4), scenes, and a song of scenes — `PLAN.md` §2 |
 | Safe write | all five rules as one function, and **run on hardware** — one track of one slot, from the app's own button, verified byte-identical on a DT2 and a DN2 |
 | Backups and restore | a local store of the last 50 patterns overwritten, plus 10 pre-restore snapshots; a store failure aborts the write. **A restore has been run on both boxes**, byte-identical |
-| MIDI I/O | on `midir`; enumeration, identity handshake, dump reads and writes, all **run against both boxes** |
+| MIDI I/O | on `midir`; enumeration, identity handshake, dump reads and writes, all **run against all three boxes** — including the A4's DIN pacing, which is part of the contract rather than a tuning knob |
 | Engine, transport, clock | **verified on hardware** — a DT2, a DN2 and an A4 playing one clock in sync |
-| Analog Four | live-only, and **played on hardware** — clock and transport receive, notes on channels 1-6 (four synth voices, FX, CV), 64-step patterns, and all fourteen published CC/NRPN parameters swept against the box. No fetch and no write: the A4 answers no dump request, so `sysex: None` is its own testimony rather than a gap |
+| Analog Four | **a full transfer peer of the digis since 2026-08-31**, and every claim here was made by the box. Plays: clock and transport receive, notes on channels 1-6 (four synth voices, FX, CV), 64-step patterns, all fourteen published CC/NRPN parameters swept. Transfers: `0x64` fetches any of 128 slots, the write goes back DIN-paced through the same safe-write ceremony, and a round trip — off the box, edited in the roll, back on — ran first time. Carries: velocity, note length, micro-timing and trig condition as named lanes, and thirteen p-lock parameters that read, draw and edit. Names its tracks' sounds off the box's **edit buffer**, which no digi can answer. The FX and CV tracks are read-only and byte-exact by decision — their p-lock id space has never been swept |
 | Session file | a whole session round-trips through JSON, wired to Save/Open with a close guard, **hardware-confirmed through a save/quit/reopen cycle**. Saving is manual — there is no autosave |
 | Velocity, micro-timing | in the model, written to hardware, settable in the Edit panel and the roll |
 | Harmony | key, scales, chord draw with a ghost, harmonise. A four-note chord written to a box and fetched back intact |
 | Generator | seeded, nine modules, per-genre; a six-row arrangement has played and been synced to both boxes byte-identical |
-| Preset browser | the selected box's whole +Drive soundbank library, searched and filtered by tag across every bank at once. Tags live inside each preset file, so the panel scans — cancellable, resumable, and cached per bank so a second open is instant and works with the box switched off. **Run on all three boxes**: a DT2 and a DN2 return names and tags; an A4 lists by name and says plainly that its tag names have never been checked against its own display. Read-only — List, Open, Read, Close, and nothing that can write to or delete from a +Drive. Loading a preset onto a track is not built yet |
-| Copy-track | ported, translating p-lock lanes between boxes by parameter name — **no caller yet**, so no UI can copy a track |
+| Preset browser | the selected box's whole +Drive soundbank library, searched and filtered by tag across every bank at once. Tags live inside each preset file, so the panel scans — cancellable, resumable, and cached per bank so a second open is instant and works with the box switched off. **Three libraries indexed whole on hardware**: a DN2's 1,189 presets (of which 388 are Digitone mk1 files, a second container format), an A4's 869, a DT2's 148. All three tag tables are calibrated **exactly** — 24 of 24 captures, checked against Overbridge's filter grid rather than the boxes' own screens, because an A4 truncates its tag row at four and shows only some of what a preset carries. The digis share one 32-cell table; the A4's overlaps it in **two** positions |
+| Preset load | double-click puts a preset on a track, **run on both digis**. Digitone mk1 files are refused by container magic and say so by name. What has not been run is the four refusals — REVERT, the mk1 message, the A4's path, the OS-build gate through this path |
+| +Drive writes | the file-write trio (`0x57`/`0x58`/`0x59`) is implemented in `digi_midi` and hardware-verified for a **single chunk**, behind a second allowlist disjoint from the read one. **The app itself never calls it** — the only caller is one example, so nothing you can press writes a file to a +Drive. Above 16 KiB is refused rather than guessed, so no whole project has been written back. `0x5A` Move, `0x5B` Copy and `0x5C` **Delete** are implemented nowhere in this workspace and nothing can reach them |
+| Copy-track | the in-app whole-track copy works — Shift+C/Shift+V in the TRACKS grid, re-reading the source at paste time so it survives a scene change. The **box-to-box** copy, which translates p-lock lanes between two boxes' payloads by parameter name, is ported and still has **no caller** |
 | Song mode | rows of scenes with play count, length, mute and an END row, plus the `LST` trig condition it makes answerable. **Nothing in it has met a box or a screen yet** — `PLAN.md` §9 has the list. Per-row tempo is deliberately not built: the session has one clock |
 | Platforms | macOS and Windows are both **hardware-tested from their own installer** — on Windows a DN2 was auto-connected and written to; a DT2 has not met a Windows build. Linux is untested |
 
@@ -86,7 +97,7 @@ uses `midir` rather than `rtmidi`.
 
 ```sh
 cargo build --release
-cargo test --workspace          # 1,332 tests, no system dependencies
+cargo test --workspace          # 1,810 tests, no system dependencies
 cargo run -p digi_roll_studio   # the app
 ```
 
@@ -103,15 +114,19 @@ drafts a release with the two assets attached — see
 bundle has to be ad-hoc re-signed after it is assembled and not before.
 
 **Hardware is never part of the dev loop.** The protocol suites read `.syx`
-captures from `crates/protocol/tests/fixtures/` — 1.4 MB of real DT2 and DN2
-dumps, committed so the tests run anywhere. The examples that *do* talk to a box
-are listed in [`DEVELOPMENT.md`](DEVELOPMENT.md) by safety class, most of them
-read-only.
+captures from `crates/protocol/tests/fixtures/` — 34 real dumps, 1.8 MB,
+committed so the tests run anywhere. Ten are DT2/DN2 and **twenty-one are the
+Analog Four's**, one per question its lanes and p-lock pool were mapped one at a
+time by; 24 `.bin` preset files sit under `fixtures/drive/`. The examples that
+*do* talk to a box are listed in [`DEVELOPMENT.md`](DEVELOPMENT.md) by safety
+class, most of them read-only — and that list is checked against the examples
+directory by a command in the same section, because it has been incomplete
+twice.
 
 ## Workspace
 
 - `crates/core` — session/device/pattern/track model, edit ops, import/export, project file
-- `crates/protocol` — SysEx seven-bit, Elektron protocol, pattern structs, byte lanes (trig conditions, p-locks, swing), safe-write, copy-track and the backup stash
+- `crates/protocol` — SysEx seven-bit, Elektron protocol, pattern structs, byte lanes (trig conditions, p-locks, swing), safe-write, copy-track and the backup stash; the gen-1 Analog Four format in its own `a4_*` modules rather than behind a generation flag; the +Drive file API and preset/sound decoding
 - `crates/generator` — seeded pattern generator
 - `crates/midi` — port enumeration and I/O, on `midir`
 - `crates/engine` — transport, clock, scheduling
@@ -121,10 +136,12 @@ read-only.
 
 - **[`PLAN.md`](PLAN.md)** — the architecture, the model, and the rules that are
   not up for renegotiation. Source comments cite it by section (`PLAN.md §7 rule
-  3`); those numbers are stable.
+  3`); those numbers are stable. Its §9 and §10 are four fifths of it and are a
+  **hardware ledger** rather than a plan — what has touched a box, and every
+  Analog Four offset with the screen reading that graded it.
 - **[`DEVELOPMENT.md`](DEVELOPMENT.md)** — how it was built, the hardware examples
   by safety class, your boxes' own MIDI settings that this app cannot reach, and
-  nine lessons that each escaped a green test suite at least once.
+  eighteen lessons that each escaped a green test suite at least once.
 - **[`packaging/README.md`](packaging/README.md)** — how the two downloads are
   built, why the asset filenames are load-bearing, and the three Windows-only
   things that never show up in a `cargo run`.

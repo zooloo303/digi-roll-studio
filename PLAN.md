@@ -13,12 +13,26 @@ for renegotiation. Source comments across the workspace cite it by section —
 `PLAN.md §7 rule 3` and the like — and those numbers are stable. `DEVELOPMENT.md`
 is the companion: how the thing was built, and the lessons that kept repeating.
 
-> **On what this file used to be.** Through development this was a 4,000-line
-> working document carrying every phase in full, plus a session log beside it.
-> Both were trimmed to this for the public repo. Nothing load-bearing was
-> dropped — the model, the rules, the risks and the verification status are all
-> here — but the blow-by-blow is gone, and so are the two design-handoff
-> packages some UI comments cite by path.
+> **On what this file used to be, and what it became.** Through development this
+> was a 4,000-line working document carrying every phase in full, plus a session
+> log beside it. Both were trimmed for the public repo — the blow-by-blow went,
+> along with the two design-handoff packages some UI comments cite by path.
+>
+> It then grew straight back past 4,000 lines, and **not with the same kind of
+> material**: §9 and §10 are now four fifths of the file, and they are a
+> hardware ledger rather than a plan. Every offset in them was paid for with a
+> box, a capture and usually a reading off its screen, so the size is the point
+> and trimming it would be deleting measurements. What that costs is
+> navigability, which the map below is for.
+
+**Two things to know before navigating it.** §1–§8 are the plan and are short.
+**§9 and §10 are the ledger and are four fifths of the file** — §9 is what has
+and has not touched a box, §10 is the +Drive, the kit builder and, under a
+heading that does not say so, **the entire Analog Four protocol log**: pattern
+layout, trig bytes, p-lock pool, parameter ids, scalings, kit and patch names.
+It ended up there because that is where the +Drive work already was. The title
+now says both, but the *number* cannot move — source comments cite `PLAN.md
+§10`, `§10.3`, `§10.5` and `§10.6 step 3`.
 
 ---
 
@@ -35,11 +49,18 @@ Audited 2026-08-13 against the JS original, line by line, and kept current since
 | `protocol/pattern.rs` | Decode, encode, diff and annotation all pinned by fixture tests against DT2 and DN2 captures. |
 | `core/*` | The §2 session model. `Session → Device → Pattern → Track`, with the device table driving track count. |
 
-Twelve `.syx` captures live in `crates/protocol/tests/fixtures/` (1.4 MB): eight
-DT2/DN2 condition and p-lock captures, three fresh/swing DN2 patterns, and the
-per-note chord capture. Every expected value in the suites was read out of them
-**by the JS original first** and then written down in Rust, so the tests pin
-digi-roll's hardware-verified behaviour rather than the port's own output.
+Thirty-four `.syx` captures live in `crates/protocol/tests/fixtures/` (1.8 MB),
+plus the 24 `.bin` preset files under `fixtures/drive/`. Ten of the `.syx` are
+the original DT2/DN2 set — condition and p-lock captures, fresh/swing patterns,
+the per-note chord — and **twenty-one are the Analog Four's**, one per question
+its lanes and p-lock pool were mapped one at a time by (§10).
+
+Every expected value in the *digi* suites was read out of the captures **by the
+JS original first** and then written down in Rust, so those tests pin
+digi-roll's hardware-verified behaviour rather than the port's own output. The
+A4 suites have no such oracle — digi-roll never spoke gen-1 — so their expected
+values come from the box's own screen instead, which is why §10 records a
+screen reading beside almost every offset.
 
 ### What Phase 1 found, because the class of bug is the point
 
@@ -108,12 +129,15 @@ digi-roll's hardware-verified behaviour rather than the port's own output.
   wrong box answering, a cancel mid-send, a session that runs out of slots.
   Tests, no hardware. §9 has the list, and it is the same "it works" / "it
   refuses properly" split §10.6 step 6 drew for the preset load.
-- **An A4 pattern carries steps and pitches and nothing else.** Velocity, length,
-  micro-timing, PROB/FILL/COND and p-locks are all in the 60% of the payload that
-  is mapped as *shape* rather than meaning, so an import invents a velocity and
-  an export leaves the box's own alone. Both reports say so in a field; the panel
-  says so in words. Closing it needs captures aimed at one lane at a time, which
-  is the same method §10 used for the trig bytes.
+- ~~**An A4 pattern carries steps and pitches and nothing else.**~~ **Closed
+  2026-09-01.** Velocity, length, micro-timing and trig condition are four named
+  lanes now, each graded against the box (`a4_pattern.rs`'s offset table marks
+  them `hardware`), and the p-locks read, draw, edit and travel. Closing it took
+  exactly the method this bullet predicted — captures aimed at one lane at a
+  time — over three sessions in §10. What remains unmapped is narrower and named
+  there: the TRC menu's byte-to-condition table past its measured extent, and
+  the FX and CV tracks' p-lock id space, which is carried back byte-exact rather
+  than interpreted.
 - **A trigless trig cannot survive a round trip through this app**, because the
   model holds notes and a trigless trig is a trig with no note. An import counts
   them and drops them; an export writes none. A pattern that leans on them comes
@@ -958,7 +982,9 @@ the failing variable regardless of size, and the checksum is crc32 seeded with
 - **A DT2 on Windows.** The WinMM path has met a DN2 (above) and no DT2, so the
   larger of the two payloads has only ever gone out over CoreMIDI. See §8.
 - **Linux**, beyond the observation that the chunking is correct for ALSA.
-- **`copy_track`** — it has no caller, so nothing can drive it.
+- **`copy_track`** — the **box-to-box** copy has no caller, so nothing can drive
+  it. The in-app whole-track copy is a different function (`core::track_clip`,
+  bound to Shift+C/Shift+V) and does work; §1 has the distinction.
 - **A multi-chunk +Drive write.** Single-chunk is verified; everything above
   16 KiB is refused rather than guessed, so no project has ever been written
   back to a box. This is what stands between the A4 and whole-project backup
@@ -987,14 +1013,14 @@ the failing variable regardless of size, and the checksum is crc32 seeded with
 - **"Read patch names" on the *second* box.** One box answered on 2026-08-22 and
   the other has not been tried, so `NotThisBox` and the DT2/DN2 difference in kit
   layout are still fake-only.
-- **Decoding a +Drive preset's contents.** The *reading* half landed 2026-08-28:
-  `0x54`/`0x55`/`0x56` are implemented and hardware-verified, so the browser can
-  now open a preset and get its bytes. What it cannot do is *understand* them —
-  the struct inside the payload is shorter than the payload (299 on the DT2, 319
-  or 359 on the DN2, only one of which is in `KNOWN_SOUND_SIZES`), a DT2 file
-  holds a second `BEEFBACE` at 1060, and names are Windows-1252. **So still no
-  preset's tag mask has been read off the +Drive itself**, which is the claim
-  that matters to §10.3 and the one that has not moved.
+- ~~**Decoding a +Drive preset's contents.**~~ **Closed 2026-08-29**, and this
+  bullet is the reason the register itself needed auditing: it went on asserting
+  that "**no preset's tag mask has been read off the +Drive itself**" while four
+  entries *below it in this same section* recorded the tag tables calibrated
+  24-of-24 exact on three boxes and 2,206 presets indexed off three libraries.
+  A caveat kept in the "what has not" list is not read by the person adding to
+  the "what has" list, which is the failure mode this whole section exists to
+  guard against, turned on itself.
 - **The DT2 half of the dump-index sweep.** Piped through `tail` twice and lost.
   The DN2 was the target; that data was simply not collected.
 - **Paging a listing.** Every call used `start = 0, count = 0` (list everything)
@@ -1753,16 +1779,19 @@ instead. The same rule lived in a second place and the fix did not travel:
 **lesson 5, four days apart, in two files a hundred lines from each other.**
 
 **Why 1,507 green tests said nothing.** Every level test in
-`app/tests/engine_link.rs` runs on `two_box_session()`, and a DT2 and a DN2
+`app/tests/all/engine_link.rs` runs on `two_box_session()`, and a DT2 and a DN2
 each have a spec *and* a chart — so "has a spec" and "has a chart" return the
 same answer on both, and the wrong one is indistinguishable from the right one.
 That is lesson 4's shape precisely: **a fixture that makes two different rules
 agree.** It needed the third box to tell them apart, and the third box is the
 first this project has ever had where the two come apart at all.
 
-The regression test is `a_live_only_box_still_gets_its_level_fader`, and it is
-the first test in the file to build a session by hand rather than take
-`two_box_session()`, which is the actual lesson for the next live-only box.
+The regression test is `a_box_with_no_gen2_spec_still_gets_its_level_fader`, and
+it is the first test in the file to build a session by hand rather than take
+`two_box_session()`, which is the actual lesson for the next box that does not
+fit the fixture. It was named `a_live_only_box_…` until 2026-09-01: the A4 has
+not been live-only since 2026-08-31, and the property under test was never
+live-only-ness but the absence of a gen-2 `Spec`.
 
 **The trap that cost the first hour, and it is not the A4's.** With the **DT2
 in clock-send mode, no box receives anything at all** — not the DN2, not the
@@ -1966,7 +1995,14 @@ check is what `decode_sound` happens to be built around.
 `0x0400c088`), which is what §10.3's index needs and the reason the captures
 carry real names rather than blanked ones.
 
-## 10. The kit builder — scope, 2026-08-26
+## 10. The kit builder, and the Analog Four protocol log
+
+Two things under one number, for the reason the map at the top of this file
+gives: this was scoped as the kit builder on 2026-08-26 (below), and the A4's
+gen-1 format was then mapped underneath it because the +Drive work was already
+here. **If you are looking for the A4's pattern layout, trig bytes, p-lock pool,
+parameter ids or scalings, they are in the dated entries in the second half of
+this section**, not under a heading with the A4's name at the top level.
 
 Phase 14, and the first phase scoped on top of a hardware session rather than
 ahead of one. §9's +Drive entry is the evidence base; this is what to build on it.
@@ -1985,8 +2021,9 @@ open question.
 **There are three boxes for this now, not two.** This section was scoped on
 2026-08-26 against a DT2 and a DN2. The A4's supported-opcode reply lists
 `0x53`–`0x56` and the `0x57`–`0x59` write trio, so it publishes the same
-`0x53` file API — which is a separate question from its having no `0x6x` dump
-request at all, and the whole reason `Product.family` became an `Option<u8>`.
+`0x53` file API — a separate question from the dump namespace, which this
+sentence used to say the A4 had none of. It has one: `0x60`–`0x6d`, 2026-08-31,
+below.
 **The A4's +Drive was read on 2026-08-28** and it is now a third column rather
 than a reason to point a probe: it lists, opens and reads. Its container magic
 is `BEEFBABA` where the digis' is `BEEFBACE` and its header is 31 bytes where
@@ -2018,7 +2055,7 @@ layout of none of them; `probe_drive_read.rs` is kept, the way
 **Built 2026-08-29: `drive::decode_drive_preset` turns a preset file into a
 `Sound`.** §9's entry of the same date is the evidence base — 24 files across
 three boxes — and the layer is pinned against those files by
-`tests/drive_preset.rs`. Two of the three jobs were smaller than recorded and
+`tests/all/drive_preset.rs`. Two of the three jobs were smaller than recorded and
 the fourth thing is the one that stayed open:
 
 - **The struct is measured, not looked up.** `struct_size` finds `BACEF00C`
@@ -2719,23 +2756,21 @@ minutes before the change, and diff against that.
 
 #### What the A4 pattern path still owes
 
-**Items 1 and 2 closed 2026-08-31**, and by opposite means. Item 1 was a port:
-the reading side of this format is done and nothing further is learned by dumping
-the box. Item 2 could only be closed by a *write*, because it asks whether the box
-reads its own bytes the way it writes them — so no number of dumps would have
-moved it, which is why it outlived the reading work by a morning.
+**Items 1, 2 and 3 are closed** — each says so in its own entry, with the date
+and the build. **What remains is 4 and 5**: a bit order waiting on a payload no
+capture has produced, and a backup policy waiting on a decision.
 
-**Item 3 closed the same day**, by the capture it asked for, and **the sibling
-it could never have reached closed on 2026-09-01** — whether the box requires the
-compacted pool order it produces. It does not, and the pool has a writer; see
-"The p-lock writer, and the question that inverted" below for why the encoder
-emits that order regardless. What remains is items 4 and 5: a bit order waiting
-on a payload no capture has produced, and a backup policy waiting on a decision.
+One thing about *how* they closed is worth keeping, because it is the reason the
+list was ordered this way. Items 1 and 2 closed the same day by opposite means:
+item 1 was a port, finishable at a desk, and item 2 could only be closed by a
+**write**, because it asks whether the box reads its own bytes the way it writes
+them. No number of dumps would have moved it, which is why it outlived the
+reading work by a morning.
 
 1. ~~**Bring the gen-1 format into `protocol`.**~~ **Done 2026-08-31**, and it
    was a *smaller* job than this bullet says, in the two places the bullet was
    describing our own code from memory. `crates/protocol/src/a4_pattern.rs` and
-   `a4_plocks.rs` are the port; `tests/a4.rs` is 19 tests against nine committed
+   `a4_plocks.rs` are the port; `tests/all/a4.rs` is 19 tests against nine committed
    fixtures.
 
    **Two of the three planned changes were unnecessary.** `sevenbit.rs` needed
@@ -2805,7 +2840,7 @@ on a payload no capture has produced, and a backup policy waiting on a decision.
    **How it was built, 2026-08-31.** `a4_pattern::build_trig_probe`
    authors all four states onto SYN1 of A16 and
    `examples/a4_trig_probe.rs` writes the message and prints the prediction;
-   three tests in `tests/a4.rs` pin it. Nothing here opens a port —
+   three tests in `tests/all/a4.rs` pin it. Nothing here opens a port —
    `a4_pattern_send` remains the only thing in the repo that can write to a box,
    because the consent ceremony, the DIN pacing and the reply listener have no
    business existing twice.
@@ -3758,7 +3793,7 @@ exceptions**, which is what makes the 350-byte stride a structure rather than an
 average. Every embedded sound's own version field is `6`, matching the pool
 sound. Every name is printable ASCII, NUL-terminated inside its sixteen bytes.
 
-`protocol::a4_kit` is seventy lines of offsets and `tests/a4_kit.rs` is eight
+`protocol::a4_kit` is seventy lines of offsets and `tests/all/a4_kit.rs` is eight
 tests against three committed fixtures. **No cable was involved at any point.**
 
 #### It reads the edit buffer, which is more than a digi can offer

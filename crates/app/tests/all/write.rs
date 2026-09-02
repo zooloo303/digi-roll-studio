@@ -1,6 +1,6 @@
 //! The Send button, driven end to end against a box that is a `BTreeMap`.
 //!
-//! `core/tests/export.rs` proves an unedited import written back is the pattern
+//! `core/tests/all/export.rs` proves an unedited import written back is the pattern
 //! the box already had. This proves the *button* around that: the job the press
 //! builds, the refusals that happen before anything is fetched, the confirm round
 //! trip across the thread boundary, and the line the row ends up showing. Between
@@ -14,7 +14,7 @@
 //! `egui`'s side of the dialog.
 //!
 //! The fixtures are `protocol/tests/fixtures`, read by relative path rather than
-//! copied, on the same bargain as `core/tests/export.rs`: one repository, one
+//! copied, on the same bargain as `core/tests/all/export.rs`: one repository, one
 //! copy of a ~100 KB capture.
 
 use std::collections::BTreeMap;
@@ -215,7 +215,7 @@ fn a_consented_write_lands_verified_and_says_so_in_one_line() {
     // earlier" and rule 4's read-back, both of them the flow's, not this file's.
     assert_eq!(box_.fetches, 2);
 
-    // The pattern came home. `core/tests/export.rs` is where this is dissected
+    // The pattern came home. `core/tests/all/export.rs` is where this is dissected
     // field by field; here it is the end-to-end sanity that the button wrote the
     // pattern rather than something that merely verified.
     let after = box_.slot(0);
@@ -226,7 +226,7 @@ fn a_consented_write_lands_verified_and_says_so_in_one_line() {
     // rather than a note lost: this capture holds the leftovers of a trig deleted
     // on the box at step 16, the import dropped them with the trig, and a write
     // that left them would let the next trig drawn there inherit a dead one's
-    // probability. `core/tests/export.rs` pins the byte-level version of this.
+    // probability. `core/tests/all/export.rs` pins the byte-level version of this.
     assert_eq!(kit_before.tracks[0].trigs.len(), 16);
     assert_eq!(kit_after.tracks[0].trigs.len(), 15);
 

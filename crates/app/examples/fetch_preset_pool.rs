@@ -20,7 +20,7 @@
 // run.** `sound::tag_names_for` maps the 32 bits of the mask to the 32 cells of
 // that box's +Drive browser filter grid, read left-to-right and top-to-bottom.
 // As of 2026-08-29 the digis and the A4 are both calibrated and checked against
-// 24 captures in `protocol/tests/drive_preset.rs`; what is left here is the
+// 24 captures in `protocol/tests/all/drive_preset.rs`; what is left here is the
 // procedure, for the next box.
 //
 // The table at the end prints each tagged sound's mask alongside what the box's
@@ -221,6 +221,6 @@ fn report(pool: &[(u8, Sound)], slug: &str, timeouts: usize, undecodable: usize)
          in Overbridge's Sound Browser, whose filter grid shows all 32 cells at once.\n  \
          A row that disagrees means that box's table in protocol::sound is wrong —\n  \
          fix it there, add a table to tag_names_for, and pin captures in\n  \
-         crates/protocol/tests/drive_preset.rs::every_capture_decodes_the_tags_its_box_displays."
+         crates/protocol/tests/all/drive_preset.rs::every_capture_decodes_the_tags_its_box_displays."
     );
 }

@@ -111,7 +111,7 @@
 //! * **The fine byte never sets its top bit.** Measured on tune by watching the
 //!   carry from `fine 127` to `coarse + 1, fine 0`, and true of every fine byte
 //!   in every capture — 24 of them, highest 116, which
-//!   `tests/a4.rs::no_captured_fine_byte_uses_the_top_bit` pins. Under a 256ths
+//!   `tests/all/a4.rs::no_captured_fine_byte_uses_the_top_bit` pins. Under a 256ths
 //!   reading roughly half should exceed 127.
 //! * **The word is not display × 256, and the generations do not agree.** The
 //!   integer part scales by 256 and the fraction by 128, so
@@ -144,7 +144,7 @@
 //!    And its FREQ control lane, four steps wide, holds its fine bytes at exactly
 //!    its parent's four steps with [`NO_VALUE`] elsewhere — so **an extension is
 //!    indexed per step**, which every previous capture left as inference because
-//!    every previous lock sat on step 1. `tests/a4.rs` pins all of it;
+//!    every previous lock sat on step 1. `tests/all/a4.rs` pins all of it;
 //!    `examples/a4_plock_extension_check.rs` is the tool that read it.
 //!
 //! 2. ~~**Whether the box requires the compacted, `(param_id, track)`-sorted

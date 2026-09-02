@@ -73,7 +73,7 @@
 // §9 entry 10): DT2 A01 T1 and DN2 A01 T1, three notes and eight, two p-lock lanes
 // with them, both read back byte-identical, both from the defaults this panel
 // offered. **It was the first byte this repo ever stored on a box.** The flow is
-// also driven end to end against a fake box in `app/tests/write.rs`, which is what
+// also driven end to end against a fake box in `app/tests/all/write.rs`, which is what
 // keeps it honest between hardware runs.
 //
 // The two things that run did *not* cover, in case they matter to whatever you are
@@ -185,7 +185,7 @@ pub struct Report {
 
 /// Everything after the ports are open, with the box injected.
 ///
-/// Generic over [`PatternIo`] for the reason the trait exists: `app/tests/write.rs`
+/// Generic over [`PatternIo`] for the reason the trait exists: `app/tests/all/write.rs`
 /// drives this exact function — the refusals, the confirm round trip, the cancel
 /// and the result wording — against a box that is a `BTreeMap`, so the only thing
 /// left untested by the time a cable is involved is the cable.

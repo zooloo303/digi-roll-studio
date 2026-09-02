@@ -212,8 +212,10 @@ fn main() {
         }
     };
     // Listen on the box's *output* while we talk to its input, so a complaint is
-    // caught. The A4 answers no dump request, but nothing rules out an
-    // acknowledgement, and an unheard reply is indistinguishable from silence.
+    // caught. This said "the A4 answers no dump request" until 2026-08-31, when
+    // it turned out to answer `0x60`-`0x6d`; the reason to listen never depended
+    // on that, and is simply that nothing rules out an acknowledgement and an
+    // unheard reply is indistinguishable from silence.
     let listening = port.name.clone();
     let reply = std::thread::spawn(move || capture_sysex(&listening, REPLY_WINDOW));
 

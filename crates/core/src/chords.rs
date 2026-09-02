@@ -54,7 +54,7 @@ use crate::model::Note;
 
 /// The most notes one trig can hold, on both boxes — `spec.trig.max_notes` for
 /// the DT2 and the DN2 alike, pinned by a Phase 0 capture and asserted against
-/// both specs in `tests/chords.rs`. `js/chords.js` names the same number.
+/// both specs in `tests/all/chords.rs`. `js/chords.js` names the same number.
 pub const MAX_CHORD_NOTES: usize = 4;
 
 /// The scales the roll tints by and the in-scale mode walks, from
@@ -734,7 +734,7 @@ mod tests {
 
     #[test]
     fn the_search_reaches_the_octave_above_for_a_sparse_scale() {
-        // The one branch `tests/chords.rs` cannot reach, because it takes an interval
+        // The one branch `tests/all/chords.rs` cannot reach, because it takes an interval
         // list no [`Scale`] provides. Two tones twelve apart: B is one semitone under
         // the root above it and nine over the tone below, so the snap has to look into
         // the next octave to find it. Every shipped scale is too dense for this to

@@ -1,6 +1,6 @@
 //! Phase 10's exit criterion: a mass send driven end to end against fake boxes.
 //!
-//! `app/tests/write.rs` proves the single-track button. This proves the one above
+//! `app/tests/all/write.rs` proves the single-track button. This proves the one above
 //! it — the press that puts every track of the session onto every box — and the
 //! three things that only exist at that scale:
 //!
@@ -18,7 +18,7 @@
 //! that open real ports and identify — and `egui`'s side of the modal.
 //!
 //! The fixtures are `protocol/tests/fixtures`, read by relative path rather than
-//! copied, on the same bargain as `app/tests/write.rs`.
+//! copied, on the same bargain as `app/tests/all/write.rs`.
 
 use std::cell::RefCell;
 use std::collections::BTreeMap;
@@ -72,7 +72,7 @@ fn identity(product_id: u8, build: &str, version: &str) -> DeviceIdentity {
 /// What one box holds, shared with the test so it can be read after the run.
 ///
 /// `Rc` rather than `Arc` on purpose: [`sync::run`] is called on this thread and
-/// only the dialog crosses a channel, exactly as `app/tests/write.rs` drives its
+/// only the dialog crosses a channel, exactly as `app/tests/all/write.rs` drives its
 /// single-track counterpart.
 #[derive(Default)]
 struct Card {

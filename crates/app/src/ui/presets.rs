@@ -265,15 +265,22 @@ pub enum Tagging {
     /// says so in its own words, and keeps READ TAGS on the screen so the gap
     /// can be closed.
     Complete { count: u32, unread_formats: usize },
-    /// **This box's presets cannot be decoded at all** — the A4. Not a failure
-    /// of this bank or this cable, so there is no retry offered for it. See
-    /// decision 4.
+    /// **This box's presets cannot be decoded at all.** Not a failure of this
+    /// bank or this cable, so there is no retry offered for it. See decision 4.
+    ///
+    /// **No box on this desk reaches this any more.** It was the A4 until
+    /// 2026-08-29, when its container magic and its tag table were both
+    /// calibrated — see `midi::preset_scan`'s header, which carries the two
+    /// mis-framings that had it refused. What reaches it now is a box whose
+    /// container magic is neither a digi's nor an A4's, i.e. the next unknown
+    /// box, so the state and its wording are kept deliberately generic.
     Unavailable { why: String },
 }
 
 impl Tagging {
-    /// Whether the tag grid should be drawn. False for the one box that can
-    /// never fill it in.
+    /// Whether the tag grid should be drawn. False only for a box whose presets
+    /// cannot be decoded at all, which is no box we own — see
+    /// [`Tagging::Unavailable`].
     pub fn shows_grid(&self) -> bool {
         !matches!(self, Self::Unavailable { .. })
     }
@@ -1605,8 +1612,12 @@ impl PresetsPanel {
         let banks = self.in_view();
         let tagging = self.library.tagging(&banks);
         if !tagging.shows_grid() {
-            // Decision 4: the A4. Said plainly, with no retry, and the library
-            // below stays exactly as browsable as it was.
+            // Decision 4. Said plainly, with no retry, and the library below
+            // stays exactly as browsable as it was. **This was written for the
+            // A4 and the A4 no longer reaches it** (2026-08-29, both its
+            // blockers were wrong); the branch is live for the next box whose
+            // container this crate cannot decode, which is why neither the
+            // state nor this string names a model.
             super::section_header(ui, "TAGS", None);
             super::consequence_line(
                 ui,

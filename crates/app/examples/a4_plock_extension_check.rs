@@ -24,7 +24,7 @@
 // **once**, SYN1 step 1 coarse 100, captured four times because it was the
 // *control* in those diffs. Under B, that one sample had to land on a fine byte
 // of exactly zero: a 1-in-256 accident. Under A it needs no accident at all.
-// `tests/a4.rs::the_reso_observation_rests_on_a_single_lock` pins that count.
+// `tests/all/a4.rs::the_reso_observation_rests_on_a_single_lock` pins that count.
 //
 // So one further RESO lock at a different value settles it, and this tool is what
 // reads the answer off it.
@@ -137,7 +137,7 @@ fn main() {
             continue;
         }
         // Both of these are observations rather than rules, and both are pinned
-        // as such in tests/a4.rs. Printed because a capture that breaks either
+        // as such in tests/all/a4.rs. Printed because a capture that breaks either
         // one is more interesting than the question this tool was run to answer.
         println!(
             "  pool: {} allocated lane(s), compacted {}, {} orphan extension(s)",

@@ -1569,7 +1569,7 @@ mod tests {
     //
     // These drive `handle_clipboard_shortcuts` directly (private to this
     // module, so only reachable from here) to pin the clipboard's own state
-    // and its status message. `crates/app/tests/tracks_clipboard.rs` covers
+    // and its status message. `crates/app/tests/all/tracks_clipboard.rs` covers
     // the same feature from outside the module, through the public `ui()`
     // entry point, and deliberately does not reach into `Clipboard` — the
     // split is the same one `ui::edit`'s own tests keep between `Status` and

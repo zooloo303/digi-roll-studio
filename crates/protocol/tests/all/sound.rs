@@ -116,7 +116,7 @@ fn factory_presets_carry_no_tags() {
 ///
 /// The mask **values** are ground truth, and this test asserts on `tag_mask`
 /// only, never on a name — which outlives the calibration that has since
-/// happened (`TAG_NAMES_DIGI`, and `tests/drive_preset.rs` for the check). A
+/// happened (`TAG_NAMES_DIGI`, and `tests/all/drive_preset.rs` for the check). A
 /// name assertion here would fail for two different reasons, a shifted field
 /// and a corrected table, and this test is meant to detect only the first.
 #[test]
@@ -164,7 +164,7 @@ fn tagged_dn2_sounds_have_the_masks_the_box_wrote() {
 /// carries 11 and 25, read as Lead and Bright.
 ///
 /// **The calibration it was waiting for has since landed and agreed with it** —
-/// see `tests/drive_preset.rs`, which holds 24 captures against all three boxes'
+/// see `tests/all/drive_preset.rs`, which holds 24 captures against all three boxes'
 /// Overbridge filter grids. This stays because it is evidence of a different
 /// kind: those tests check bytes against a screenshot, and this checks the
 /// decoded meaning against what the patch is plainly called.

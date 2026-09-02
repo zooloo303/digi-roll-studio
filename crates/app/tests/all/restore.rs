@@ -1,6 +1,6 @@
 //! The Backups group, driven end to end against a box that is a `BTreeMap`.
 //!
-//! `protocol/tests/safe_write.rs` proves `safe_restore_pattern_kit` — the fetch
+//! `protocol/tests/all/safe_write.rs` proves `safe_restore_pattern_kit` — the fetch
 //! order, the snapshot, the gate at send time, the verify. This proves the *button*
 //! around it: the refusals that happen before anything is read, the confirm round
 //! trip across the thread boundary, and the line the block ends up showing.
@@ -141,7 +141,7 @@ fn session_with_import() -> (Session, DeviceId, &'static Spec) {
 }
 
 /// A caller that has already asked. The write being seeded is scaffolding, not the
-/// thing under test — `app/tests/write.rs` is where the consent around it lives.
+/// thing under test — `app/tests/all/write.rs` is where the consent around it lives.
 struct Consented;
 impl WriteHooks for Consented {}
 

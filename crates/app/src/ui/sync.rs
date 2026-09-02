@@ -72,7 +72,7 @@
 //     be asking the same question and expecting a different answer while
 //     overwriting a second slot unbacked. At one box per press that rule is
 //     about the box itself — but [`run`] still carries it across a list of jobs,
-//     because that is the shape the flow was verified in and `app/tests/sync.rs`
+//     because that is the shape the flow was verified in and `app/tests/all/sync.rs`
 //     drives it with two boxes to state the rule at all. The panel hands it one.
 //
 // **What this deliberately does not do.** It does not stop the transport, for
@@ -751,7 +751,7 @@ impl MassReport {
 /// The whole flow after the plan, with the boxes injected.
 ///
 /// Generic over how a job becomes a [`PatternIo`] for the reason `ui::write::run`
-/// is generic over the trait: `app/tests/sync.rs` drives this exact function —
+/// is generic over the trait: `app/tests/all/sync.rs` drives this exact function —
 /// the survey, the one dialog, the per-row opt-out, the per-slot write and the
 /// store failing mid-run — against boxes that are `BTreeMap`s, so the only thing
 /// left untested by the time a cable is involved is the cable.
@@ -1764,7 +1764,7 @@ mod patch_read_tests {
     }
 
     /// A fake box holding one slot's raw bytes, answering [`PatternIo`] the
-    /// same way `app/tests/sync.rs`'s `FakeBox` does — no port, no thread,
+    /// same way `app/tests/all/sync.rs`'s `FakeBox` does — no port, no thread,
     /// just the two round trips the trait names.
     #[derive(Clone)]
     struct FakeBox {

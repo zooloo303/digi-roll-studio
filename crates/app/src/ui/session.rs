@@ -21,7 +21,7 @@
 // [`Chooser`] exists so the decisions in this file — what gets written, when the
 // dirty flag clears, what a refusal says, which boxes lost their ports — can be
 // tested without a window and without a human clicking Cancel. `rfd` is the only
-// implementation that ships ([`NativeChooser`]); `app/tests/session_panel.rs`
+// implementation that ships ([`NativeChooser`]); `app/tests/all/session_panel.rs`
 // drives a scripted one. It is the same move `Rehearsal` makes on the write path,
 // and for the same reason: the interesting half is the decision, not the syscall.
 

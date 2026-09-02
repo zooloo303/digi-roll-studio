@@ -758,7 +758,7 @@ fn micro_timing_does_not_move_a_lock_onto_a_neighbouring_slot() {
 fn a_lane_shorter_than_the_full_step_count_is_indexed_safely() {
     // `PLockLane::values` is a public field and `PLockLane::new`'s padding to 128
     // is a constructor's courtesy, not the type's guarantee — a lane built by
-    // hand can be shorter, and `crates/app/tests/write.rs` builds one. A move at
+    // hand can be shorter, and `crates/app/tests/all/write.rs` builds one. A move at
     // the end of a long pattern must not index past it.
     let mut track = track_with(64, &[(40.0, 60, 1.0)]);
     let short = digi_core::PLockLane {

@@ -65,8 +65,8 @@
 // the transport, for the reason `ui::write` does not.
 //
 // **Nothing here has met hardware.** The flow is driven end to end against a fake
-// box in `app/tests/restore.rs`, including the confirm crossing a thread, and
-// `protocol/tests/safe_write.rs` has had the function itself covered since it
+// box in `app/tests/all/restore.rs`, including the confirm crossing a thread, and
+// `protocol/tests/all/safe_write.rs` has had the function itself covered since it
 // landed — but no backup has been sent to a real box from this button, and the
 // first press is Neil's, at the desk, on a slot he is willing to lose.
 
@@ -148,7 +148,7 @@ pub struct Report {
 
 /// Everything after the ports are open, with the box injected.
 ///
-/// Generic over [`PatternIo`] for the reason the trait exists: `app/tests/restore.rs`
+/// Generic over [`PatternIo`] for the reason the trait exists: `app/tests/all/restore.rs`
 /// drives this exact function against a box that is a `BTreeMap`, so the only thing
 /// left untested by the time a cable is involved is the cable.
 pub fn run(

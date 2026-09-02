@@ -13,7 +13,7 @@
 //! by whether a step's trig is live.
 //!
 //! The write half of `js/elektron/trig-cond.js` is ported too (Phase 6,
-//! 2026-08-18); its suite is `tests/trig_write.rs`, the port of
+//! 2026-08-18); its suite is `tests/all/trig_write.rs`, the port of
 //! `test/trig-write.test.js`. This file stays the read half's.
 
 

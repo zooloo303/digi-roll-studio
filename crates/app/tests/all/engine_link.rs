@@ -722,12 +722,16 @@ fn a_level_follows_the_track_to_its_own_port_not_its_boxs() {
 }
 
 #[test]
-fn a_live_only_box_still_gets_its_level_fader() {
+fn a_box_with_no_gen2_spec_still_gets_its_level_fader() {
     // **The A4 has a published level chart and no SysEx spec, and those are
     // different capabilities.** `params::track_level_midi("A4")` gives CC 95 /
-    // NRPN 1/100; `A4.sysex` is `None` because the box answers no dump request.
-    // Resolving the chart *through* the spec makes the fader dead on every
-    // live-only box — the VOL field is drawn for the track like any other
+    // NRPN 1/100; `A4.sysex` is `None` because the box has no **gen-2** pattern
+    // `Spec` — *not* because it cannot transfer a pattern, which it does (see
+    // `core::device::PatternRoute`, and the same misreading corrected there).
+    // This comment said "because the box answers no dump request" until
+    // 2026-09-01, which is the very conflation `PatternRoute` exists to stop.
+    // Resolving the chart *through* the spec makes the fader dead on every such
+    // box — the VOL field is drawn for the track like any other
     // (`ui::tracks`), it drags, and nothing leaves the machine.
     //
     // No existing test could catch it: every one of them runs on

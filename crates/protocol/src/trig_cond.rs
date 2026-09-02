@@ -288,7 +288,7 @@ mod tests {
 
     // --- the write half. Every expectation below was derived by running the JS
     // under node first (`node /tmp/trig-write-derive.mjs` against the committed
-    // fixtures; the recipe is written into tests/trig_write.rs's doc comment).
+    // fixtures; the recipe is written into tests/all/trig_write.rs's doc comment).
 
     fn blank(spec: &Spec) -> Vec<u8> {
         vec![0u8; spec.pattern.size]
