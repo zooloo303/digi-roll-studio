@@ -1,4 +1,4 @@
-# Build the two downloads and hang them off a draft GitHub release.
+# Build the four downloads and hang them off a draft GitHub release.
 #
 # Triggered by pushing a version tag:
 #
@@ -8,9 +8,15 @@
 # installer needs the MSVC linker and the Windows SDK's rc.exe, and this repo
 # deliberately does not set up a mingw cross-compile (see crates/app/build.rs).
 #
+# Linux is two jobs, because Linux is not one thing: a portable tarball that
+# runs anywhere with a recent enough glibc, and the Arch package, which is the
+# one Linux install this app has actually been run from and the only artefact
+# of the four that can tell a package manager what it needs at runtime. They
+# build the same binary from the same commit; only the wrapper differs.
+#
 # The release is left as a DRAFT. The download page reads
 # /releases/latest, which skips drafts, so nothing on the site changes until
-# someone opens the release, checks the two assets, and hits Publish.
+# someone opens the release, checks the assets, and hits Publish.
 name: release
 
 on:
@@ -95,10 +101,100 @@ jobs:
           path: dist/*.exe
           if-no-files-found: error
 
+  linux:
+    # 22.04 rather than `ubuntu-latest`, and this is the whole job's one real
+    # decision: the binary links glibc, glibc is forward- but not
+    # backward-compatible, and a binary built on 24.04 refuses to start on
+    # anything older with a bare "GLIBC_2.38 not found". Building on the
+    # oldest supported image puts the floor at 2.35 — Debian 12, Ubuntu
+    # 22.04, Fedora 36 — and costs nothing, because nothing here needs a
+    # newer libc.
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Rust
+        run: |
+          rustup update --no-self-update stable
+          rustup default stable
+
+      # The only library this build links; everything else eframe and wgpu
+      # want is dlopen'd at runtime and so is never the linker's problem. The
+      # tarball's INSTALL.md names those.
+      - name: ALSA headers
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libasound2-dev
+
+      # The one place the suite runs on Linux. It is worth its two minutes:
+      # every platform-shaped bug this app has had was found by running it
+      # somewhere new, and the port-name width bug that came with this branch
+      # is caught by a test that only fails when someone changes that layout.
+      - name: Test
+        run: cargo test --workspace
+
+      - name: Build the tarball
+        run: packaging/linux/build-tarball.sh
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: linux-tarball
+          path: dist/*.tar.gz
+          if-no-files-found: error
+
+  arch:
+    # In a container rather than on the runner: makepkg, its PKGBUILD format
+    # and the .pkg.tar.zst it writes are pacman's, and an Ubuntu runner has
+    # none of them. The image is the same base-devel any Arch user building
+    # from the AUR already has.
+    runs-on: ubuntu-latest
+    container: archlinux:base-devel
+    steps:
+      # Before the checkout, because `build-pkg.sh` builds its source tarball
+      # with `git ls-files` — without git present, actions/checkout falls back
+      # to downloading a tarball and there is no repository for it to read.
+      - name: Toolchain
+        run: pacman -Syu --noconfirm --needed git rust
+
+      - uses: actions/checkout@v4
+
+      # makepkg refuses to run as root, and a container step is root. So the
+      # build gets a user, and the checkout gets handed to it — which also
+      # settles git's dubious-ownership check, since the tree then belongs to
+      # whoever is asking about it.
+      - name: A user for makepkg
+        run: |
+          useradd -m builder
+          chown -R builder:builder .
+
+      - name: Build the package
+        # `-H` matters: without it sudo can leave HOME pointing at root's, and
+        # the first thing cargo does is try to write a registry cache into it.
+        run: sudo -u builder -H packaging/linux/build-pkg.sh
+
+      # makepkg's default OPTIONS split a -debug package out of every build.
+      # It is 40 MB of DWARF for the two people who would ever attach a
+      # debugger, and on a release page it reads as a second download nobody
+      # can tell apart from the first.
+      - name: Collect the package
+        run: |
+          mkdir -p dist
+          for pkg in packaging/linux/*.pkg.tar.zst; do
+            case "$pkg" in *-debug-*) continue ;; esac
+            cp "$pkg" dist/
+          done
+          ls -lh dist
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: arch-package
+          path: dist/*.pkg.tar.zst
+          if-no-files-found: error
+
   draft-release:
-    needs: [macos, windows]
+    needs: [macos, windows, linux, arch]
     # Only a tag produces a release; a workflow_dispatch run is a rehearsal and
-    # stops at the two artifacts.
+    # stops at the four artifacts.
     if: startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
     steps:
@@ -114,7 +210,10 @@ jobs:
 
       # Named so the page's matchers find them: /\.(dmg)$/ for the macOS button
       # and /\.(exe|msi)$/ for the Windows one. If these ever stop matching, the
-      # buttons silently fall back to pointing at the releases page.
+      # buttons silently fall back to pointing at the releases page. The two
+      # Linux assets have no button yet — packaging/README.md has the matcher
+      # the page needs, and until it is added they are reachable from the file
+      # list like any other asset.
       - name: Draft the release
         env:
           GH_TOKEN: ${{ github.token }}
@@ -123,5 +222,5 @@ jobs:
             --draft \
             --title "Digi-Roll Studio $GITHUB_REF_NAME" \
             --generate-notes \
-            dist/*.dmg dist/*.exe
+            dist/*.dmg dist/*.exe dist/*.tar.gz dist/*.pkg.tar.zst
           echo "Draft created. Publishing it is what makes the download buttons go live."

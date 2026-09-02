@@ -1,0 +1,48 @@
+# Maintainer: zooloo303
+# Builds Digi-Roll Studio into a native Arch package (.pkg.tar.zst) for advance
+# install via:  sudo pacman -U digi-roll-studio-0.3.2-1-x86_64.pkg.tar.zst
+#
+# The source tarball is the repo itself, so this builds from source exactly like
+# the macOS and Windows CI builds do. Run from the repo root:
+#
+#   packaging/linux/build-pkg.sh
+
+pkgname=digi-roll-studio
+pkgver=0.3.2
+pkgrel=1
+pkgdesc="Native Rust desktop sequencer for the Elektron Digitakt II, Digitone II and Analog Four"
+arch=('x86_64')
+url="https://github.com/zooloo303/digi-roll-studio"
+license=('GPL-3.0-or-later')
+# Only `alsa-lib` is linked. Everything after it is dlopen'd at runtime by
+# eframe/wgpu, so makepkg's dependency scanner — which reads ELF NEEDED entries
+# — cannot see it: `ldd` on the release binary lists just libasound, libgcc,
+# libm and libc. Left undeclared, `pacman -U` succeeds on a machine missing one
+# and the app then dies inside dlopen at launch, which reads as an app bug
+# rather than a packaging one. Taken from the SONAMEs in the built binary:
+#   wayland             libwayland-client.so.0, libwayland-egl.so.1
+#   libxkbcommon(-x11)  keyboard handling, wayland and X11 paths both
+#   vulkan-icd-loader   libvulkan.so.1, the wgpu backend
+#   libglvnd            libEGL.so.1
+#   dbus                libdbus-1.so.3
+#   libx11 libxcb libxcursor libxi   the X11/XWayland fallback path
+depends=('alsa-lib' 'dbus' 'libglvnd' 'libx11' 'libxcb' 'libxcursor' 'libxi'
+         'libxkbcommon' 'libxkbcommon-x11' 'vulkan-icd-loader' 'wayland')
+makedepends=('rust')
+source=("digi-roll-studio-$pkgver.tar.gz")
+sha256sums=('e90b7d7f1708a3a92fb94ab13f5a49fba8bfe38cc6d5f96f318656edc13ea98f')
+
+build() {
+  cd "$srcdir/$pkgname-$pkgver"
+  cargo build --release --locked -p digi_roll_studio
+}
+
+package() {
+  cd "$srcdir/$pkgname-$pkgver"
+
+  install -Dm755 target/release/digi_roll_studio "$pkgdir/usr/bin/digi_roll_studio"
+  install -Dm644 icons/windows/icon-256.png "$pkgdir/usr/share/icons/hicolor/256x256/apps/digi-roll-studio.png"
+  install -Dm644 packaging/linux/digi-roll-studio.desktop "$pkgdir/usr/share/applications/digi-roll-studio.desktop"
+  install -Dm644 LICENSE "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
+  install -Dm644 CREDITS.md "$pkgdir/usr/share/licenses/$pkgname/CREDITS.md"
+}

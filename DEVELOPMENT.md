@@ -19,7 +19,7 @@ a box accepting a write and quietly substituting something else.
 ```sh
 cargo build --release
 cargo test -p digi_protocol --test all   # the dev loop: one crate, 345 tests, ~2s
-cargo test --workspace                   # before a commit; 1,843 tests, ~7s, no hardware
+cargo test --workspace                   # before a commit; 1,855 tests, ~7s, no hardware
 cargo clippy --workspace --all-targets   # clean as of 2026-08-23; keep it that way
 cargo run -p digi_roll_studio
 ```
@@ -777,7 +777,8 @@ the port's own defence already covers the new platform.** WinMM hands long SysEx
 back in 1 KB pieces and does not reassemble them — which would have shredded every
 pattern read — except `midi::sysex_stream` already accumulates F0…F7 across
 callbacks because *ALSA* does the same thing. That was written for a platform
-nobody here runs either, and it is the only reason the read path needed no work.
+nobody here ran at the time — Linux joined the desk on 2026-09-02, and lesson 20
+is what it found — and it is the only reason the read path needed no work.
 
 ### 10. A new feature's tests are where the *old* feature's bugs come out
 
@@ -1290,6 +1291,40 @@ nobody's hands in it. The conversion is two bytes, and **one pair differs in
 nothing else**, which is what makes it a rule rather than a correlation. A box
 that has already done the conversion you need is a better oracle than the format
 document you do not have.
+
+### 20. A fixed-width panel is a claim about strings the OS supplies
+
+Setup is `Panel::right("setup").exact_size(320.0)`, and had been since the v2
+pass, on the evidence of it looking right on macOS every day for months. The
+first launch on Linux had every heading in it missing its first two characters:
+`TRANSFER` read as `ANSFER`, `BACKUPS` as `CKUPS`.
+
+Nothing about the panel was wrong. The port picker inside it was a `ComboBox` in
+a horizontal layout, which inherits `TextWrapMode::Extend`, and `Extend` lays a
+closed picker out at the full width of the name it is showing — `.width()` is
+only a minimum. The name is the OS's:
+
+    CoreMIDI   Elektron Digitone II                                     fits
+    ALSA       Elektron Digitone II:Elektron Digitone II MIDI 1 28:0     ~348px
+
+28px of overflow, in a panel that cannot grow. Because `exact_size` clamps the
+rect it *reports* to the parent from the right-hand edge, those 28px moved the
+boundary the central panel was told it could draw up to — so the workspace,
+which is added after, painted over the left edge of everything in Setup. The
+symptom appeared two panels away from the widget that caused it.
+
+**Two things to take from it.** The first is that any widget rendering a string
+the operating system chose is a portability question, and the answer is
+`.truncate()` plus a hover carrying the full text — on ALSA the truncated tail
+is the `client:port` numbers that tell two identically-named sockets apart, so
+losing it silently is not free.
+
+The second is how it gets caught next time, which is lesson 8's problem again:
+**a layout claim is testable without a screen.** Draw the strip into a `Ui`
+whose `max_rect` is the width the panel actually gives it, hand it the real ALSA
+string, and assert `ui.min_rect().width() <= 320.0`. That measures 347.8 before
+the fix and fails, which is a better report than the screenshot was — the
+screenshot showed clipped headings and pointed at the wrong file.
 
 ---
 

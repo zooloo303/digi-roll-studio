@@ -83,7 +83,7 @@ socket. The checkbox is at the bottom of BOXES.
 | +Drive writes | the file-write trio (`0x57`/`0x58`/`0x59`) is implemented in `digi_midi` and hardware-verified for a **single chunk**, behind a second allowlist disjoint from the read one. **The app itself never calls it** — the only caller is one example, so nothing you can press writes a file to a +Drive. Above 16 KiB is refused rather than guessed, so no whole project has been written back. `0x5A` Move, `0x5B` Copy and `0x5C` **Delete** are implemented nowhere in this workspace and nothing can reach them |
 | Copy-track | the in-app whole-track copy works — Shift+C/Shift+V in the TRACKS grid, re-reading the source at paste time so it survives a scene change. The **box-to-box** copy, which translates p-lock lanes between two boxes' payloads by parameter name, is ported and still has **no caller** |
 | Song mode | rows of scenes with play count, length, mute and an END row, plus the `LST` trig condition it makes answerable. **Nothing in it has met a box or a screen yet** — `PLAN.md` §9 has the list. Per-row tempo is deliberately not built: the session has one clock |
-| Platforms | macOS and Windows are both **hardware-tested from their own installer** — on Windows a DN2 was auto-connected and written to; a DT2 has not met a Windows build. Linux is untested |
+| Platforms | macOS, Windows and Linux all build, test and package on CI, and all three have been **installed and launched from their own artefact**. On Windows a DN2 was auto-connected and written to; a DT2 has not met a Windows build. On Linux (Arch/Omarchy, from the `.pkg.tar.zst`) a DN2 was auto-connected over ALSA and named its OS build — **no write has been run from a Linux build**, and the portable tarball has been installed but not yet run against a box |
 
 **What is left before MVP1:** crash-safety — saving is manual, so a crash still
 takes the session. Packaging is done: both installers are built, and each has
@@ -99,7 +99,7 @@ uses `midir` rather than `rtmidi`.
 
 ```sh
 cargo build --release
-cargo test --workspace          # 1,810 tests, no system dependencies
+cargo test --workspace          # 1,855 tests, no system dependencies
 cargo run -p digi_roll_studio   # the app
 ```
 
@@ -107,13 +107,21 @@ cargo run -p digi_roll_studio   # the app
 
 ```sh
 packaging/macos/build-dmg.sh          # Digi-Roll-Studio-<ver>-macOS-AppleSilicon.dmg
+packaging/linux/build-tarball.sh      # Digi-Roll-Studio-<ver>-Linux-x86_64.tar.gz
+packaging/linux/build-pkg.sh          # digi-roll-studio-<ver>-1-x86_64.pkg.tar.zst
 ```
 
 The Windows installer is built on Windows, by
-`packaging\windows\build-installer.ps1`. Pushing a `v*` tag runs both on CI and
-drafts a release with the two assets attached — see
-[`packaging/README.md`](packaging/README.md), which also explains why the macOS
-bundle has to be ad-hoc re-signed after it is assembled and not before.
+`packaging\windows\build-installer.ps1`. Each artefact is built on the platform
+it runs on: pushing a `v*` tag runs all four on CI and drafts a release with the
+four assets attached — see [`packaging/README.md`](packaging/README.md), which
+also explains why the macOS bundle has to be ad-hoc re-signed after it is
+assembled and not before, and why Linux ships two downloads rather than one.
+
+On Linux the tarball installs per-user into `~/.local` with the `install.sh`
+inside it and needs no root; on Arch and derivatives prefer the package, which
+is the only one of the four that can declare the libraries eframe and wgpu
+`dlopen` at runtime and so refuse to install where the app would not start.
 
 **Hardware is never part of the dev loop.** The protocol suites read `.syx`
 captures from `crates/protocol/tests/fixtures/` — 34 real dumps, 1.8 MB,
