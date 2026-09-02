@@ -52,7 +52,8 @@ use crate::ui::tracks::Selection;
 ///
 /// The union of the five panels' outcomes, because the shell has one call site
 /// and every answer reaches it through this. `reloaded` is Session's, `stepped`
-/// is Edit's, and `edited` is Edit's, Harmony's, Generate's and Song's.
+/// is Edit's, `settings` is Generate's, and `edited` is Edit's, Harmony's,
+/// Generate's and Song's.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct Outcome {
     pub close: bool,
@@ -62,6 +63,11 @@ pub struct Outcome {
     pub edited: bool,
     /// The history moved. Sync the engine; do **not** record a step.
     pub stepped: bool,
+    /// Unsaved work that changed no note — the Generate panel's settings, now
+    /// that they ride in the session. Marks the file dirty and does nothing
+    /// else: there is no step for `history::Content` (patterns only) to hold
+    /// and nothing for the engine to re-sync.
+    pub settings: bool,
 }
 
 /// Draw the panel for `tool`. Every arm draws its own panel and returns —
@@ -96,6 +102,7 @@ pub fn ui(
                 reloaded: out.reloaded,
                 edited: false,
                 stepped: false,
+                settings: false,
             }
         }
         Tool::Edit => {
@@ -105,6 +112,7 @@ pub fn ui(
                 reloaded: false,
                 edited: out.edited,
                 stepped: out.stepped,
+                settings: false,
             }
         }
         Tool::Harmony => {
@@ -114,6 +122,7 @@ pub fn ui(
                 reloaded: false,
                 edited: out.edited,
                 stepped: false,
+                settings: false,
             }
         }
         Tool::Generate => {
@@ -123,6 +132,7 @@ pub fn ui(
                 reloaded: false,
                 edited: out.edited,
                 stepped: false,
+                settings: out.settings,
             }
         }
         Tool::Song => {
@@ -132,6 +142,7 @@ pub fn ui(
                 reloaded: false,
                 edited: out.edited,
                 stepped: false,
+                settings: false,
             }
         }
         // The one panel here that reports nothing but its own `×`, and since
@@ -151,7 +162,7 @@ pub fn ui(
         // distinction between the two was worth this much.
         Tool::Presets => {
             let out = presets_panel.ui(ui, session, selection, transfers_busy);
-            Outcome { close: out.close, reloaded: false, edited: false, stepped: false }
+            Outcome { close: out.close, reloaded: false, edited: false, stepped: false, settings: false }
         }
     }
 }

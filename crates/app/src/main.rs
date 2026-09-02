@@ -332,7 +332,12 @@ impl eframe::App for App {
         // One change-tracking path, not two: the flag the engine snapshot is
         // keyed off is the flag the session file is keyed off. An undo counts —
         // it is a change relative to what is on disk.
-        self.session_file.mark_edited(edited || stepped);
+        //
+        // `settings` joins them here and nowhere else. The Generate panel's
+        // settings are saved with the session (`Session::generator`), so moving
+        // one is work you can lose; but no note moved, so it must not reach the
+        // history step below or the engine sync under it — see `tools::Outcome`.
+        self.session_file.mark_edited(edited || stepped || tool_outcome.settings);
 
         // **Where an undo step begins and ends.** `begin` on the first frame of a
         // change, `commit` when the pointer comes up — so a drag across forty
@@ -344,6 +349,12 @@ impl eframe::App for App {
         // it: it would be measured against music no longer in the window.
         if reloaded {
             self.history.clear();
+            // The session on screen is a different one, so the Generate panel's
+            // rows are too: it takes the settings that came with the file, or
+            // its defaults if the file carries none. Told rather than left to
+            // notice, because Session is the tool drawing when either path that
+            // replaces a session runs — see `GeneratePanel::session_replaced`.
+            self.generate.session_replaced(&self.session);
         } else if edited {
             if let Some(before) = before {
                 self.history.begin(before);

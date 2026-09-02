@@ -74,18 +74,34 @@
 // a row's own design already produced; nothing here invents a lane budget of
 // its own.
 //
-// ## What is not persisted
+// ## The settings ride in the session — added 2026-09-02
 //
-// **The generate settings — genre, progression, seed, feel, every row — live
-// only in this panel, not in `Session` or the project file.** `Harmony` could
-// move into `core` because it is core's own type; `context::GenContext` is
-// `crates/generator`'s, and `core` cannot depend on `generator` without a
-// dependency cycle (`generator` already depends on `core`). Closing that gap
-// is a `core::project` schema change nobody has asked for yet, so quitting the
-// app currently loses whatever this panel's rows were set to — plainly worse
-// than losing nothing, and disclosed here rather than left for someone to
-// discover. The music it wrote into the session *is* saved, same as any other
-// note.
+// **Genre, progression, seed, feel and every row are saved with the project
+// and come back with it**, so a session recalls the arrangement it was written
+// by and not only the notes that came out. They live in `Session::generator`,
+// which core carries as an opaque `serde_json::Value` and never reads:
+// `context::GenContext` is `crates/generator`'s type and `core` cannot name it
+// without closing a dependency cycle (`generator` already depends on `core`).
+// This file is the one place that depends on both, so this file does the
+// encoding — `mirror_into` on the way out, `session_replaced` on the way back.
+//
+// Moving `GenContext` into `core` instead — the way `Harmony` moved, since it
+// was core's own type — would have dragged `genres`, `progressions` and
+// `theory` with it, which is most of the generator crate, to make one field
+// nameable. The opaque handle is the same bargain `DeviceModel::sysex` already
+// strikes with `protocol`.
+//
+// Two fields do not travel this way and should not: `root` and `scale` mirror
+// `Session::harmony`, which is saved in its own place and copied in at the top
+// of every frame. What still does not persist is `written` — which tracks this
+// panel touched, and therefore may be re-rolled without a confirm — because it
+// is a claim about a *sitting*, not about a file: reopening yesterday's project
+// is not consent to overwrite yesterday's tracks unasked.
+//
+// A settings change is unsaved work but not an *edit*: it marks the file dirty
+// through `Outcome::settings` and stops there, opening no history step (a
+// slider moves no note, and `history::Content` snapshots patterns only) and
+// prompting no engine re-sync.
 
 use std::collections::{HashMap, HashSet};
 
@@ -135,6 +151,11 @@ pub struct Outcome {
     /// edit — `core::history` snapshots patterns, so a generate that rewrites
     /// several tracks undoes as one step for free.
     pub edited: bool,
+    /// This panel's own settings changed and were mirrored into
+    /// `Session::generator`. Unsaved work, and nothing else: no note moved, so
+    /// there is no history step to open and nothing for the engine to re-sync.
+    /// The shell folds this into the dirty flag alone — see `ui::tools`.
+    pub settings: bool,
 }
 
 /// One "on" row, generated and ready to land on its track — what the confirm
@@ -427,6 +448,7 @@ fn random_seed() -> u32 {
     nanos.wrapping_mul(2_654_435_761).max(1)
 }
 
+#[derive(Debug)]
 enum Status {
     Applied { rows: usize, row_warnings: Vec<String>, pool_warnings: Vec<String> },
     Failed(String),
@@ -455,6 +477,67 @@ pub struct GeneratePanel {
 
 
 impl GeneratePanel {
+    /// The session was replaced — a project opened, or New pressed. Take the
+    /// settings that came with it, or go back to the defaults if it carries
+    /// none.
+    ///
+    /// **Driven by the shell's `reloaded` rather than noticed here.** Both
+    /// paths that replace a session (`ui::session`'s `open_from` and `new`)
+    /// run while Session is the tool on screen, so this panel is not drawing
+    /// when either happens; a panel that only looked while it was open would
+    /// adopt a file's settings the first time you happened to click Generate,
+    /// which is a load an arbitrary number of edits late.
+    pub fn session_replaced(&mut self, session: &Session) {
+        // All three describe the session that just left: which tracks this
+        // panel had written, a confirm dialog measured against them, and what
+        // the last press did.
+        self.written.clear();
+        self.confirm = None;
+        self.status = None;
+
+        self.ctx = match &session.generator {
+            None => GenContext::default(),
+            Some(value) => match serde_json::from_value::<GenContext>(value.clone()) {
+                Ok(ctx) => ctx.adopted(),
+                // Settings this build can no longer read cost the settings and
+                // nothing else — see `Session::generator`'s own header. Said
+                // out loud rather than swallowed, because the alternative is a
+                // panel that silently shows Dnb defaults over somebody's saved
+                // arrangement and looks like it lost the file.
+                Err(e) => {
+                    self.status = Some(Status::Failed(format!(
+                        "this session's generate settings could not be read ({e}) — \
+                         the panel is back to its defaults, and no note was touched"
+                    )));
+                    GenContext::default()
+                }
+            },
+        };
+    }
+
+    /// Put this frame's settings in the session if they moved, and say whether
+    /// they did — the panel's [`Outcome::settings`].
+    ///
+    /// The whole context goes across on any change rather than a field at a
+    /// time: it is one value in the file, and a partial mirror would be a
+    /// second definition of what "the settings" are.
+    fn mirror_into(&mut self, session: &mut Session, before: &GenContext) -> bool {
+        if self.ctx == *before {
+            return false;
+        }
+        match serde_json::to_value(&self.ctx) {
+            Ok(value) => {
+                session.generator = Some(value);
+                true
+            }
+            // A context that will not encode is a bug in this crate, not a
+            // state anybody can type their way into, and it must not cost a
+            // person the panel they are standing in: the settings simply do not
+            // travel, and the next change tries again.
+            Err(_) => false,
+        }
+    }
+
     pub fn ui(&mut self, ui: &mut Ui, session: &mut Session) -> Outcome {
         // Mirrors the Harmony panel's own Root/Scale rather than a second pair
         // — see the module header. The scale always has to be concrete for the
@@ -462,12 +545,21 @@ impl GeneratePanel {
         self.ctx.root = session.harmony.root;
         self.ctx.scale = session.harmony.scale.unwrap_or(DEFAULT_SCALE);
 
+        // Snapshot *after* the mirror above, so moving the Harmony panel's own
+        // Root/Scale does not read as an edit to these settings: those two
+        // fields are Harmony's, saved in its own place, and copied here every
+        // frame either way.
+        let before = self.ctx.clone();
+
         // The v2 title bar carries the key/scale context that used to be a
         // permanent KEY row in the body — see the module header's point 1.
         let context = key_context_string(session);
         let mut out = Outcome {
             close: panel_title_bar(ui, "Generate", &context, &mut self.reference_visible),
             edited: false,
+            // Answered at the end of the frame, once every widget has had its
+            // say — see `mirror_into`.
+            settings: false,
         };
 
         egui::ScrollArea::vertical()
@@ -486,6 +578,7 @@ impl GeneratePanel {
                 ui.add_space(10.0);
                 out.edited |= self.generate_group(ui, session);
             });
+        out.settings = self.mirror_into(session, &before);
         out
     }
 
@@ -1339,6 +1432,8 @@ fn reference_text(ui: &mut Ui) {
 mod tests {
     use super::*;
     use digi_core::model::Note;
+    use digi_core::project::Project;
+    use digi_generator::context::Feel;
 
     fn session_with_two_boxes() -> Session {
         digi_core::two_box_session()
@@ -2014,5 +2109,179 @@ mod tests {
             .map(|t| t.notes.len())
             .sum();
         assert!(after_notes > before_notes, "applying the plan should have written some notes");
+    }
+    // --- the settings ride in the session -----------------------------------
+
+    /// Draw the panel once and hand back what the frame did. `mirror_into`
+    /// runs at the *end* of a frame against a snapshot taken at the start, so
+    /// only a change made while the panel is drawing counts as a change to
+    /// save — which is every change there is, since nothing outside this
+    /// panel touches its context.
+    fn frame(ctx: &egui::Context, panel: &mut GeneratePanel, session: &mut Session) -> Outcome {
+        let mut out = Outcome::default();
+        let mut output = ctx.run_ui(egui::RawInput::default(), |u| {
+            out = panel.ui(u, session);
+        });
+        output.textures_delta.clear();
+        out
+    }
+
+    /// The panel's own settings, as they land in `Session::generator`.
+    fn stored(session: &Session) -> GenContext {
+        serde_json::from_value(session.generator.clone().expect("settings in the session"))
+            .expect("what this panel wrote, it can read")
+    }
+
+    #[test]
+    fn drawing_the_panel_is_not_a_change_to_save() {
+        // The counterpart to `mark_edited` in the shell: opening Generate and
+        // looking at it must not put a dot on the title bar or turn a quit into
+        // a "save first?". Two frames, because a panel that mirrored itself on
+        // every pass would only show it from the second one.
+        let ctx = egui::Context::default();
+        let mut session = session_with_two_boxes();
+        let mut panel = GeneratePanel::default();
+
+        for _ in 0..2 {
+            let out = frame(&ctx, &mut panel, &mut session);
+            assert!(!out.settings, "drawing is not editing");
+            assert!(!out.edited);
+        }
+        assert!(session.generator.is_none(), "nothing was changed, so nothing was written");
+    }
+
+    #[test]
+    fn a_setting_that_moves_lands_in_the_session_and_says_it_is_unsaved_work() {
+        let mut session = session_with_two_boxes();
+        let mut panel = GeneratePanel { ctx: default_ctx_on(&session), ..GeneratePanel::default() };
+        let before = panel.ctx.clone();
+
+        assert!(!panel.mirror_into(&mut session, &before), "nothing moved yet");
+        assert!(session.generator.is_none());
+
+        panel.ctx.feel.motion = 90;
+        panel.ctx.seed = 4242;
+        assert!(panel.mirror_into(&mut session, &before), "two settings moved");
+
+        let saved = stored(&session);
+        assert_eq!(saved.feel.motion, 90);
+        assert_eq!(saved.seed, 4242);
+    }
+
+    #[test]
+    fn a_key_change_is_not_a_settings_change() {
+        // `root` and `scale` mirror `Session::harmony`, which is saved in its
+        // own field — so turning the key must not also report this panel's
+        // settings as unsaved work, or every Harmony edit would mark the file
+        // dirty twice over and through the wrong door.
+        let ctx = egui::Context::default();
+        let mut session = session_with_two_boxes();
+        let mut panel = GeneratePanel::default();
+        frame(&ctx, &mut panel, &mut session);
+
+        session.harmony.root = 7;
+        let out = frame(&ctx, &mut panel, &mut session);
+        assert_eq!(panel.ctx.root, 7, "the panel follows the key");
+        assert!(!out.settings, "but it is Harmony's change, not this panel's");
+    }
+
+    #[test]
+    fn the_settings_survive_a_save_and_an_open() {
+        // The whole point: a session recalls the arrangement it was written by,
+        // not only the notes that came out.
+        let mut session = session_with_two_boxes();
+        let mut panel = GeneratePanel { ctx: default_ctx_on(&session), ..GeneratePanel::default() };
+        let before = panel.ctx.clone();
+        panel.ctx.genre = GenreId::Techno;
+        panel.ctx.progression = String::from("i iv VI v");
+        panel.ctx.seed = 99;
+        panel.ctx.seed_locked = true;
+        panel.ctx.bars = 4;
+        panel.ctx.feel = Feel { motion: 71, looseness: 12, humanize: 3 };
+        panel.ctx.parts[2].on = false;
+        panel.ctx.parts[0].destination.track = 5;
+        panel.mirror_into(&mut session, &before);
+        let wanted = panel.ctx.clone();
+
+        let json = Project::new(session).to_json_pretty().unwrap();
+        assert!(json.contains("\"generator\""), "and they are in the file under their own key");
+        let reopened = Project::from_json(&json).unwrap().session;
+
+        let mut fresh = GeneratePanel::default();
+        fresh.session_replaced(&reopened);
+        assert_eq!(fresh.ctx, wanted, "every field came back, rows and destinations included");
+    }
+
+    #[test]
+    fn a_part_added_after_a_load_cannot_take_an_id_that_came_off_disk() {
+        // The `DeviceId::reserve_past` hazard, for parts: ids are stream tags
+        // rather than indices — see `context`'s header — and the counter behind
+        // them starts at 1 every launch. A row added after a load must not
+        // collide with one the file already named, or a reroll would move two
+        // rows at once.
+        let session = session_with_two_boxes();
+        let mut panel = GeneratePanel::default();
+        let mut off_disk = default_ctx_on(&session);
+        for (i, part) in off_disk.parts.iter_mut().enumerate() {
+            part.id = PartId(9_000 + i as u64);
+        }
+        let loaded = Session {
+            generator: Some(serde_json::to_value(&off_disk).unwrap()),
+            ..session
+        };
+
+        panel.session_replaced(&loaded);
+        assert!(PartId::next().0 > 9_005, "the counter was pushed past every id the file used");
+    }
+
+    #[test]
+    fn a_session_carrying_no_settings_puts_the_panel_back_to_its_defaults() {
+        // A project written before this field, or one straight off New. The
+        // rows on screen belong to the session that just left.
+        let mut session = session_with_two_boxes();
+        let mut panel = generated_panel(&mut session);
+        panel.ctx.genre = GenreId::House;
+        assert!(!panel.written.is_empty(), "it has written to this session");
+
+        panel.session_replaced(&Session::default());
+        assert_eq!(panel.ctx.genre, GenContext::default().genre);
+        assert!(
+            panel.written.is_empty(),
+            "reopening a project is not consent to overwrite its tracks unasked"
+        );
+        assert!(panel.confirm.is_none(), "a dialog measured against the old session is gone");
+    }
+
+    #[test]
+    fn settings_this_build_cannot_read_cost_the_settings_and_nothing_else() {
+        // A hand-edited file, or one from a build that knew a genre this one
+        // does not. The panel has to open either way — the notes in that
+        // session are perfectly good, and refusing to draw would strand them.
+        let session = Session {
+            generator: Some(serde_json::json!({ "genre": "gabber" })),
+            ..session_with_two_boxes()
+        };
+        let mut panel = GeneratePanel::default();
+        panel.session_replaced(&session);
+
+        // Field by field rather than whole: `GenContext::default()` mints six
+        // fresh `PartId`s every time it is called, so two defaults are never
+        // equal and never should be.
+        let want = GenContext::default();
+        assert_eq!(panel.ctx.genre, want.genre);
+        assert_eq!(panel.ctx.progression, want.progression);
+        assert_eq!(panel.ctx.seed, want.seed);
+        assert_eq!(panel.ctx.feel, want.feel);
+        assert_eq!(
+            panel.ctx.parts.iter().map(|p| p.role).collect::<Vec<_>>(),
+            want.parts.iter().map(|p| p.role).collect::<Vec<_>>()
+        );
+        match &panel.status {
+            Some(Status::Failed(why)) => {
+                assert!(why.contains("could not be read"), "it says so: {why}");
+                assert!(why.contains("no note was touched"));
+            }
+            other => panic!("expected a failure the panel can show, got {other:?}"),
+        }
     }
 }

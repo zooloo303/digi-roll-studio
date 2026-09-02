@@ -240,7 +240,7 @@ pub fn default_parts() -> Vec<Part> {
 
 /// The song context: everything a generate run needs above the individual
 /// pattern slots.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct GenContext {
     pub genre: GenreId,
     /// Mirrors `Harmony::root`.
@@ -291,6 +291,20 @@ impl GenContext {
         self.feel = self.feel.sanitized();
         self.parts = self.parts.into_iter().map(Part::sanitized).collect();
         self
+    }
+
+    /// Settings straight off a project file → settings this process can use.
+    ///
+    /// [`sanitized`](Self::sanitized) plus the one thing a load has to do that
+    /// a hand edit does not: push the part-id counter past every id the file
+    /// used, so a row added afterwards cannot collide with one that came off
+    /// disk. `Project::from_json` does exactly this for device ids at the same
+    /// point, and the two are the same hazard — an id that is a stream tag
+    /// rather than an index, handed out by a process-wide counter that starts
+    /// at 1 every launch.
+    pub fn adopted(self) -> Self {
+        PartId::reserve_past(self.parts.iter().map(|p| p.id.0).max().unwrap_or(0));
+        self.sanitized()
     }
 
     /// Switching genre re-defaults the things that are *about* the genre —

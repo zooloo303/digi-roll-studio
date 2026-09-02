@@ -198,6 +198,28 @@ pub struct Session {
     /// engine. See `EngineLink::set_song_mode`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub song: Option<Song>,
+    /// The Generate panel's settings — genre, progression, seed, feel, and the
+    /// part rows with their destinations — carried so a session recalls the
+    /// arrangement it was written by, not only the notes that came out.
+    ///
+    /// **Opaque on purpose.** These are `generator::context::GenContext`, and
+    /// `core` cannot name that type: `generator` already depends on `core`, so
+    /// a field of it would close a dependency cycle. Core therefore carries the
+    /// value and never reads it, the same bargain `DeviceModel::sysex` strikes
+    /// with `protocol` — the layer that owns the meaning does the encoding, and
+    /// here that is `app::ui::generate`, which depends on both crates.
+    ///
+    /// `None` for a project written before this field, and for a session whose
+    /// Generate panel was never opened. A file whose value no longer
+    /// deserializes — a genre removed, say — loses these settings and keeps
+    /// every note: the panel falls back to its defaults rather than refusing to
+    /// open, which is why this is a `Value` here and not a string the loader
+    /// would have to prove.
+    ///
+    /// **Not undoable**, for `harmony`'s reason above: changing a slider edits
+    /// no note, and `history::Content` snapshots patterns only.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub generator: Option<serde_json::Value>,
 }
 
 impl Default for Session {
@@ -210,6 +232,7 @@ impl Default for Session {
             current_scene: 0,
             harmony: Harmony::default(),
             song: None,
+            generator: None,
         }
     }
 }

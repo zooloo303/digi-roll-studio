@@ -565,6 +565,16 @@ The elements:
   moved the floor rather than the range. A row's ↻ re-rolls that row and whatever
   answers it below.
 
+  **The settings are saved with the session** (2026-09-02), so a project recalls
+  the arrangement it was written by and not only the notes that came out — genre,
+  progression, seed, feel and every row, including where each one points. They
+  ride in `Session::generator` as an opaque value core carries and never reads:
+  `GenContext` is `crates/generator`'s type, and core naming it would close a
+  dependency cycle. `ui::generate` owns the encoding, being the one place that
+  depends on both crates. Key and scale are the exception and stay Harmony's, as
+  they always were. Moving a slider marks the file dirty without opening a
+  history step — it edits no note.
+
   **Lead (call) and Lead (response)** are a pair of roles that trade phrases
   across two tracks. Row order is the pairing, as it is everywhere else here: a
   response answers the nearest call above it. The turn grid is derived from the
