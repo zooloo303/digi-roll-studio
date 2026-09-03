@@ -16,6 +16,7 @@ mod restore;
 mod restore_panel;
 mod session_panel;
 mod sync;
+mod tracks_clear;
 mod tracks_clipboard;
 mod transport_space;
 mod write;

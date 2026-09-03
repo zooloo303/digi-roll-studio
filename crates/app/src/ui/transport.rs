@@ -177,7 +177,7 @@ pub fn ui(
 /// grow into. PANIC is emphatically not on a key — see [`right_zone_b`] for why
 /// it is not even next to the transport buttons.
 pub fn shortcuts(ui: &Ui, engine: &mut EngineLink, session: &Session) -> bool {
-    if !space_tap(ui.ctx()) {
+    if !space_tap(ui.ctx(), session) {
         return false;
     }
     if engine.is_playing() {
@@ -209,10 +209,13 @@ pub fn shortcuts(ui: &Ui, engine: &mut EngineLink, session: &Session) -> bool {
 /// match here is `matches_exact`, and those two chords stay free.
 ///
 /// Guarded on focus and on modals, in that order. Focus is the same guard
-/// `ui::edit::shortcuts` and `ui::tracks`'s clipboard carry: with the tempo
-/// `DragValue` or any `TextEdit` focused, space is a character being typed, and
-/// egui also gives a focused clickable widget its space as a click
-/// (`context.rs` ~1467). The modal guard is this shortcut's own — a write, sync
+/// `ui::edit::shortcuts` and `ui::tracks`'s clipboard carry — and the same
+/// exemption: with the tempo `DragValue` or any `TextEdit` focused, space is a
+/// character being typed, but a clicked TRACKS cell holds focus too (that is
+/// what arms its Delete) and the transport must not go quiet just because
+/// someone picked a track. Nor does the cell get the space instead: egui only
+/// turns a space into a click on a focused widget while the key event is still
+/// in the queue (`context.rs` ~1467), and this runs first and takes it. The modal guard is this shortcut's own — a write, sync
 /// or restore dialog is a question waiting for an answer, and starting the
 /// transport underneath one is not an answer. `top_modal_layer` reports the
 /// previous frame's modal, which is exactly right for a dialog that was opened
@@ -222,8 +225,8 @@ pub fn shortcuts(ui: &Ui, engine: &mut EngineLink, session: &Session) -> bool {
 /// space is printable, so it makes both (`egui-winit` 0.36.1 `lib.rs` ~1064) —
 /// goes with it. Consuming half a keypress and leaving the other half for
 /// whatever takes focus next is how a stray space ends up in a track name.
-fn space_tap(ctx: &egui::Context) -> bool {
-    if ctx.memory(|m| m.focused().is_some() || m.top_modal_layer().is_some()) {
+fn space_tap(ctx: &egui::Context, session: &digi_core::Session) -> bool {
+    if crate::ui::tracks::typing_elsewhere(ctx, session) || ctx.memory(|m| m.top_modal_layer().is_some()) {
         return false;
     }
     ctx.input_mut(|i| {
@@ -867,9 +870,20 @@ mod tests {
     /// after it — a shortcut that fires and does not consume is a space that
     /// also lands somewhere else.
     fn tap(ctx: &egui::Context, events: Vec<egui::Event>) -> (bool, Vec<egui::Event>) {
+        tap_in(ctx, events, &digi_core::two_box_session())
+    }
+
+    /// The same, against a session the caller holds — needed by the TRACKS-cell
+    /// test below, since the guard asks *that* session which cell ids exist and
+    /// every `two_box_session()` mints fresh device ids.
+    fn tap_in(
+        ctx: &egui::Context,
+        events: Vec<egui::Event>,
+        session: &Session,
+    ) -> (bool, Vec<egui::Event>) {
         let mut answer = (false, Vec::new());
         let mut output = ctx.run_ui(egui::RawInput { events, ..Default::default() }, |ui| {
-            let took = space_tap(ui.ctx());
+            let took = space_tap(ui.ctx(), session);
             let left = ui.ctx().input(|i| i.events.clone());
             answer = (took, left);
         });
@@ -933,6 +947,24 @@ mod tests {
         let (took, left) = tap(&ctx, space(egui::Modifiers::NONE));
         assert!(!took, "a space is a character while something is being typed into");
         assert_eq!(left.len(), 2, "and it reaches the field it was typed into");
+    }
+
+    #[test]
+    fn a_clicked_track_cell_does_not_take_the_transport_away() {
+        // A TRACKS cell holds keyboard focus once it is clicked — that is what
+        // arms its Delete (`ui::tracks::handle_clear_shortcut`). It is not a
+        // field being typed into, so the space still belongs to the transport;
+        // a guard that could not tell the two apart would mean picking a track
+        // silently stopped the spacebar working, which is the regression this
+        // test exists for.
+        let ctx = egui::Context::default();
+        let session = digi_core::two_box_session();
+        let cell = crate::ui::tracks::cell_id(session.devices[0].id, 0);
+        ctx.memory_mut(|m| m.request_focus(cell));
+
+        let (took, left) = tap_in(&ctx, space(egui::Modifiers::NONE), &session);
+        assert!(took, "a space with a track cell selected is still the transport");
+        assert!(left.is_empty(), "and it is taken whole, so the cell never sees it as a click");
     }
 
     #[test]

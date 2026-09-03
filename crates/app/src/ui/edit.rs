@@ -1266,16 +1266,21 @@ fn gesture_count() -> usize {
 /// this panel can be closed, and a shortcut that only works while a panel is
 /// showing is a shortcut nobody finds. Returns whether the history moved.
 ///
-/// **Guarded on nothing holding keyboard focus**, which is egui's equivalent of
+/// **Guarded on nothing being typed into**, which is egui's equivalent of
 /// `js/pianoroll.js`'s "not typing" check: without it Cmd+Z inside the tempo field
 /// would undo a note edit instead of the text.
+///
+/// The guard is `tracks::typing_elsewhere` rather than a bare
+/// `focused().is_some()` because a clicked TRACKS cell holds keyboard focus —
+/// that is how its Delete is armed — and undo has to keep working on the frame
+/// after one clears a track, which is precisely when it is wanted most.
 pub fn shortcuts(
     ui: &Ui,
     session: &mut Session,
     roll: &mut PianoRoll,
     history: &mut History,
 ) -> bool {
-    if ui.ctx().memory(|m| m.focused().is_some()) {
+    if crate::ui::tracks::typing_elsewhere(ui.ctx(), session) {
         return false;
     }
     let (undo, redo) = ui.ctx().input_mut(|i| {

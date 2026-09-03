@@ -512,6 +512,16 @@ The elements:
   of its tracks the roll is editing. Name, mute/solo, channel, length and scale
   are there; **level meter, port and colour are not**, and device colour
   inherited by its tracks is what would make the roll readable across boxes.
+
+  **The grid's own keyboard**: Shift+C and Shift+V copy and paste a whole
+  track, and **Delete clears one** (2026-09-02) — every trig and every p-lock
+  lane, leaving the track's name, channel, port, length, scale and mute alone,
+  and undoable. Delete is armed by the click: the cell takes the keyboard when
+  it is clicked, because the roll below spends the same key on the notes it has
+  selected, and one keystroke must not mean both. Clicking anywhere else hands
+  it straight back. That focus is exempted from the "not while a field has the
+  keyboard" guard the spacebar and Cmd+Z carry — a cell is not a field, and
+  undo has to work on the frame after a clear.
 - **Scenes pane** — the §2 scenes, showing which slot each box is on and what is
   queued.
 - **SONG panel** — the arrangement, in the two halves the box merges because it

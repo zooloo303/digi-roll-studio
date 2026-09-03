@@ -70,7 +70,7 @@
 
 use digi_core::model::{PatchSound, TrackScale};
 use digi_core::track_clip::{paste_track, TrackClip};
-use digi_core::{Device, Pattern, Session, Source, Track, TrackKind};
+use digi_core::{Device, DeviceId, Pattern, Session, Source, Track, TrackKind};
 use eframe::egui::{self, Align, Align2, FontId, Layout, Pos2, Rect, Sense, Stroke, Ui, Vec2};
 
 use crate::engine::EngineLink;
@@ -208,14 +208,22 @@ pub fn track_tooltip_text(track_number: usize, track: &Track, pattern_source: Op
         // on `super`'s glyph table as unconfirmed — flagged from a real window
         // capture 2026-08-20, where it rendered as tofu. `channel_note`'s doc
         // comment above already made the same call for the same reason.
-        // The last line is the copy chord, because a shortcut nobody can find
-        // is a shortcut that does not exist — and this one cannot be guessed:
-        // the obvious Cmd+C is unavailable for the reason
+        // The last line is the keyboard, because a shortcut nobody can find is
+        // a shortcut that does not exist — and the copy chord cannot be
+        // guessed: the obvious Cmd+C is unavailable for the reason
         // `handle_clipboard_shortcuts` documents at length. The cell's own
         // hover is the one place a person is already looking at the track they
-        // want to copy.
+        // want to copy or clear.
+        //
+        // **"click it, then" is not filler on the clear.** Shift+C/Shift+V act
+        // on the *selection*, which a click sets and which survives clicking
+        // away; Delete acts only while the cell itself holds keyboard focus,
+        // which is what keeps it out of the roll's own Delete
+        // (`pianoroll::interact`, guarded on nothing being focused). Wording it
+        // as a bare "Delete to clear it" would promise a key that does nothing
+        // when the roll has the focus, so the click is named.
         "Track {track_number} — {}\n{}\n{kind} · {} note{} · LEN {} · {} · CH{} · out: {port}\n\
-         Shift+C to copy this track · Shift+V to paste onto it",
+         Shift+C to copy this track · Shift+V to paste onto it · click it, then Delete to clear it",
         track.name,
         patch_line(track, pattern_source),
         track.notes.len(),
@@ -372,25 +380,75 @@ pub fn track_mut(session: &mut Session, selection: Selection) -> Option<&mut Tra
 // way any other stale `Selection` already fails elsewhere in this file — `None`,
 // caught and reported here rather than panicking.
 
-/// The whole-track clipboard's contents, kept in `ui.ctx()`'s per-id memory.
+/// What the pane remembers between frames, kept in `ui.ctx()`'s per-id memory.
 /// See the section header above for why here and why a `Selection` rather than
 /// a snapshot of the music.
+///
+/// Named for the pane rather than the clipboard because the status line below
+/// is not the clipboard's alone: clearing a track (`handle_clear_shortcut`)
+/// speaks in the same one line, and one pane-wide sentence that changes is
+/// what a person reads. Two competing status lines would be two places to
+/// look.
 #[derive(Clone, Debug, Default)]
-struct Clipboard {
-    source: Option<Selection>,
-    /// The last thing a copy or a paste had to say, shown in the pane header
-    /// by `ui()`. Untouched by a frame that does neither, so it reads as a
-    /// status line rather than flickering — the same contract `ui::edit`'s
-    /// `Status` keeps for its panel.
+struct PaneState {
+    /// The cell Shift+C last copied, if any.
+    copied: Option<Selection>,
+    /// The last thing a copy, a paste or a clear had to say, shown in the pane
+    /// header by `ui()`. Untouched by a frame that does none of them, so it
+    /// reads as a status line rather than flickering — the same contract
+    /// `ui::edit`'s `Status` keeps for its panel.
     message: Option<String>,
 }
 
-/// A fixed id, not one derived from `ui.id()`: the clipboard has to keep
-/// meaning the same thing regardless of what else this pane's `Ui` tree looks
-/// like on a given frame, which a path-derived id cannot promise as readily as
-/// a name that never changes.
-fn clipboard_id() -> egui::Id {
-    egui::Id::new("digi-roll-studio::tracks::clipboard")
+/// A fixed id, not one derived from `ui.id()`: this state has to keep meaning
+/// the same thing regardless of what else this pane's `Ui` tree looks like on
+/// a given frame, which a path-derived id cannot promise as readily as a name
+/// that never changes.
+fn pane_state_id() -> egui::Id {
+    egui::Id::new("digi-roll-studio::tracks::pane-state")
+}
+
+/// The interaction id of one track cell.
+///
+/// **Fixed, not derived from `ui.id()`**, for a reason the copy/paste state
+/// above only wanted and this one needs: whether a track cell holds keyboard
+/// focus is a question asked from *outside* this pane — by the spacebar
+/// transport and by Cmd+Z, both read in `main.rs` before the central panel is
+/// drawn at all (see [`a_track_cell_has_focus`]). A path-derived id can only
+/// be rebuilt by walking back to the same `Ui`, which those callers have no
+/// way to do. The device's own id makes it unique across a session with two of
+/// the same box in it.
+pub fn cell_id(device: DeviceId, track: usize) -> egui::Id {
+    egui::Id::new(("digi-roll-track-cell", device, track))
+}
+
+/// Whether a keystroke belongs to some control being typed into rather than to
+/// a shortcut: something holds keyboard focus, and it is **not** one of the
+/// TRACKS grid's cells.
+///
+/// **Every "is anything focused?" shortcut guard in this app asks this rather
+/// than `focused().is_some()`.** The guard exists to keep a letter or a space inside the `TextEdit`
+/// or `DragValue` that is being typed into; a track cell is neither, and it
+/// takes focus only because that is how [`handle_clear_shortcut`] tells "clear
+/// this track" apart from the roll's own Delete. Without this exemption,
+/// clicking a cell would silently disarm the spacebar transport
+/// (`transport::space_tap`) and Cmd+Z (`edit::shortcuts`) — so clearing a
+/// track would be a thing you could do and then not undo from the keyboard,
+/// which is worse than not having the shortcut.
+pub fn typing_elsewhere(ctx: &egui::Context, session: &Session) -> bool {
+    ctx.memory(|m| m.focused().is_some()) && !a_track_cell_has_focus(ctx, session)
+}
+
+/// See [`typing_elsewhere`], which is the form every shortcut guard wants.
+pub fn a_track_cell_has_focus(ctx: &egui::Context, session: &Session) -> bool {
+    let Some(focused) = ctx.memory(|m| m.focused()) else {
+        return false;
+    };
+    session.devices.iter().any(|device| {
+        // Every slot's track count is the model's, so the tracks of whichever
+        // pattern is on screen are covered by asking the model once.
+        (0..device.model.num_tracks).any(|t| cell_id(device.id, t) == focused)
+    })
 }
 
 /// "DT2 T01" — a cell's identity for a status line, independent of whether it
@@ -513,7 +571,7 @@ fn paste_message(source_label: &str, target_label: &str, report: &digi_core::Pas
 /// row (or anywhere else in the app), a letter key has to mean whatever that
 /// control means by it, not "copy this track".
 fn handle_clipboard_shortcuts(ui: &Ui, session: &mut Session, selection: Selection) -> bool {
-    if ui.ctx().memory(|m| m.focused().is_some()) {
+    if typing_elsewhere(ui.ctx(), session) {
         return false;
     }
     let (copy, paste) = ui.ctx().input_mut(|i| {
@@ -526,8 +584,8 @@ fn handle_clipboard_shortcuts(ui: &Ui, session: &mut Session, selection: Selecti
         return false;
     }
 
-    let id = clipboard_id();
-    let mut clipboard: Clipboard = ui.ctx().data(|d| d.get_temp(id)).unwrap_or_default();
+    let id = pane_state_id();
+    let mut state: PaneState = ui.ctx().data(|d| d.get_temp(id)).unwrap_or_default();
     let mut edited = false;
 
     if copy {
@@ -535,24 +593,111 @@ fn handle_clipboard_shortcuts(ui: &Ui, session: &mut Session, selection: Selecti
         // silent and leaves whatever was already on the clipboard alone,
         // rather than clearing a working copy on a stray keypress.
         if track(session, selection).is_some() {
-            clipboard.source = Some(selection);
-            clipboard.message = Some(format!("Copied {} — Shift+V onto another cell to paste it.", cell_label(session, selection)));
+            state.copied = Some(selection);
+            state.message = Some(format!("Copied {} — Shift+V onto another cell to paste it.", cell_label(session, selection)));
         }
     } else {
-        match try_paste(session, clipboard.source, selection) {
+        match try_paste(session, state.copied, selection) {
             PasteOutcome::Pasted { report, source_label, target_label } => {
                 edited = true;
-                clipboard.message = Some(paste_message(&source_label, &target_label, &report));
+                state.message = Some(paste_message(&source_label, &target_label, &report));
             }
             PasteOutcome::SourceGone => {
-                clipboard.message = Some("Nothing pasted — the copied track no longer exists.".to_string());
+                state.message = Some("Nothing pasted — the copied track no longer exists.".to_string());
             }
             PasteOutcome::NothingCopied | PasteOutcome::SameCell | PasteOutcome::NoTarget => {}
         }
     }
 
-    ui.ctx().data_mut(|d| d.insert_temp(id, clipboard));
+    ui.ctx().data_mut(|d| d.insert_temp(id, state));
     edited
+}
+
+// --- Delete: clear the clicked track -----------------------------------------
+
+/// Delete (or Backspace) empties the track whose cell was clicked: every trig
+/// and every p-lock lane, the same `core::edit_ops::clear_track` the Edit
+/// panel's own "Clear track" button calls, leaving the track's identity —
+/// name, channel, port, length, scale, mute/solo — alone.
+///
+/// ## Why this one is armed by focus when Shift+C/Shift+V are not
+///
+/// **Because Delete already means something one pane down.** The roll deletes
+/// its selected notes on Delete/Backspace (`pianoroll::interact`), and both
+/// panes are drawn every frame, so a Delete guarded only on "nothing is being
+/// typed into" would fire in both places at once — one keystroke that empties
+/// the whole track *and* whatever the roll had selected, with no way to ask for
+/// only the smaller one. So the grid takes keyboard focus when a cell is
+/// clicked, and this fires only while it holds it. That single fact resolves
+/// the collision from both ends: the roll's own guard is "nothing holds
+/// focus", so a focused cell silences its Delete for exactly as long as the
+/// grid owns the key, and clicking back into the roll hands it straight back
+/// (egui surrenders focus on a press elsewhere).
+///
+/// Shift+C/Shift+V need none of this — no other pane binds them — and stay on
+/// the selection, so a copy still works with the roll focused.
+///
+/// **Backspace as well as Delete, because on this Mac there is no Delete key.**
+/// The key labelled "delete" on an Apple keyboard sends Backspace; a binding
+/// that took `Key::Delete` alone would be dead on the machine this app is
+/// written on and alive on the one it is not. The roll binds both for the same
+/// reason.
+///
+/// **No confirmation dialog.** The Edit panel's button asks first, because a
+/// button that empties a track is one mis-aimed click from a pattern; a
+/// keystroke aimed at a cell you clicked is not, and a dialog on every press
+/// would make the shortcut slower than the button it is meant to beat. What
+/// stands behind it instead is undo — `main.rs` opens a history step for any
+/// frame this returns `true` for — and the status line below, which says what
+/// went and how to get it back.
+///
+/// Returns whether the session changed, which is false for every branch that
+/// found nothing to clear.
+fn handle_clear_shortcut(ui: &Ui, session: &mut Session, selection: Selection) -> bool {
+    if !a_track_cell_has_focus(ui.ctx(), session) {
+        return false;
+    }
+    let pressed = ui.ctx().input_mut(|i| {
+        // Consumed, not merely read: the roll is guarded on focus and so would
+        // not act on this anyway, but leaving a spent Delete in the queue for
+        // whatever is drawn next is how one keystroke ends up meaning two
+        // things again.
+        i.consume_key(egui::Modifiers::NONE, egui::Key::Delete)
+            | i.consume_key(egui::Modifiers::NONE, egui::Key::Backspace)
+    });
+    if !pressed {
+        return false;
+    }
+
+    let label = cell_label(session, selection);
+    let Some(track) = track_mut(session, selection) else {
+        // No cell on screen to report this against — the same silence
+        // `PasteOutcome::NoTarget` keeps.
+        return false;
+    };
+    let notes = track.notes.len();
+    let lanes = track.plocks.len();
+    let cleared = digi_core::edit_ops::clear_track(track);
+
+    let message = if cleared {
+        format!(
+            "Cleared {label} — {notes} trig{}{} gone. Cmd+Z brings them back.",
+            if notes == 1 { "" } else { "s" },
+            match lanes {
+                0 => String::new(),
+                1 => " and 1 p-lock lane".to_string(),
+                n => format!(" and {n} p-lock lanes"),
+            },
+        )
+    } else {
+        format!("{label} was already empty.")
+    };
+    let id = pane_state_id();
+    let mut state: PaneState = ui.ctx().data(|d| d.get_temp(id)).unwrap_or_default();
+    state.message = Some(message);
+    ui.ctx().data_mut(|d| d.insert_temp(id, state));
+
+    cleared
 }
 
 // --- pure geometry and data rules -------------------------------------------
@@ -745,6 +890,7 @@ fn paint_cell(
     number: usize,
     track: &Track,
     selected: bool,
+    focused: bool,
     copied: bool,
     position_steps: f64,
 ) {
@@ -835,7 +981,17 @@ fn paint_cell(
     } else {
         super::CELL_BORDER_SUBTLE
     };
-    painter.rect_stroke(rect, 0.0, Stroke::new(1.0, border), egui::StrokeKind::Inside);
+    // **The focused cell's border is drawn twice as thick, and that is the
+    // whole of the "armed" affordance.** Delete clears the track only while
+    // this cell holds keyboard focus (`handle_clear_shortcut`), so whether it
+    // does has to be visible — a destructive key whose liveness you can only
+    // discover by pressing it is not a shortcut, it is a trap. A weight change
+    // rather than a second ring or a new colour: the ring is spoken for (the
+    // copied cell draws one) and the palette says selection in cyan already, so
+    // this reads as *more* of the state the cell is already showing rather than
+    // as a fourth thing to learn.
+    let weight = if focused { 2.0 } else { 1.0 };
+    painter.rect_stroke(rect, 0.0, Stroke::new(weight, border), egui::StrokeKind::Inside);
 
     if copied {
         painter.rect_stroke(rect.shrink(3.0), 0.0, Stroke::new(1.0, super::CYAN_FILL), egui::StrokeKind::Inside);
@@ -885,17 +1041,28 @@ fn paint_device_row(
     let n = pattern.tracks().len();
     for (t, track) in pattern.tracks().iter().enumerate() {
         let cell = cell_rect(grid, n, t, CELL_GAP);
-        let id = ui.id().with(("digi-roll-track-cell", device.id, t));
         let response = ui
-            .interact(cell, id, Sense::click())
+            .interact(cell, cell_id(device.id, t), Sense::click())
             .on_hover_text(track_tooltip_text(t + 1, track, pattern.source.as_ref()));
         if response.clicked() {
+            // **The click takes keyboard focus as well as the selection**, which
+            // is what arms Delete — see `handle_clear_shortcut` for why that key
+            // needs arming and the other two shortcuts do not. egui does not do
+            // this for a clicked widget on its own (only Tab and the arrows move
+            // focus), so nothing here happens by accident.
+            response.request_focus();
+        }
+        // Focus and selection move together in both directions: Tab and the
+        // arrow keys walk the grid's cells, and a cell that takes focus that way
+        // has to *be* the selected track, or Delete would clear one cell while
+        // the ring sat on another.
+        if response.clicked() || response.gained_focus() {
             *selection = Selection { device: device_index, track: t };
         }
         let this_cell = Selection { device: device_index, track: t };
         let selected = *selection == this_cell;
         let copied = copied_selection == Some(this_cell);
-        paint_cell(&painter, cell, t + 1, track, selected, copied, position_steps);
+        paint_cell(&painter, cell, t + 1, track, selected, response.has_focus(), copied, position_steps);
     }
 }
 
@@ -927,7 +1094,8 @@ pub fn pane_height(devices: usize) -> f32 {
 }
 
 /// Draw the pane. Returns whether the session changed — which clicking a cell
-/// never does; only the parameter row below the grid can.
+/// never does; only the parameter row below the grid, a Shift+V paste, and a
+/// Delete that cleared a track can.
 pub fn ui(ui: &mut Ui, session: &mut Session, selection: &mut Selection, engine: &EngineLink) -> bool {
     let mut changed = false;
 
@@ -954,9 +1122,13 @@ pub fn ui(ui: &mut Ui, session: &mut Session, selection: &mut Selection, engine:
     // the way `edit::shortcuts` is: this pane is always drawn (`workspace::ui`
     // calls it unconditionally, unlike the collapsible tool panel `edit`
     // lives in), so it reaches every frame without help from `main.rs`. See
-    // the section above `Clipboard` for the rest of the argument.
+    // the section above `PaneState` for the rest of the argument.
     changed |= handle_clipboard_shortcuts(ui, session, *selection);
-    let clipboard: Clipboard = ui.ctx().data(|d| d.get_temp(clipboard_id())).unwrap_or_default();
+    // Delete, read in the same place and for the same reason. Both run before
+    // the grid is drawn, which is right: the focus they are guarded on was set
+    // by an earlier frame's click, and `Ui` memory carries it across.
+    changed |= handle_clear_shortcut(ui, session, *selection);
+    let state: PaneState = ui.ctx().data(|d| d.get_temp(pane_state_id())).unwrap_or_default();
 
     egui::Frame::new()
         .fill(super::PANEL_BG)
@@ -996,7 +1168,7 @@ pub fn ui(ui: &mut Ui, session: &mut Session, selection: &mut Selection, engine:
                     // one track. Above the scroll with the header, for the same
                     // reason the parameter row is below it: a message you have
                     // to go looking for is a message that did not arrive.
-                    match clipboard.message.as_deref() {
+                    match state.message.as_deref() {
                         Some(message) => {
                             ui.add_space(4.0);
                             super::consequence_line(ui, message);
@@ -1019,7 +1191,7 @@ pub fn ui(ui: &mut Ui, session: &mut Session, selection: &mut Selection, engine:
                                     pattern,
                                     index,
                                     selection,
-                                    clipboard.source,
+                                    state.copied,
                                     position_steps,
                                 );
                                 ui.add_space(ROW_GAP);
@@ -1339,7 +1511,7 @@ mod tests {
             "Track 3 — BD HARD\n\
              SOUND: BD HARD — kit KIT 1, from A01, read 2026-08-20\n\
              Audio · 1 note · LEN 16 · 1x · CH3 · out: none\n\
-             Shift+C to copy this track · Shift+V to paste onto it"
+             Shift+C to copy this track · Shift+V to paste onto it · click it, then Delete to clear it"
         );
     }
 
@@ -1353,7 +1525,7 @@ mod tests {
             "Track 1 — T1\n\
              No patch read from the box — \"Read patch names\" in Setup fills this in.\n\
              MIDI · 0 notes · LEN 16 · 1x · CH1 · out: none\n\
-             Shift+C to copy this track · Shift+V to paste onto it"
+             Shift+C to copy this track · Shift+V to paste onto it · click it, then Delete to clear it"
         );
     }
 
@@ -1780,7 +1952,7 @@ mod tests {
     // module, so only reachable from here) to pin the clipboard's own state
     // and its status message. `crates/app/tests/all/tracks_clipboard.rs` covers
     // the same feature from outside the module, through the public `ui()`
-    // entry point, and deliberately does not reach into `Clipboard` — the
+    // entry point, and deliberately does not reach into `PaneState` — the
     // split is the same one `ui::edit`'s own tests keep between `Status` and
     // the shell.
 
@@ -1805,8 +1977,8 @@ mod tests {
         edited
     }
 
-    fn read_clipboard(ctx: &egui::Context) -> Clipboard {
-        ctx.data(|d| d.get_temp(clipboard_id())).unwrap_or_default()
+    fn read_state(ctx: &egui::Context) -> PaneState {
+        ctx.data(|d| d.get_temp(pane_state_id())).unwrap_or_default()
     }
 
     #[test]
@@ -1818,8 +1990,8 @@ mod tests {
         let edited = run_clipboard(&ctx, egui::Key::C, &mut session, sel);
 
         assert!(!edited, "a copy alone is never an edit");
-        let clip = read_clipboard(&ctx);
-        assert_eq!(clip.source, Some(sel));
+        let clip = read_state(&ctx);
+        assert_eq!(clip.copied, Some(sel));
         assert_eq!(clip.message.as_deref(), Some("Copied DT2 T01 — Shift+V onto another cell to paste it."));
     }
 
@@ -1831,12 +2003,12 @@ mod tests {
         let nothing_there = Selection { device: 9, track: 0 };
 
         run_clipboard(&ctx, egui::Key::C, &mut session, real);
-        let before = read_clipboard(&ctx);
+        let before = read_state(&ctx);
 
         run_clipboard(&ctx, egui::Key::C, &mut session, nothing_there);
-        let after = read_clipboard(&ctx);
+        let after = read_state(&ctx);
 
-        assert_eq!(before.source, after.source, "a stray copy over nothing must not clear a working copy");
+        assert_eq!(before.copied, after.copied, "a stray copy over nothing must not clear a working copy");
     }
 
     #[test]
@@ -1858,7 +2030,7 @@ mod tests {
         let edited = run_clipboard(&ctx, egui::Key::V, &mut session, dest_sel);
 
         assert!(edited);
-        let clip = read_clipboard(&ctx);
+        let clip = read_state(&ctx);
         let message = clip.message.expect("a paste always leaves a status line");
         assert!(message.contains("Pasted DT2 T01 onto DT2 T06"), "{message}");
         assert!(message.contains("1 note"), "{message}");
@@ -1884,7 +2056,7 @@ mod tests {
         let edited = run_clipboard(&ctx, egui::Key::V, &mut session, dest_sel);
 
         assert!(edited, "the note still crosses even though the lane can't");
-        let message = read_clipboard(&ctx).message.unwrap();
+        let message = read_state(&ctx).message.unwrap();
         assert!(message.contains("wasn't copied"), "{message}");
     }
 
@@ -1905,7 +2077,7 @@ mod tests {
         let edited = run_clipboard(&ctx, egui::Key::V, &mut session, dt2_sel);
 
         assert!(!edited);
-        let message = read_clipboard(&ctx).message.unwrap();
+        let message = read_state(&ctx).message.unwrap();
         assert!(message.contains("no longer exists"), "{message}");
     }
 
@@ -1925,7 +2097,163 @@ mod tests {
         let edited = run_clipboard(&ctx, egui::Key::C, &mut session, sel);
 
         assert!(!edited);
-        assert_eq!(read_clipboard(&ctx).source, None, "the keystroke must not have reached the clipboard at all");
+        assert_eq!(read_state(&ctx).copied, None, "the keystroke must not have reached the clipboard at all");
+    }
+
+    // --- Delete: clear the clicked track ----------------------------------------
+
+    /// A bare Delete, as the platform sends it.
+    fn delete_key(key: egui::Key) -> egui::Event {
+        egui::Event::Key { key, physical_key: Some(key), pressed: true, repeat: false, modifiers: egui::Modifiers::NONE }
+    }
+
+    /// Focus the cell `selection` names, the way a click does, and press a key.
+    fn run_clear(
+        ctx: &egui::Context,
+        key: egui::Key,
+        session: &mut Session,
+        selection: Selection,
+        focus_the_cell: bool,
+    ) -> bool {
+        if focus_the_cell {
+            let id = cell_id(session.devices[selection.device].id, selection.track);
+            ctx.memory_mut(|m| m.request_focus(id));
+        }
+        let input = egui::RawInput { events: vec![delete_key(key)], ..Default::default() };
+        let mut edited = false;
+        let mut output = ctx.run_ui(input, |ui| {
+            edited = handle_clear_shortcut(ui, session, selection);
+        });
+        output.textures_delta.clear();
+        edited
+    }
+
+    fn a_track_with_music(session: &mut Session, selection: Selection) {
+        let t = track_mut(session, selection).unwrap();
+        t.notes = vec![digi_core::Note::new(0.0, 60, 1.0, 100, 0.0), digi_core::Note::new(4.0, 64, 1.0, 90, 0.0)];
+        t.plocks = vec![
+            digi_core::PLockLane::new(Some("filter.cutoff".into()), None, Some("DT2".into()), false, vec![Some(64)])
+                .unwrap(),
+        ];
+    }
+
+    /// Both keys, because the key labelled "delete" on the Mac this app is
+    /// written on sends `Backspace` — binding `Delete` alone would ship dead on
+    /// the one machine that was going to try it first.
+    #[test]
+    fn delete_and_backspace_both_empty_the_focused_cells_track() {
+        for key in [egui::Key::Delete, egui::Key::Backspace] {
+            let ctx = egui::Context::default();
+            let mut session = digi_core::two_box_session();
+            let sel = Selection { device: 0, track: 0 };
+            a_track_with_music(&mut session, sel);
+
+            let edited = run_clear(&ctx, key, &mut session, sel, true);
+
+            assert!(edited, "{key:?} cleared a track, which is an edit worth an undo step");
+            let cleared = track(&session, sel).unwrap();
+            assert!(cleared.notes.is_empty(), "{key:?} left trigs behind");
+            assert!(cleared.plocks.is_empty(), "{key:?} left p-lock lanes behind — locks ride on trigs");
+            let message = read_state(&ctx).message.expect("a clear always leaves a status line");
+            assert!(message.contains("Cleared DT2 T01"), "{message}");
+            assert!(message.contains("2 trigs"), "{message}");
+            assert!(message.contains("1 p-lock lane"), "{message}");
+            assert!(message.contains("Cmd+Z"), "a destructive keystroke has to say how to take it back: {message}");
+        }
+    }
+
+    /// The track's identity is not its music: a clear empties what the box
+    /// would play and leaves what the track *is* alone, exactly as
+    /// `edit_ops::clear_track` and the Edit panel's own button do.
+    #[test]
+    fn clearing_leaves_the_tracks_own_routing_and_shape_alone() {
+        let ctx = egui::Context::default();
+        let mut session = digi_core::two_box_session();
+        let sel = Selection { device: 0, track: 0 };
+        a_track_with_music(&mut session, sel);
+        {
+            let t = track_mut(&mut session, sel).unwrap();
+            t.name = "Snare".into();
+            t.channel = 9;
+            t.mute = true;
+            t.length_steps = 32;
+            t.scale = TrackScale::Two;
+            t.out_port = Some("a port".into());
+        }
+
+        assert!(run_clear(&ctx, egui::Key::Delete, &mut session, sel, true));
+
+        let t = track(&session, sel).unwrap();
+        assert_eq!(t.name, "Snare");
+        assert_eq!(t.channel, 9);
+        assert!(t.mute);
+        assert_eq!(t.length_steps, 32);
+        assert_eq!(t.scale, TrackScale::Two);
+        assert_eq!(t.out_port.as_deref(), Some("a port"));
+    }
+
+    /// The whole reason this shortcut is armed by focus rather than by the
+    /// selection the way Shift+C is: with the grid not holding the keyboard,
+    /// Delete belongs to the roll below, which deletes the notes it has
+    /// selected. Both firing on one keystroke is the collision this guard
+    /// exists to prevent.
+    #[test]
+    fn delete_does_nothing_while_the_grid_does_not_hold_the_keyboard() {
+        let ctx = egui::Context::default();
+        let mut session = digi_core::two_box_session();
+        let sel = Selection { device: 0, track: 0 };
+        a_track_with_music(&mut session, sel);
+
+        let edited = run_clear(&ctx, egui::Key::Delete, &mut session, sel, false);
+
+        assert!(!edited);
+        assert_eq!(track(&session, sel).unwrap().notes.len(), 2, "the roll's Delete is not this pane's to take");
+        assert!(read_state(&ctx).message.is_none(), "and nothing was reported, because nothing happened");
+    }
+
+    /// A clear that found nothing is not an edit — `edit_ops::clear_track`'s own
+    /// contract, so a stray Delete on an empty cell leaves no undo step behind.
+    /// It still says so, because a key that silently does nothing reads as a
+    /// key that is broken.
+    #[test]
+    fn clearing_an_empty_track_is_not_an_edit_but_still_answers() {
+        let ctx = egui::Context::default();
+        let mut session = digi_core::two_box_session();
+        let sel = Selection { device: 0, track: 0 };
+
+        let edited = run_clear(&ctx, egui::Key::Delete, &mut session, sel, true);
+
+        assert!(!edited, "nothing went, so there is nothing to undo");
+        assert_eq!(read_state(&ctx).message.as_deref(), Some("DT2 T01 was already empty."));
+    }
+
+    /// Cmd+Delete is not this shortcut. It is free for whatever wants it, and a
+    /// binding that matched it would be one modifier away from surprising
+    /// somebody.
+    #[test]
+    fn a_modified_delete_is_not_a_clear() {
+        let ctx = egui::Context::default();
+        let mut session = digi_core::two_box_session();
+        let sel = Selection { device: 0, track: 0 };
+        a_track_with_music(&mut session, sel);
+        let id = cell_id(session.devices[0].id, 0);
+        ctx.memory_mut(|m| m.request_focus(id));
+
+        let event = egui::Event::Key {
+            key: egui::Key::Delete,
+            physical_key: Some(egui::Key::Delete),
+            pressed: true,
+            repeat: false,
+            modifiers: egui::Modifiers::COMMAND,
+        };
+        let mut edited = false;
+        let mut output = ctx.run_ui(egui::RawInput { events: vec![event], ..Default::default() }, |ui| {
+            edited = handle_clear_shortcut(ui, &mut session, sel);
+        });
+        output.textures_delta.clear();
+
+        assert!(!edited);
+        assert_eq!(track(&session, sel).unwrap().notes.len(), 2);
     }
 
     /// Draws a whole frame with a cell marked as the clipboard's source, the
@@ -1943,7 +2271,7 @@ mod tests {
 
         frame(&ctx, vec![], &mut session, &mut selection, &engine);
         frame(&ctx, vec![shift_key(egui::Key::C)], &mut session, &mut selection, &engine);
-        assert_eq!(read_clipboard(&ctx).source, Some(selection));
+        assert_eq!(read_state(&ctx).copied, Some(selection));
 
         selection = Selection { device: 1, track: 3 };
         frame(&ctx, vec![], &mut session, &mut selection, &engine);
