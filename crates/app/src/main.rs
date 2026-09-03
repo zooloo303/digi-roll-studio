@@ -164,6 +164,13 @@ impl eframe::App for App {
         // showing is a shortcut nobody finds. Same reason the close guard is here.
         stepped |= edit::shortcuts(ui, &mut self.session, &mut self.roll, &mut self.history);
 
+        // The spacebar, read here for the same reason and *before* the bar is
+        // drawn: PLAY is disabled while the transport runs, so taking the key
+        // first is what lets one frame both start the transport and draw the
+        // button as unavailable. It changes the engine, never the session, so it
+        // joins neither `edited` nor `stepped`.
+        transport::shortcuts(ui, &mut self.engine, &self.session);
+
         // **Auto-connect, before the panels are drawn.** It may give a box its
         // ports, and a strip drawn from the old routing would be a frame behind —
         // the same reason `PortsPanel::poll` asks for a repaint when a handshake

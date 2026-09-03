@@ -40,6 +40,9 @@
 //   clickable, and still exactly `engine.set_send_clock`, but it is shaped like a
 //   labelled value because that is what it is.
 //
+// The spacebar toggles PLAY and STOP ([`shortcuts`], read from the shell before
+// this bar is drawn). CONTINUE stays a button, and PANIC is on no key at all.
+//
 // ## Two things this file approximates, on purpose
 //
 // **The level meter is derived from the voice count, not from levels.**
@@ -156,6 +159,91 @@ pub fn ui(
     changed
 }
 
+// -------------------------------------------------------------- the spacebar
+
+/// The spacebar: PLAY when the transport is stopped, STOP when it is running.
+///
+/// Read from the shell rather than from this bar's own `ui`, for the reason
+/// `ui::edit::shortcuts` is: a shortcut belongs to the window, not to a widget,
+/// and reading it before the panels are drawn means the frame that starts the
+/// transport is also the frame that draws PLAY as unavailable. Returns whether
+/// the key was taken — nothing here edits the session, since the transport is
+/// the engine's state and not the music's.
+///
+/// **Plain space only, and it toggles.** It is bound to the two buttons a user
+/// hits by reflex and to nothing else: `▶▶` CONTINUE stays a button, because
+/// "from the top" and "from where the cursors are" are a distinction one key
+/// cannot carry, and because Shift+Space and Alt+Space are left free for it to
+/// grow into. PANIC is emphatically not on a key — see [`right_zone_b`] for why
+/// it is not even next to the transport buttons.
+pub fn shortcuts(ui: &Ui, engine: &mut EngineLink, session: &Session) -> bool {
+    if !space_tap(ui.ctx()) {
+        return false;
+    }
+    if engine.is_playing() {
+        engine.stop();
+    } else {
+        engine.play(session);
+    }
+    true
+}
+
+/// Whether a plain spacebar arrived this frame, taking it out of the queue.
+///
+/// ## Why this is not `consume_key(Modifiers::NONE, Key::Space)`
+///
+/// Two reasons, both of them things `consume_key` does on purpose and neither of
+/// them what a transport wants.
+///
+/// **It counts key repeats.** `InputState::count_and_consume_key` matches every
+/// `Event::Key { pressed: true }` and never looks at `repeat` (egui 0.36.1,
+/// `input_state/mod.rs` ~696), so a space held down for half a second arrives as
+/// a dozen taps and the transport would start and stop at the key-repeat rate.
+/// Only the first press of a hold is a tap here.
+///
+/// **`Modifiers::NONE` does not mean "no modifiers".** `matches_logically`
+/// rejects a pattern's *missing* alt or shift, not the ones the pattern does not
+/// ask for (`modifiers.rs` ~211: `if pattern.alt && !self.alt`), because a
+/// logical key on some layouts needs shift to type at all. With `NONE` as the
+/// pattern that leaves Shift+Space and Alt+Space matching a plain space. So the
+/// match here is `matches_exact`, and those two chords stay free.
+///
+/// Guarded on focus and on modals, in that order. Focus is the same guard
+/// `ui::edit::shortcuts` and `ui::tracks`'s clipboard carry: with the tempo
+/// `DragValue` or any `TextEdit` focused, space is a character being typed, and
+/// egui also gives a focused clickable widget its space as a click
+/// (`context.rs` ~1467). The modal guard is this shortcut's own — a write, sync
+/// or restore dialog is a question waiting for an answer, and starting the
+/// transport underneath one is not an answer. `top_modal_layer` reports the
+/// previous frame's modal, which is exactly right for a dialog that was opened
+/// by a click and has been on screen since.
+///
+/// The `Event::Text(" ")` that `egui-winit` pushes beside the key event — a
+/// space is printable, so it makes both (`egui-winit` 0.36.1 `lib.rs` ~1064) —
+/// goes with it. Consuming half a keypress and leaving the other half for
+/// whatever takes focus next is how a stray space ends up in a track name.
+fn space_tap(ctx: &egui::Context) -> bool {
+    if ctx.memory(|m| m.focused().is_some() || m.top_modal_layer().is_some()) {
+        return false;
+    }
+    ctx.input_mut(|i| {
+        let mut tapped = false;
+        let mut took_key = false;
+        i.events.retain(|event| match event {
+            egui::Event::Key { key: egui::Key::Space, pressed: true, repeat, modifiers, .. }
+                if modifiers.matches_exact(egui::Modifiers::NONE) =>
+            {
+                took_key = true;
+                tapped |= !repeat;
+                false
+            }
+            egui::Event::Text(text) if took_key && text == " " => false,
+            _ => true,
+        });
+        tapped
+    })
+}
+
 // ---------------------------------------------------------------- the six zones
 
 /// Zone 1 — transport. PLAY filled and green; STOP and CONTINUE as outlines.
@@ -175,12 +263,19 @@ fn transport_zone(ui: &mut Ui, engine: &mut EngineLink, session: &Session, playi
                 super::TRIG_GREEN_HOVER,
             )
         })
-        .inner;
+        .inner
+        // Where the spacebar is announced. A shortcut nobody is told about is a
+        // shortcut nobody finds, and the hover text only shows while the button
+        // is enabled — which is exactly when that half of the toggle applies.
+        .on_hover_text("Play from the top — or press Space");
     if play.clicked() {
         engine.play(session);
     }
 
-    let stop = ui.add_enabled_ui(playing, |ui| outline_button(ui, "■ STOP")).inner;
+    let stop = ui
+        .add_enabled_ui(playing, |ui| outline_button(ui, "■ STOP"))
+        .inner
+        .on_hover_text("Stop — or press Space");
     if stop.clicked() {
         engine.stop();
     }
@@ -730,6 +825,131 @@ fn readout_job(text: &str) -> egui::text::LayoutJob {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A plain spacebar, built the way `egui-winit` really sends one: the key
+    /// event *and* the `Event::Text(" ")` beside it, because a space is
+    /// printable and the platform pushes both. Feeding only the half this code
+    /// reads is the mistake `ui::tracks`'s clipboard shipped dead on.
+    ///
+    /// **`repeat` is not ours to set.** `InputState::begin_pass` overwrites the
+    /// flag on every key event from its own `keys_down` set — a press whose key
+    /// is already down *becomes* a repeat, whatever the event said (egui 0.36.1,
+    /// `input_state/mod.rs` ~412). So a hold is spelled here the way the platform
+    /// spells it, as presses with no [`release`] between them, and the first cut
+    /// of these tests handing egui `repeat: false` twice was writing a flag egui
+    /// immediately threw away.
+    fn space(modifiers: egui::Modifiers) -> Vec<egui::Event> {
+        vec![
+            egui::Event::Key {
+                key: egui::Key::Space,
+                physical_key: Some(egui::Key::Space),
+                pressed: true,
+                repeat: false,
+                modifiers,
+            },
+            egui::Event::Text(" ".to_owned()),
+        ]
+    }
+
+    /// The other end of a tap. Without it egui still has the key down, and the
+    /// next press is a repeat rather than a new tap.
+    fn release() -> Vec<egui::Event> {
+        vec![egui::Event::Key {
+            key: egui::Key::Space,
+            physical_key: Some(egui::Key::Space),
+            pressed: false,
+            repeat: false,
+            modifiers: egui::Modifiers::NONE,
+        }]
+    }
+
+    /// One headless pass that reads the key, plus what was left in the queue
+    /// after it — a shortcut that fires and does not consume is a space that
+    /// also lands somewhere else.
+    fn tap(ctx: &egui::Context, events: Vec<egui::Event>) -> (bool, Vec<egui::Event>) {
+        let mut answer = (false, Vec::new());
+        let mut output = ctx.run_ui(egui::RawInput { events, ..Default::default() }, |ui| {
+            let took = space_tap(ui.ctx());
+            let left = ui.ctx().input(|i| i.events.clone());
+            answer = (took, left);
+        });
+        output.textures_delta.clear();
+        answer
+    }
+
+    #[test]
+    fn the_spacebar_is_taken_whole() {
+        let ctx = egui::Context::default();
+        let (took, left) = tap(&ctx, space(egui::Modifiers::NONE));
+        assert!(took, "a plain space is a transport tap");
+        assert!(left.is_empty(), "both halves of the keypress are consumed, not just the key");
+    }
+
+    #[test]
+    fn a_held_spacebar_is_one_tap_and_not_a_stutter() {
+        // `consume_key` would answer `true` to every one of these: it matches on
+        // `pressed` and never looks at `repeat`. A transport on that would start
+        // and stop at the key-repeat rate for as long as a thumb rested on the
+        // bar. No release goes in between, which is what a hold is.
+        let ctx = egui::Context::default();
+        assert!(tap(&ctx, space(egui::Modifiers::NONE)).0, "the press that begins the hold");
+        for _ in 0..8 {
+            let (took, left) = tap(&ctx, space(egui::Modifiers::NONE));
+            assert!(!took, "a repeat is the same press still held down");
+            assert!(left.is_empty(), "and it is still eaten, rather than left to fall through");
+        }
+        // Let go, and the next press is a tap again.
+        tap(&ctx, release());
+        assert!(tap(&ctx, space(egui::Modifiers::NONE)).0, "a second, separate press");
+    }
+
+    #[test]
+    fn a_modified_space_belongs_to_whoever_wants_it() {
+        // The reason this is `matches_exact`: with `Modifiers::NONE` as a
+        // `matches_logically` pattern — which is what `consume_key` does — every
+        // one of these matches a plain space, because that call only rejects the
+        // modifiers a pattern *asks for* and is missing.
+        let ctx = egui::Context::default();
+        for modifiers in [egui::Modifiers::SHIFT, egui::Modifiers::ALT, egui::Modifiers::COMMAND] {
+            let (took, left) = tap(&ctx, space(modifiers));
+            assert!(!took, "{modifiers:?}+Space is not the transport");
+            assert_eq!(left.len(), 2, "{modifiers:?}+Space is left in the queue untouched");
+            tap(&ctx, release());
+        }
+    }
+
+    #[test]
+    fn nothing_is_taken_while_a_field_has_the_keyboard() {
+        // The tempo field is the one this is really about: a space typed into a
+        // `DragValue` mid-edit must not start the transport. A `TextEdit` is the
+        // same focus in one line.
+        let ctx = egui::Context::default();
+        let mut text = String::new();
+        let mut output = ctx.run_ui(egui::RawInput::default(), |ui| {
+            ui.add(egui::TextEdit::singleline(&mut text)).request_focus();
+        });
+        output.textures_delta.clear();
+
+        let (took, left) = tap(&ctx, space(egui::Modifiers::NONE));
+        assert!(!took, "a space is a character while something is being typed into");
+        assert_eq!(left.len(), 2, "and it reaches the field it was typed into");
+    }
+
+    #[test]
+    fn nothing_is_taken_while_a_dialog_is_waiting_for_an_answer() {
+        // A write, sync or restore dialog is a question, and starting the
+        // transport underneath one is not an answer to it.
+        let ctx = egui::Context::default();
+        let mut output = ctx.run_ui(egui::RawInput::default(), |ui| {
+            egui::Modal::new(egui::Id::new("a-question")).show(ui.ctx(), |ui| {
+                ui.label("Send this pattern to the box?");
+            });
+        });
+        output.textures_delta.clear();
+
+        let (took, _) = tap(&ctx, space(egui::Modifiers::NONE));
+        assert!(!took, "the modal has the keyboard until it is answered");
+    }
 
     #[test]
     fn the_readout_counts_bars_beats_and_steps_from_one() {

@@ -594,7 +594,12 @@ The elements:
   trig's note plus ARP NO2–NO4 offsets — the box's own way of playing a chord on
   a polyphonic kit with the arp off. §10, "Chords reach the A4".
 - **Transport** — play/stop/continue, tempo, swing, FILL, panic, clock
-  master/slave.
+  master/slave. **The spacebar toggles play and stop** (2026-09-02), read from
+  the shell alongside Cmd+Z and guarded the same way: not while a field has the
+  keyboard, and not while a dialog is waiting for an answer. Plain space only —
+  a held key is one tap, not a stutter, and CONTINUE stays a button because
+  "from the top" and "from where the cursors are" are a distinction one key
+  cannot carry.
 
 The look — spacing, the colour tokens in `ui::mod`, the panel and slider-row
 rules — came from two design-handoff packages, in a first pass (Setup panel and
