@@ -698,12 +698,15 @@ impl EditPanel {
         // **`writable_params_for`, not `auditable_params_for`.** A lane is
         // authored to be *written into a pattern*, so the question is whether the
         // parameter's p-lock slot has been measured — not whether it can be heard
-        // over MIDI. The two sets are identical on both digis (all eleven), so
-        // this changes nothing there; it differs on the A4, whose eleven
-        // parameters are auditable and none of whose p-lock scalings have been
-        // measured. Offering them would have produced a lane the write path then
-        // refuses by name, which is the exact trade `params.rs`'s own split at the
-        // top of the file exists to prevent.
+        // over MIDI. The two sets are identical on all three boxes today (eleven
+        // on each digi, thirteen on the A4), so the call picks nothing different
+        // from what a menu built the other way would offer. It is written this
+        // way for the day they diverge again: this menu offering a parameter
+        // whose scaling nobody has read off the box would produce a lane the
+        // write path then refuses by name, which is the exact trade `params.rs`'s
+        // own split at the top of the file exists to prevent. The A4 spent a week
+        // in that gap — auditable everywhere, writable nowhere — and came out of
+        // it on 2026-09-01 by measurement, not by the menu relaxing.
         let params = writable_params_for(kind);
         let taken: Vec<&'static str> = crate::ui::tracks::track(session, selection)
             .map(|t| t.plocks.iter().filter_map(|l| l.param().name).collect())

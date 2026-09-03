@@ -91,6 +91,22 @@ fn the_shipped_a4_is_live_only_and_six_tracks() {
     d.validate().expect("the shipped A4 model is coherent");
 }
 
+/// A pool per pattern format, and the A4's is not in a `Spec`.
+///
+/// `DeviceModel::plock_pool` exists because reading `spec().pattern.num_p_locks`
+/// answers "no pool at all" for this box — which is how the Generate panel came
+/// to skip the A4 when arbitrating a slot's shared lanes.
+#[test]
+fn every_shipped_model_reports_the_pool_its_pattern_actually_holds() {
+    assert_eq!(DT2.plock_pool(), 80);
+    assert_eq!(DN2.plock_pool(), 80);
+    assert_eq!(digi_core::A4.plock_pool(), digi_protocol::a4_plocks::NUM_LANES);
+    // The two digis' number is the `Spec`'s, not a second copy of it.
+    for m in [&DT2, &DN2] {
+        assert_eq!(m.plock_pool(), m.spec().unwrap().pattern.num_p_locks, "{}", m.key);
+    }
+}
+
 #[test]
 fn the_shipped_models_can_do_sysex_and_say_so_truthfully() {
     // Guards the trap of a model whose `sysex` field disagrees with reality.

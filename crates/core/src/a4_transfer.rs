@@ -449,13 +449,13 @@ const A4_SYNTH_TRACKS: usize = 4;
 ///
 /// * one belonging to another box's parameter numbering — a DT2's `0x22` is not
 ///   this box's, and crossing boxes is copy-track's job, by name;
-/// * one that names a parameter **only** by name. This app can author
-///   `filter.cutoff` in the roll and play it over MIDI, and cannot yet say which
-///   byte the A4 stores it under. Ninety-two of this box's ids are measured
-///   (`params::A4_SYNTH_PLOCKS`) and none is bound to a canonical name in
-///   `A4_PARAMS`, because binding one asserts a *scaling* nobody has read off
-///   the box. Until that lands, an authored lane is honestly refused rather than
-///   aimed at a guess.
+/// * one that names a parameter this app can play but cannot place. Ninety-two
+///   of this box's synth ids are measured (`params::A4_SYNTH_PLOCKS`), and since
+///   2026-09-01 thirteen of them are bound to a canonical name in `A4_PARAMS`
+///   with a scaling read off the box behind each one — so an authored
+///   `filter.cutoff` now travels, where this bullet used to say none could. A
+///   lane naming anything outside those thirteen still cannot say which byte the
+///   A4 stores it under, and is refused here rather than aimed at a guess.
 pub fn a4_lanes_for_write(lanes: &[PLockLane]) -> (Vec<A4LaneWrite>, Vec<String>) {
     let mut out = Vec::new();
     let mut warnings = Vec::new();
@@ -463,15 +463,17 @@ pub fn a4_lanes_for_write(lanes: &[PLockLane]) -> (Vec<A4LaneWrite>, Vec<String>
         if let Some(kind) = lane.device_kind.as_deref() {
             if kind != "A4" {
                 warnings.push(format!(
-                    "a p-lock lane wasn't sent — it belongs to a {kind}'s parameter numbering,                      not the Analog Four's"
+                    "a p-lock lane wasn't sent — it belongs to a {kind}'s parameter numbering, \
+                     not the Analog Four's"
                 ));
                 continue;
             }
         }
         // A lane authored in the roll carries a canonical name and no id, so the
         // id is resolved from the curated table — which is what makes "+ add
-        // lane…" work on this box at all. Five parameters have a measured id and
-        // scaling (2026-09-01); the rest still refuse below, by name.
+        // lane…" and the Generate panel's A4 rows work on this box at all. All
+        // thirteen curated parameters have a measured id and scaling
+        // (2026-09-01); a name outside that table still refuses below.
         let id = lane.param_id.or_else(|| {
             lane.name
                 .as_deref()

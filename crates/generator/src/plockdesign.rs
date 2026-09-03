@@ -27,6 +27,16 @@ use crate::genres::{LaneRecipe, LaneShape, RoleProfile};
 use crate::rhythm::Trig;
 use crate::rng::{range, Rng};
 
+/// What a design says when it has no box to design against.
+///
+/// A `const` rather than two copies of a sentence because a caller that knows
+/// *why* the box is missing has to be able to recognise it in order to say
+/// something truer — `ui::generate` does exactly that for the A4's FX and CV
+/// tracks, where no picker can fix what is missing.
+pub const NO_BOX_WARNING: &str = "no p-lock lanes — digi-roll can't tell which box this is for, \
+     and a lane belongs to one box's parameter numbering. Pick your box in the MIDI output menu \
+     (or import a track from it) and generate again.";
+
 fn clamp_midi(v: f64) -> i32 {
     (v.round() as i32).clamp(MIDI_MIN, MIDI_MAX)
 }
@@ -174,12 +184,7 @@ pub fn design_lanes(
         return (Vec::new(), warnings);
     }
     let Some(device_kind) = device_kind else {
-        warnings.push(
-            "no p-lock lanes — digi-roll can't tell which box this is for, and a lane belongs to \
-             one box's parameter numbering. Pick your box in the MIDI output menu (or import a \
-             track from it) and generate again."
-                .to_string(),
-        );
+        warnings.push(NO_BOX_WARNING.to_string());
         return (Vec::new(), warnings);
     };
 
@@ -312,12 +317,7 @@ pub fn design_lanes_capped(
         return (Vec::new(), warnings);
     }
     let Some(device_kind) = device_kind else {
-        warnings.push(
-            "no p-lock lanes — digi-roll can't tell which box this is for, and a lane belongs to \
-             one box's parameter numbering. Pick your box in the MIDI output menu (or import a \
-             track from it) and generate again."
-                .to_string(),
-        );
+        warnings.push(NO_BOX_WARNING.to_string());
         return (Vec::new(), warnings);
     };
     let writable: std::collections::HashSet<&str> = writable_params_for(device_kind).iter().map(|p| p.name).collect();
@@ -411,9 +411,11 @@ mod tests {
             let trigs = sample_trigs();
             let live: std::collections::HashSet<u32> = trigs.iter().map(|t| t.step).collect();
             let (lanes, _) = design_lanes(&bass_role(), Some(kind), &trigs, 32, 80, 128, &mut Rng::new(8));
-            // A kind with nothing writable — the A4, whose whole table is
-            // audition-only until a paramId is measured — must design *no*
-            // lanes rather than lanes the write seam then refuses.
+            // A kind with nothing writable must design *no* lanes rather than
+            // lanes the write seam then refuses. No shipped box is in that state
+            // today — the A4 was, and was the reason this branch is here, until
+            // its thirteen scalings were measured on 2026-09-01 — so this is
+            // written for the next box to arrive before its paramIds do.
             if writable_params_for(kind).is_empty() {
                 assert!(lanes.is_empty(), "{kind} has nothing writable to design with");
                 continue;

@@ -372,7 +372,8 @@ pub static DN2_PARAMS: &[Param] = &[
     },
 ];
 
-/// Analog Four curated p-lock parameters — audition-only, every `plock: None`.
+/// Analog Four curated p-lock parameters — thirteen, all hearable and, since
+/// 2026-09-01, all writable.
 ///
 /// The `midi` half is from **two of Elektron's own manuals, agreeing value for
 /// value**: the Analog Four mk1 manual (OS 1.0, Appendix D) and the Analog
@@ -380,13 +381,26 @@ pub static DN2_PARAMS: &[Param] = &[
 /// line, and 1.51 is the generation a 2026 mk1 will actually be running).
 /// Cross-checked against midi.guide's A4 tables, same as the two above.
 ///
-/// **Every `plock` is `None`, and that is the design working, not a gap**: the
-/// paramId byte only ever comes from locking a knob on hardware and reading
-/// the dump back (Phase 0's method), no A4 dump has ever been read by this
-/// code, and the A4 model ships `sysex: None` anyway. So these lanes can be
-/// drawn and *heard* — CC/NRPN over the wire — and the write path refuses
-/// them, which is exactly the "missing measurement must not become a wrong
-/// byte" split this file opens with. Measure on the box before filling one in.
+/// **Every `plock` here was `None` until 2026-09-01, and what replaced that is
+/// the method working rather than the rule relaxing.** A paramId byte only ever
+/// comes from locking a knob on hardware and reading the dump back (Phase 0's
+/// method), and for as long as no A4 dump had ever been read this table shipped
+/// audition-only: its lanes could be drawn and *heard* over CC/NRPN, and the
+/// write path refused every one of them. Both halves then arrived — the box
+/// answered `0x60`–`0x6d` dump requests on 2026-08-31, and
+/// `app/examples/a4_scale_probe` read all thirteen scalings off the box against
+/// its own screen on 2026-09-01, one knob at a time. Each entry below carries
+/// what its run saw. The A4 model still ships `sysex: None`; that is the *gen-2*
+/// pattern layout and was never what a paramId waited on.
+///
+/// **Two things a reader must not take from that.** These are the **synth
+/// tracks'** ids — SYN1–SYN4 — and the FX and CV tracks number their parameters
+/// differently, which is why [`plock_id_identifies_parameter`] answers false
+/// here and why an id alone is not admissible evidence on this box. And an id in
+/// [`A4_SYNTH_PLOCKS`] is still not a `plock` in this table: 92 ids are
+/// measured against these 13 scalings, and the 79 with no scaling stay
+/// unwritable. The "missing measurement must not become a wrong byte" split this
+/// file opens with is untouched — it is the measurement that moved.
 ///
 /// Naming: entries share canonical names with the DT2/DN2 tables wherever the
 /// knob is the same idea — `filter.cutoff` here is Filter1, the analog
@@ -1503,13 +1517,14 @@ lfo3.depth|LFO3 DEPTH|LFO3|true|||[1,72]|31|256|0|127|1|true|true"
 
     /// **These are ids, not scalings**, and the two are still measured
     /// separately — which is why [`A4_SYNTH_PLOCKS`] has 92 entries and
-    /// [`A4_PARAMS`] has five writable ones.
+    /// [`A4_PARAMS`] has 13 writable ones.
     ///
     /// This asserted that naming a parameter made *none* of them writable.
-    /// Five scalings were then read off the box (`a4_scale_probe`, 2026-09-01),
-    /// so the rule it protects has to be stated the other way round: an id in
-    /// this table does **not** put a `plock` on a `Param`, and the 87 ids with
-    /// no measured scaling are still unwritable.
+    /// Thirteen scalings were then read off the box (`a4_scale_probe`,
+    /// 2026-09-01, four runs), so the rule it protects has to be stated the
+    /// other way round: an id in this table
+    /// does **not** put a `plock` on a `Param`, and the 79 ids with no measured
+    /// scaling are still unwritable.
     #[test]
     fn an_id_alone_still_does_not_make_a_parameter_writable() {
         // 0x25 is FLTR1 TRK — measured as an id, never as a scaling.
@@ -1525,10 +1540,10 @@ lfo3.depth|LFO3 DEPTH|LFO3|true|||[1,72]|31|256|0|127|1|true|true"
     }
 
     /// **A bare id must not identify a parameter on the A4**, because its id
-    /// space is per track kind. With five `A4_PARAMS` entries now carrying
-    /// measured ids, `param_by_plock_id` would otherwise answer for an FX-track
-    /// lane on `0x22` and hand it `filter.cutoff` — curated, editable, and
-    /// written back on the wrong axis.
+    /// space is per track kind. With all thirteen `A4_PARAMS` entries now
+    /// carrying measured ids, `param_by_plock_id` would otherwise answer for an
+    /// FX-track lane on `0x22` and hand it `filter.cutoff` — curated, editable,
+    /// and written back on the wrong axis.
     #[test]
     fn an_a4_id_is_not_admissible_evidence_on_its_own() {
         assert!(!plock_id_identifies_parameter("A4"));

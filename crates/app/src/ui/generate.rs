@@ -115,7 +115,7 @@ use digi_generator::context::{
     bpm_suggestion, check_progression, Destination, DestinationError, GenContext, Part, PartId, GEN_BARS,
 };
 use digi_generator::genres::{genre_profile, GenreId, Role};
-use digi_generator::plockdesign::{arbitrate_pool, LaneClaim};
+use digi_generator::plockdesign::{arbitrate_pool, LaneClaim, NO_BOX_WARNING};
 use digi_generator::progressions::{default_progression_for, next_progression_for, progression_note};
 use digi_generator::theory::DEFAULT_SCALE;
 use eframe::egui::{self, Color32, Ui};
@@ -219,10 +219,50 @@ fn destination_error_message(why: DestinationError) -> String {
 }
 
 /// The device-kind string `design_lanes` wants, from the actual box a
-/// destination names — `None` for a device with no known pattern format, which
-/// `design_lanes` already turns into "no lanes, and why" rather than a guess.
+/// destination names — `None` only when the row names a box this session no
+/// longer has, which `design_lanes` already turns into "no lanes, and why"
+/// rather than a guess.
+///
+/// **The box's own key, not its `Spec`'s.** This read `model.spec().device`
+/// until 2026-09-02, and `spec()` is `None` on the Analog Four and always will
+/// be — so every A4 row came back with "digi-roll can't tell which box this is
+/// for", on a box whose thirteen lane parameters have measured p-lock ids and
+/// scalings (`params::A4_PARAMS`, 2026-09-01) and whose lanes
+/// `core::a4_transfer::a4_lanes_for_write` has been writing since. A `Spec` is
+/// the *gen-2* pattern layout; asking for one here was asking a question about
+/// byte offsets in order to answer one about parameter numbering.
+/// `ui::edit`'s "+ add lane…" menu had the same bug and took the same fix on
+/// 2026-09-01 — see its own note. This is the other half of it.
 fn device_kind_of(session: &Session, device: DeviceId) -> Option<&'static str> {
-    session.device(device).and_then(|d| d.model.spec()).map(|s| s.device)
+    session.device(device).map(|d| d.model.key)
+}
+
+/// SYN1–SYN4. The A4's fifth and sixth tracks are the FX and CV tracks, and
+/// **their p-lock parameter numbering is not the synth tracks'** — measured
+/// 2026-09-01, an FX-track lock landed on `0x1a` and `0x29`, both of which name
+/// *synth* parameters. So a lane designed out of `A4_PARAMS` and written onto
+/// one of those two would be a confident wrong knob, which is the failure
+/// `params::plock_id_identifies_parameter` and `a4_transfer::a4_lane_to_model`
+/// both refuse on the way in. The notes still go; only the lanes stop here.
+const A4_SYNTH_TRACKS: usize = 4;
+
+/// Why an A4 FX or CV row gets no lanes. It replaces
+/// [`digi_generator::plockdesign::NO_BOX_WARNING`], which would send the user to
+/// the MIDI output menu for something no picker can fix.
+const A4_NON_SYNTH_WARNING: &str = "no p-lock lanes — the A4's FX and CV tracks number their \
+     p-lock parameters differently from SYN1–SYN4, and digi-roll hasn't measured that numbering. \
+     The notes still go; aim this row at SYN1–SYN4 if you want lanes with them.";
+
+/// The base part, with the "which box?" warning swapped for the one that is
+/// true here. Every other warning it carries — a `Lead (response)` with no call
+/// above it — is its own and is left alone.
+fn explain_non_synth(mut part: ArrangedPart) -> ArrangedPart {
+    for warning in &mut part.warnings {
+        if warning == NO_BOX_WARNING {
+            *warning = A4_NON_SYNTH_WARNING.to_string();
+        }
+    }
+    part
 }
 
 /// The whole arrangement, with every part's p-locks designed against *its own*
@@ -232,6 +272,9 @@ fn arranged_parts(ctx: &GenContext, session: &Session) -> Result<Vec<ArrangedPar
     base.parts
         .into_iter()
         .map(|part| match part.destination.device.and_then(|id| device_kind_of(session, id)) {
+            // The base arrangement was generated with no box, so this part
+            // already has no lanes; all it needs is the true reason.
+            Some("A4") if part.destination.track >= A4_SYNTH_TRACKS => Ok(explain_non_synth(part)),
             Some(kind) => generate_part(ctx, part.part_id, Some(kind)),
             None => Ok(part),
         })
@@ -256,8 +299,14 @@ fn cap_lane_pool(parts: &mut [ArrangedPart], session: &Session) -> Vec<String> {
 
     for (device, slot) in groups {
         let Some(dev) = session.device(device) else { continue };
-        let Some(spec) = dev.model.spec() else { continue };
-        let capacity_total = spec.pattern.num_p_locks;
+        // `DeviceModel::plock_pool`, not `spec().pattern.num_p_locks`: the A4
+        // has a 128-lane pool and no `Spec`, and reading the spec here skipped
+        // it entirely — see `device_kind_of` for the same mistake in the same
+        // panel.
+        let capacity_total = dev.model.plock_pool();
+        if capacity_total == 0 {
+            continue;
+        }
 
         let touched: Vec<usize> = parts
             .iter()
@@ -1727,6 +1776,55 @@ mod tests {
         let dn2_row = plan.rows.iter().find(|r| r.role == Role::Lead).unwrap();
         assert!(dt2_row.arranged.plocks.iter().all(|l| l.device_kind.as_deref() == Some("DT2")));
         assert!(dn2_row.arranged.plocks.iter().all(|l| l.device_kind.as_deref() == Some("DN2")));
+    }
+
+    /// The two digis and an Analog Four, which is `devices[2]`.
+    fn session_with_an_a4() -> Session {
+        let mut session = session_with_two_boxes();
+        session.add_device(digi_core::device::Device::new("A4", &digi_core::device::A4, 8));
+        session
+    }
+
+    /// **The A4 had no lanes for a day, and the reason was a `Spec` lookup.**
+    /// `device_kind_of` asked `model.spec()`, which is `None` on this box and
+    /// always will be, so every A4 row came back with the "can't tell which box
+    /// this is for" warning and no lanes — while the roll's own "+ add lane…"
+    /// menu, fixed on 2026-09-01, offered the same thirteen parameters happily.
+    #[test]
+    fn an_a4_row_gets_a4_lanes_rather_than_the_no_box_warning() {
+        let session = session_with_an_a4();
+        let mut ctx = GenContext::default();
+        ctx.feel.motion = 100;
+        ctx.parts = vec![aimed(&session, 2, Role::Bass, 0)];
+        let plan = plan_generate(&ctx, &session).unwrap();
+        let row = &plan.rows[0];
+        assert!(row.lanes > 0, "an A4 synth track draws lanes: {:?}", row.warnings);
+        assert!(row.arranged.plocks.iter().all(|l| l.device_kind.as_deref() == Some("A4")));
+        assert!(!row.warnings.iter().any(|w| w == NO_BOX_WARNING), "{:?}", row.warnings);
+        // Every lane the design picked is one the write path can actually put
+        // in the pool — a lane named but not measured would be refused by
+        // `a4_transfer::a4_lanes_for_write` after the panel promised it.
+        let (writes, warnings) = digi_core::a4_transfer::a4_lanes_for_write(&row.arranged.plocks);
+        assert_eq!(writes.len(), row.arranged.plocks.len(), "{warnings:?}");
+        assert!(warnings.is_empty(), "{warnings:?}");
+    }
+
+    /// The FX and CV tracks number their p-lock parameters differently from
+    /// SYN1–SYN4 — see [`A4_SYNTH_TRACKS`]. Designing a synth lane for one of
+    /// them would aim a measured id at the wrong knob, so the row keeps its
+    /// notes and says why the lanes stopped.
+    #[test]
+    fn the_a4s_fx_track_gets_no_lanes_and_says_why() {
+        let session = session_with_an_a4();
+        let mut ctx = GenContext::default();
+        ctx.feel.motion = 100;
+        ctx.parts = vec![aimed(&session, 2, Role::Bass, 4)];
+        let plan = plan_generate(&ctx, &session).unwrap();
+        let row = &plan.rows[0];
+        assert!(row.notes > 0, "the notes still go");
+        assert_eq!(row.lanes, 0);
+        assert!(row.warnings.iter().any(|w| w == A4_NON_SYNTH_WARNING), "{:?}", row.warnings);
+        assert!(!row.warnings.iter().any(|w| w == NO_BOX_WARNING), "{:?}", row.warnings);
     }
 
     #[test]

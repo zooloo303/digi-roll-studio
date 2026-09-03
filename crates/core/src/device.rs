@@ -225,6 +225,25 @@ impl DeviceModel {
     pub fn spec(&self) -> Option<&'static digi_protocol::pattern::Spec> {
         self.sysex.map(|f| f())
     }
+
+    /// How many p-lock lanes one of this box's patterns holds — the pool every
+    /// track in a slot shares, and the number a caller has to arbitrate against
+    /// before it promises a write will fit.
+    ///
+    /// **Two pools, because there are two pattern formats.** A digi's count
+    /// comes off its `Spec` (80); the A4's gen-1 pool is
+    /// [`digi_protocol::a4_plocks::NUM_LANES`] and no `Spec` describes it, which
+    /// is why asking `spec()` for this silently answered "no pool" on a box that
+    /// has 128 lanes. Zero for a live-only box, which holds no pattern here.
+    pub fn plock_pool(&self) -> usize {
+        match self.spec() {
+            Some(spec) => spec.pattern.num_p_locks,
+            None if matches!(self.pattern_route, PatternRoute::RequestGen1) => {
+                digi_protocol::a4_plocks::NUM_LANES
+            }
+            None => 0,
+        }
+    }
 }
 
 impl PartialEq for DeviceModel {
