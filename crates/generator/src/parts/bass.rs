@@ -21,6 +21,11 @@ use crate::theory::{chord_tones, fold_into_window, slot_root_pitch, snap_to_scal
 
 use super::{len_bounds, GeneratedPart, NoteSpec};
 
+/// How often an ordinary trig leaves the root when the genre profile has no
+/// opinion. The number was inline here, and identical for all five genres,
+/// until `Rollers` needed a lower one — see [`RoleProfile::chord_tone`].
+const DEFAULT_CHORD_TONE: f64 = 0.45;
+
 /// The pitches a bassline reaches for beyond the root, weighted so the
 /// nearest chord tone (a third or a fifth) wins more often than the rest.
 fn pick_chord_tone(rng: &mut Rng, tones: &[u8], root: i32) -> i32 {
@@ -80,7 +85,7 @@ pub fn generate_bass(ctx: &ResolvedContext, profile: &RoleProfile, octave: u8, d
             root
         } else if chance(rng, profile.octave_leap.unwrap_or(0.0)) {
             root + if chance(rng, 0.75) { 12 } else { -12 }
-        } else if !trig.ghost && chance(rng, 0.45) {
+        } else if !trig.ghost && chance(rng, profile.chord_tone.unwrap_or(DEFAULT_CHORD_TONE)) {
             pick_chord_tone(rng, &tones, root)
         } else {
             root
@@ -281,4 +286,149 @@ mod tests {
             let _ = genre_profile(genre);
         }
     }
+
+    // --- Rollers: the density slider is the feature ---------------------------
+    //
+    // The whole of `Rollers`' bass profile is one claim — that the slider
+    // crosses from an eighth-note pulse to a continuous sixteenth roll, and
+    // that the line pedals its root while it does. Three tests, because the
+    // claim is made by three numbers that do not know about each other:
+    // `trigs_per_bar`, the weight ratio between the eighths and the
+    // sixteenths, and `chord_tone`.
+
+    /// A Rollers context on Rollers' *own* progression. [`ctx_for`] uses
+    /// `GenContext::default()`, whose progression is DnB's four-chord one —
+    /// fine for the shape tests, wrong for the pedal test below, which needs
+    /// a bar's root to stay put long enough to pedal on.
+    fn rollers_ctx(seed: u32, bars: u32) -> ResolvedContext {
+        resolve_context(&GenContext {
+            genre: GenreId::Rollers,
+            seed,
+            bars,
+            progression: crate::progressions::default_progression_for(GenreId::Rollers).to_string(),
+            ..GenContext::default()
+        })
+        .unwrap()
+    }
+
+    fn rollers_bass(seed: u32, density: u8) -> (ResolvedContext, GeneratedPart) {
+        let ctx = rollers_ctx(seed, 2);
+        let profile = role_profile(GenreId::Rollers, Role::Bass);
+        let mut rng = rng_for(seed, "bass");
+        let part = generate_bass(&ctx, &profile, 2, density, &mut rng, &HashSet::new());
+        (ctx, part)
+    }
+
+    /// Half way up the slider is still an eighth-note line. The weights put
+    /// the off-sixteenths at roughly a tenth of an eighth's, so the ten trigs
+    /// a bar that `trigs_per_bar: (4, 16)` asks for at density 50 land on the
+    /// eight even steps first and spill only a little past them.
+    #[test]
+    fn a_rollers_bass_is_mostly_eighths_at_half_density() {
+        let (mut on_eighths, mut total) = (0usize, 0usize);
+        for seed in 0..40u32 {
+            let (_, part) = rollers_bass(seed, 50);
+            assert_eq!(part.trigs.len(), 20, "10 a bar over 2 bars");
+            total += part.trigs.len();
+            on_eighths += part.trigs.iter().filter(|t| t.step % 2 == 0).count();
+        }
+        let share = on_eighths as f64 / total as f64;
+        assert!(share > 0.7, "density 50 should read as eighths, got {share:.3} on the eighth grid");
+    }
+
+    /// And the top of the slider is every step. This is guaranteed rather
+    /// than likely: `trigs_per_bar`'s ceiling of 16 asks for all sixteen
+    /// candidates, and a draw of sixteen from sixteen returns them all
+    /// whatever the weights say — the same argument as `drum_profile`'s
+    /// "Reaching sixteenths", applied to a melodic role.
+    #[test]
+    fn a_rollers_bass_rolls_every_sixteenth_at_full_density() {
+        for seed in 0..20u32 {
+            let (ctx, part) = rollers_bass(seed, 100);
+            let steps: Vec<u32> = part.trigs.iter().map(|t| t.step).collect();
+            assert_eq!(steps, (0..ctx.length_steps).collect::<Vec<_>>());
+        }
+    }
+
+    /// The roll pedals. `chord_tone: Some(0.15)` against the 0.45 every other
+    /// genre uses is what buys this: at thirteen or sixteen trigs a bar, the
+    /// default would move off the root often enough to turn a rhythm part
+    /// into a melody. DnB is asserted alongside it so this fails if the knob
+    /// ever stops being read rather than merely if the number drifts.
+    #[test]
+    fn a_rollers_bass_pedals_its_root_harder_than_dnbs_does() {
+        fn on_root_share(genre: GenreId, prog: &str) -> f64 {
+            let profile = role_profile(genre, Role::Bass);
+            let (min, max) = crate::theory::window_for(profile.span, 2);
+            let (mut on_root, mut n) = (0usize, 0usize);
+            for seed in 0..40u32 {
+                let ctx = resolve_context(&GenContext {
+                    genre,
+                    seed,
+                    bars: 2,
+                    progression: prog.to_string(),
+                    ..GenContext::default()
+                })
+                .unwrap();
+                let key = Key { root: ctx.key_root, intervals: ctx.key_intervals };
+                let mut rng = rng_for(seed, "bass");
+                let part = generate_bass(&ctx, &profile, 2, 75, &mut rng, &HashSet::new());
+                for (note, trig) in part.notes.iter().zip(part.trigs.iter()) {
+                    let root = slot_root_pitch(&ctx.bar_slots[trig.bar as usize], key, 2, min, max);
+                    if i32::from(note.pitch).rem_euclid(12) == root.rem_euclid(12) {
+                        on_root += 1;
+                    }
+                    n += 1;
+                }
+            }
+            on_root as f64 / n as f64
+        }
+
+        let prog = crate::progressions::default_progression_for(GenreId::Rollers);
+        let rollers = on_root_share(GenreId::Rollers, prog);
+        let dnb = on_root_share(GenreId::Dnb, prog);
+        assert!(rollers > 0.9, "a roller pedals its root, got {rollers:.3}");
+        assert!(dnb < rollers - 0.1, "dnb {dnb:.3} should roam well clear of rollers {rollers:.3}");
+    }
+
+    /// The roll must not have holes in it. Every off-sixteenth is under
+    /// `rhythm::GHOST_WEIGHT` and so is labelled a ghost — correct, and the
+    /// reason the profile drops `GHOST_PROB` (which would PROB-lock a quarter
+    /// of them away) and narrows the velocity spread. Feel's humanize is
+    /// zeroed so this reads the profile's own numbers.
+    #[test]
+    fn a_rollers_roll_is_continuous_and_evenly_spoken() {
+        let profile = role_profile(GenreId::Rollers, Role::Bass);
+        let ctx = resolve_context(&GenContext {
+            genre: GenreId::Rollers,
+            seed: 7,
+            bars: 2,
+            progression: crate::progressions::default_progression_for(GenreId::Rollers).to_string(),
+            feel: crate::context::Feel { motion: 0, looseness: 100, humanize: 0 },
+            ..GenContext::default()
+        })
+        .unwrap();
+        let mut rng = rng_for(7, "bass");
+        let part = generate_bass(&ctx, &profile, 2, 100, &mut rng, &HashSet::new());
+
+        assert!(part.notes.iter().all(|n| n.prob.is_none()), "a PROB lock would drop steps out of the roll");
+        let lo = part.notes.iter().map(|n| n.velocity).min().unwrap();
+        let hi = part.notes.iter().map(|n| n.velocity).max().unwrap();
+        assert!(hi - lo <= 30, "velocity spread {lo}..{hi} is a whisper, not a ghosted roll");
+    }
+
+    /// Nothing else moved. `chord_tone` was added for Rollers alone, and the
+    /// four genres that predate it must still take `bass.rs`'s own default —
+    /// which is what keeps this change invisible to every existing profile.
+    #[test]
+    fn only_rollers_overrides_the_chord_tone_default() {
+        for genre in GenreId::ALL {
+            let got = role_profile(genre, Role::Bass).chord_tone;
+            match genre {
+                GenreId::Rollers => assert_eq!(got, Some(0.15)),
+                _ => assert_eq!(got, None, "{} should still use DEFAULT_CHORD_TONE", genre.as_str()),
+            }
+        }
+    }
 }
+

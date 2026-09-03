@@ -1,4 +1,4 @@
-// The four genre profiles: plain data, no logic.
+// The genre profiles: plain data, no logic.
 //
 // Port of `js/gen/genres.js`. A profile is the rhythmic and dynamic grammar
 // of a genre, per role. Everything the generator decides that *isn't*
@@ -42,8 +42,14 @@
 // This module imports nothing from `theory` — the register-window maths
 // lives there. Data only, same as the JS.
 
-/// The four genres this ships with, and — unlike the JS's bare strings —
-/// closed, so a caller cannot ask for a genre that was never in `GENRES`.
+/// The genres this ships with. Four are ports — `js/gen/genres.js` has
+/// `dnb`, `breaks`, `electro` and `house` and nothing else — and Techno and
+/// Rollers are this codebase's own, so their tables are convention tuned by
+/// ear rather than values pinned by an oracle. The same caveat as the drum
+/// voices, and for the same reason.
+///
+/// Unlike the JS's bare strings this is closed, so a caller cannot ask for a
+/// genre that was never in `GENRES`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum GenreId {
@@ -52,10 +58,18 @@ pub enum GenreId {
     Electro,
     House,
     Techno,
+    /// Funk-break drums under a rolling bassline, with the simplest chords
+    /// and the shortest hooks of any profile here. Added 2026-09-03 on
+    /// Neil's ask, from four named references (Pendulum, Sub Focus, Nero,
+    /// The Prodigy) rather than from `js/gen/` — there is no oracle for it,
+    /// the same as the drum voices. Named for the DnB scene's own word for
+    /// a track built on a rolling bassline.
+    Rollers,
 }
 
 impl GenreId {
-    pub const ALL: [Self; 5] = [Self::Dnb, Self::Breaks, Self::Electro, Self::House, Self::Techno];
+    pub const ALL: [Self; 6] =
+        [Self::Dnb, Self::Breaks, Self::Electro, Self::House, Self::Techno, Self::Rollers];
 
     pub fn as_str(self) -> &'static str {
         match self {
@@ -64,6 +78,7 @@ impl GenreId {
             Self::Electro => "electro",
             Self::House => "house",
             Self::Techno => "techno",
+            Self::Rollers => "rollers",
         }
     }
 
@@ -374,6 +389,16 @@ pub struct RoleProfile {
     pub velocity: Velocity,
     /// Bass-only: how often an approach tone leans into the next chord.
     pub approach: Option<f64>,
+    /// Bass-only: how often an ordinary (non-accent, non-ghost) trig reaches
+    /// for a chord tone above the root instead of restating the root.
+    ///
+    /// `None` means [`parts::bass`](crate::parts::bass)'s own default of
+    /// 0.45, which is the number every genre carried inline before this
+    /// field existed — so leaving it `None` is exactly the old behaviour.
+    /// A *rolling* bassline is the case that needs it lower: at twelve or
+    /// sixteen trigs a bar, a 45% chance of moving off the root turns a roll
+    /// into a melody, and a roll is a rhythm part. Rollers sets it to 0.15.
+    pub chord_tone: Option<f64>,
     /// Bass: how often the anchor leaps an octave. Chord lead: how often the
     /// root, already at the top of its cycle, leaps one octave further.
     pub octave_leap: Option<f64>,
@@ -410,6 +435,19 @@ fn swung(amount: f64) -> [f64; 16] {
 const DNB_GROOVE: [f64; 16] =
     [0.0, 0.05, 0.0, 0.06, 0.0, 0.05, 0.04, 0.07, 0.0, 0.05, 0.0, 0.06, 0.0, 0.05, 0.04, 0.07];
 
+/// Rollers' groove: the eighths dead straight, the sixteenths between them
+/// swung — and the "a" (steps 3, 7, 11, 15) leaning later than the "e"
+/// (1, 5, 9, 13), which is what a shuffle *is* on a sixteenth grid. See the
+/// shaker profiles, where the same asymmetry is spelled as weights.
+///
+/// It is written per-step rather than with [`swung`] for exactly that
+/// asymmetry: `swung` pushes every odd step by one amount, which straightens
+/// out the thing this genre is for. The eighths stay at zero because a
+/// rolling bass at density 50 lands almost entirely on them, and a roll that
+/// drags on its own pulse reads as late rather than as funk.
+const ROLLERS_GROOVE: [f64; 16] =
+    [0.0, 0.045, 0.0, 0.085, 0.0, 0.045, 0.0, 0.085, 0.0, 0.045, 0.0, 0.085, 0.0, 0.045, 0.0, 0.085];
+
 pub fn genre_profile(id: GenreId) -> GenreProfile {
     match id {
         GenreId::Dnb => {
@@ -433,6 +471,15 @@ pub fn genre_profile(id: GenreId) -> GenreProfile {
             // techno's hypnotic grid must not have, so the shuffle here is
             // barely there — just enough to keep the hats off a metronome.
             GenreProfile { id, label: "Techno", bpm: 130, bpm_range: (125, 145), bars: 2, groove: swung(0.02) }
+        }
+        GenreId::Rollers => {
+            // 168, and the range is deliberately narrow. This is the deep
+            // end of DnB rather than the middle of it: fast enough that the
+            // bassline's sixteenths roll, slow enough that a chopped funk
+            // break still reads as funk instead of as a blur. Neil picked
+            // the band 2026-09-03; the four references bracket it from both
+            // sides (Prodigy well under, Nero and Sub Focus a little over).
+            GenreProfile { id, label: "Rollers", bpm: 168, bpm_range: (165, 170), bars: 2, groove: ROLLERS_GROOVE }
         }
     }
 }
@@ -500,6 +547,7 @@ fn drum_profile(
         len,
         velocity,
         approach: None,
+        chord_tone: None,
         octave_leap: None,
         strum: None,
         spread: None,
@@ -534,6 +582,7 @@ pub fn role_profile(id: GenreId, role: Role) -> RoleProfile {
             len: LenProfile::Plain { normal: 1.75, ghost: None, max: 4.0 },
             velocity: Velocity { accent: 118, normal: 110, ghost: 96 },
             approach: None,
+            chord_tone: None,
             octave_leap: Some(0.12),
             strum: None,
             spread: None,
@@ -565,6 +614,7 @@ pub fn role_profile(id: GenreId, role: Role) -> RoleProfile {
             len: LenProfile::Plain { normal: 1.5, ghost: Some(0.5), max: 6.0 },
             velocity: Velocity { accent: 120, normal: 100, ghost: 66 },
             approach: Some(0.35),
+            chord_tone: None,
             octave_leap: Some(0.12),
             strum: None,
             spread: None,
@@ -585,6 +635,7 @@ pub fn role_profile(id: GenreId, role: Role) -> RoleProfile {
             len: LenProfile::Mode { mode: LenMode::Sustain, normal: 8.0, max: 16.0 },
             velocity: Velocity { accent: 104, normal: 92, ghost: 72 },
             approach: None,
+            chord_tone: None,
             octave_leap: None,
             strum: Some(0.04),
             spread: Some(0.4),
@@ -605,6 +656,7 @@ pub fn role_profile(id: GenreId, role: Role) -> RoleProfile {
             len: LenProfile::Plain { normal: 1.0, ghost: None, max: 4.0 },
             velocity: Velocity { accent: 112, normal: 96, ghost: 70 },
             approach: None,
+            chord_tone: None,
             octave_leap: None,
             strum: None,
             spread: None,
@@ -625,6 +677,7 @@ pub fn role_profile(id: GenreId, role: Role) -> RoleProfile {
             len: LenProfile::Plain { normal: 1.0, ghost: Some(0.5), max: 4.0 },
             velocity: Velocity { accent: 118, normal: 98, ghost: 58 },
             approach: Some(0.3),
+            chord_tone: None,
             octave_leap: Some(0.18),
             strum: None,
             spread: None,
@@ -644,6 +697,7 @@ pub fn role_profile(id: GenreId, role: Role) -> RoleProfile {
             len: LenProfile::Mode { mode: LenMode::Stab, normal: 0.75, max: 4.0 },
             velocity: Velocity { accent: 108, normal: 94, ghost: 74 },
             approach: None,
+            chord_tone: None,
             octave_leap: None,
             strum: Some(0.08),
             spread: Some(0.3),
@@ -664,6 +718,7 @@ pub fn role_profile(id: GenreId, role: Role) -> RoleProfile {
             len: LenProfile::Plain { normal: 0.75, ghost: None, max: 3.0 },
             velocity: Velocity { accent: 110, normal: 94, ghost: 66 },
             approach: None,
+            chord_tone: None,
             octave_leap: None,
             strum: None,
             spread: None,
@@ -685,6 +740,7 @@ pub fn role_profile(id: GenreId, role: Role) -> RoleProfile {
             len: LenProfile::Plain { normal: 0.5, ghost: Some(0.5), max: 1.0 },
             velocity: Velocity { accent: 122, normal: 100, ghost: 72 },
             approach: Some(0.15),
+            chord_tone: None,
             octave_leap: Some(0.45),
             strum: None,
             spread: None,
@@ -705,6 +761,7 @@ pub fn role_profile(id: GenreId, role: Role) -> RoleProfile {
             len: LenProfile::Mode { mode: LenMode::Sustain, normal: 4.0, max: 16.0 },
             velocity: Velocity { accent: 106, normal: 92, ghost: 76 },
             approach: None,
+            chord_tone: None,
             octave_leap: None,
             strum: Some(0.0),
             spread: Some(0.2),
@@ -724,6 +781,7 @@ pub fn role_profile(id: GenreId, role: Role) -> RoleProfile {
             len: LenProfile::Plain { normal: 0.5, ghost: None, max: 2.0 },
             velocity: Velocity { accent: 112, normal: 96, ghost: 74 },
             approach: None,
+            chord_tone: None,
             octave_leap: None,
             strum: None,
             spread: None,
@@ -745,6 +803,7 @@ pub fn role_profile(id: GenreId, role: Role) -> RoleProfile {
             len: LenProfile::Plain { normal: 1.0, ghost: Some(0.5), max: 2.0 },
             velocity: Velocity { accent: 112, normal: 100, ghost: 78 },
             approach: Some(0.2),
+            chord_tone: None,
             octave_leap: Some(0.2),
             strum: None,
             spread: None,
@@ -764,6 +823,7 @@ pub fn role_profile(id: GenreId, role: Role) -> RoleProfile {
             len: LenProfile::Mode { mode: LenMode::Stab, normal: 1.0, max: 4.0 },
             velocity: Velocity { accent: 106, normal: 94, ghost: 78 },
             approach: None,
+            chord_tone: None,
             octave_leap: None,
             strum: Some(0.06),
             spread: Some(0.5),
@@ -783,6 +843,7 @@ pub fn role_profile(id: GenreId, role: Role) -> RoleProfile {
             len: LenProfile::Plain { normal: 1.0, ghost: None, max: 4.0 },
             velocity: Velocity { accent: 108, normal: 94, ghost: 72 },
             approach: None,
+            chord_tone: None,
             octave_leap: None,
             strum: None,
             spread: None,
@@ -805,6 +866,7 @@ pub fn role_profile(id: GenreId, role: Role) -> RoleProfile {
             len: LenProfile::Plain { normal: 0.8, ghost: Some(0.4), max: 1.0 },
             velocity: Velocity { accent: 116, normal: 100, ghost: 70 },
             approach: Some(0.1),
+            chord_tone: None,
             octave_leap: Some(0.15),
             strum: None,
             spread: None,
@@ -826,6 +888,7 @@ pub fn role_profile(id: GenreId, role: Role) -> RoleProfile {
             len: LenProfile::Mode { mode: LenMode::Sustain, normal: 12.0, max: 16.0 },
             velocity: Velocity { accent: 100, normal: 88, ghost: 70 },
             approach: None,
+            chord_tone: None,
             octave_leap: None,
             strum: Some(0.0),
             spread: Some(0.3),
@@ -847,6 +910,7 @@ pub fn role_profile(id: GenreId, role: Role) -> RoleProfile {
             len: LenProfile::Plain { normal: 0.25, ghost: None, max: 1.0 },
             velocity: Velocity { accent: 114, normal: 98, ghost: 74 },
             approach: None,
+            chord_tone: None,
             octave_leap: None,
             strum: None,
             spread: None,
@@ -1281,6 +1345,243 @@ pub fn role_profile(id: GenreId, role: Role) -> RoleProfile {
             (1, 4),
             LenProfile::Plain { normal: 0.5, ghost: Some(0.25), max: 1.0 },
             Velocity { accent: 110, normal: 90, ghost: 58 },
+            DRUM_FILL_RECIPE,
+        ),
+
+        // --- Rollers ---------------------------------------------------------
+        //
+        // The bass is the genre; everything else is written to stay out of
+        // its way. Two rules run through the twelve arms below:
+        //
+        //   * **The eighths carry the weight, the sixteenths are stocked at a
+        //     tenth of it.** That is the texture-voice pattern from
+        //     [`drum_profile`]'s "Reaching sixteenths", used here on a
+        //     *melodic* role for the first time, and it is what makes one
+        //     slider cross from an eighth-note pulse to a full roll. Because
+        //     `rng::sample_weighted` draws proportionally, the eight heavy
+        //     slots are taken first and the light ones fill in behind them.
+        //   * **Everything else is simpler than its DnB or Breaks
+        //     equivalent.** Fewer chord trigs than any other genre, a shorter
+        //     motif in a narrower window, and no `WEAK_PROB` on the lead — a
+        //     hook with random holes in it is not a hook.
+        (GenreId::Rollers, Role::Bass) => RoleProfile {
+            // Straight eighths with the off-sixteenths stocked at a tenth, so
+            // `trigs_per_bar` alone decides where on the slider the roll
+            // arrives. With `(4, 16)`: density 0 is quarters, 50 is the eight
+            // eighths plus two, 75 is eight plus five, and 100 is all sixteen
+            // — guaranteed, not likely, because a draw of 16 from 16
+            // candidates returns them all whatever the weights say.
+            //
+            // The last "a" (step 15) is the one light slot lifted above the
+            // rest: it is the pickup into the next bar's downbeat, and a
+            // roller that turns over there sounds intentional in a way the
+            // other seven do not.
+            //
+            // **The "and"s sit at 0.6, not up with the beats**, and that gap
+            // is load-bearing rather than cosmetic. `rhythm::rhythm_for`
+            // reads the same number twice: once to choose the step, and once
+            // to *label* it — `accent: is_beat(step) || weight >= 0.8`. A
+            // table with all eight eighths up at 0.85 therefore made all
+            // eight accents, and `bass.rs` returns the bare root on every
+            // accent, so the first cut of this profile played one pitch for
+            // sixteen steps. At 0.6 the "and"s are ordinary trigs: normal
+            // velocity, and eligible for the octave leap and the chord tone.
+            // The beats stay accents regardless of their weight, via
+            // `is_beat`, which is what puts the root back on the pulse.
+            weights: [1.0, 0.09, 0.6, 0.1, 0.95, 0.09, 0.6, 0.11, 1.0, 0.09, 0.6, 0.1, 0.95, 0.09, 0.6, 0.13],
+            trigs_per_bar: (4, 16),
+            span: 24,
+            // Two steps, not DnB's four. A four-step anchor is most of the
+            // reason DnB's bass cannot roll: it eats the first quarter of the
+            // bar before the line has started. Two is long enough to land the
+            // 1 and short enough to get out of the way — and `bass.rs` caps
+            // it at the gap to the next trig regardless, so at full density
+            // it is one step like everything else.
+            anchor_len: Some(2.0),
+            // `normal` is 1.6 against a `max` of 2.5, which reads two ways on
+            // purpose: at eighths the gap is 2 steps and a note fills 1.6 of
+            // them (driving, but articulated), and at sixteenths the gap is 1
+            // and `bass.rs` clamps to it, so the notes butt up into a
+            // continuous roll. One number, both behaviours, no branch.
+            len: LenProfile::Plain { normal: 1.6, ghost: Some(0.75), max: 2.5 },
+            // **A narrow spread, on purpose.** The off-sixteenths are all
+            // below `rhythm::GHOST_WEIGHT`, so every one of them is labelled
+            // a ghost — which is correct (a rolling bassline *is* accents
+            // with ghosted sixteenths between them, the way it would be
+            // played) but only if the ghost is a shade rather than a hole.
+            // DnB's 66 against an accent of 120 is a whisper, and a whisper
+            // every other step at density 100 is a roll with gaps in it. 88
+            // against 118 keeps the accents on top and the roll continuous.
+            velocity: Velocity { accent: 118, normal: 104, ghost: 88 },
+            approach: Some(0.3),
+            chord_tone: Some(0.15),
+            // Low, and much lower than Electro's 0.45: a roller stays in its
+            // register. The octave is punctuation here, not the melody.
+            octave_leap: Some(0.15),
+            strum: None,
+            spread: None,
+            motif: None,
+            // **No `GHOST_PROB`**, and this is the only bass profile without
+            // it. It puts a 60–85% PROB lock on every ghost, and every ghost
+            // here is a sixteenth of the roll — so it would drop a quarter of
+            // them at random, which is the exact opposite of driving.
+            // `ALT_BARS` still gives the two bars different shapes.
+            conditions: &[ALT_BARS, FILL_EXTRA],
+            lanes: &[
+                LaneRecipe { name: "filter.cutoff", shape: LaneShape::Wander, from: 40, to: 105 },
+                LaneRecipe { name: "fx.overdrive", shape: LaneShape::Accent, from: 25, to: 95 },
+                LaneRecipe { name: "lfo1.depth", shape: LaneShape::Swell, from: 64, to: 100 },
+            ],
+        },
+        (GenreId::Rollers, Role::Chords) => RoleProfile {
+            // The sparsest chord part of any genre — `(1, 4)` against DnB's
+            // `(1, 3)` only because the ceiling wants somewhere to go. Held
+            // rather than stabbed: with sixteen bass trigs a bar underneath,
+            // a stab is one more transient in a bar that has no room left,
+            // and a sustain is the thing the roll is rolling *under*.
+            weights: [1.0, 0.05, 0.3, 0.08, 0.2, 0.05, 0.45, 0.12, 0.6, 0.05, 0.7, 0.1, 0.25, 0.05, 0.4, 0.18],
+            trigs_per_bar: (1, 4),
+            span: 24,
+            anchor_len: None,
+            len: LenProfile::Mode { mode: LenMode::Sustain, normal: 6.0, max: 12.0 },
+            velocity: Velocity { accent: 106, normal: 94, ghost: 74 },
+            approach: None,
+            chord_tone: None,
+            octave_leap: None,
+            strum: Some(0.05),
+            spread: Some(0.35),
+            motif: None,
+            conditions: &[ALT_BARS, EVERY_FOURTH, WEAK_PROB],
+            lanes: &[
+                LaneRecipe { name: "filter.cutoff", shape: LaneShape::Arc, from: 50, to: 100 },
+                LaneRecipe { name: "fx.reverbSend", shape: LaneShape::Swell, from: 25, to: 90 },
+            ],
+        },
+        (GenreId::Rollers, Role::Lead) => RoleProfile {
+            // Catchy is fewer notes held longer, so this is the only lead
+            // here with a ceiling under six: `(2, 5)`, a motif of three or
+            // four notes, and a `window` of 7 semitones — a fifth, which is
+            // about as far as a hook can roam and still be hummable. DnB and
+            // Breaks both use 8.
+            //
+            // `WEAK_PROB` is deliberately absent, and it is the only melodic
+            // role in the file without it. It drops weak trigs at random,
+            // which is texture on a busy part and damage on a four-note hook:
+            // the whole point is that the same four notes come back.
+            weights: [0.9, 0.08, 0.5, 0.12, 0.7, 0.08, 0.55, 0.18, 0.85, 0.08, 0.5, 0.15, 0.65, 0.08, 0.5, 0.28],
+            trigs_per_bar: (2, 5),
+            span: 30,
+            anchor_len: None,
+            len: LenProfile::Plain { normal: 1.5, ghost: None, max: 4.0 },
+            velocity: Velocity { accent: 114, normal: 98, ghost: 72 },
+            approach: None,
+            chord_tone: None,
+            octave_leap: None,
+            strum: None,
+            spread: None,
+            motif: Some(MotifProfile { notes: (3, 4), window: 7 }),
+            conditions: &[ALT_BARS, EVERY_FOURTH, ANSWERING],
+            lanes: &[
+                LaneRecipe { name: "amp.pan", shape: LaneShape::Wander, from: 40, to: 88 },
+                LaneRecipe { name: "fx.delaySend", shape: LaneShape::Swell, from: 20, to: 85 },
+            ],
+        },
+
+        // The kit is Breaks', which is the point — the funk lives in the
+        // drums and the drive lives in the bass. What is changed from Breaks
+        // is the hats: at 168 with sixteen bass trigs under them, a
+        // sixteenth-note closed hat is mud, so the table leans on the eighths
+        // and reaches its sixteenths only near the top of the slider.
+        (GenreId::Rollers, Role::Kick) => drum_profile(
+            // Funk-breakbeat syncopation, holding the 1 firmly. The "and of
+            // 3" and the last "and" are the two syncopations a break leans
+            // on; everything else is left for the snare and the bass.
+            [1.0, 0.0, 0.25, 0.0, 0.0, 0.0, 0.45, 0.0, 0.0, 0.35, 0.0, 0.3, 0.0, 0.0, 0.5, 0.0],
+            (2, 5),
+            LenProfile::Plain { normal: 0.5, ghost: Some(0.25), max: 1.0 },
+            Velocity { accent: 118, normal: 100, ghost: 66 },
+            DRUM_SPINE_RECIPE,
+        ),
+        (GenreId::Rollers, Role::Snare) => drum_profile(
+            // Breaks' backbeat and Breaks' ghosts, unchanged: the pickups at
+            // 2, 7, 9 and 15 are the funk, and they are the reason this is
+            // not simply DnB's two-step.
+            [0.0, 0.0, 0.2, 0.0, 1.0, 0.0, 0.0, 0.3, 0.0, 0.25, 0.0, 0.0, 1.0, 0.0, 0.0, 0.4],
+            (2, 5),
+            LenProfile::Plain { normal: 0.5, ghost: Some(0.25), max: 1.0 },
+            Velocity { accent: 114, normal: 98, ghost: 60 },
+            DRUM_SPINE_RECIPE,
+        ),
+        (GenreId::Rollers, Role::Clap) => drum_profile(
+            // Layering the backbeat rather than arguing with it, with the
+            // snare's syncopations kept but thinned — two voices playing the
+            // same ghost is a flam, not a groove.
+            [0.0, 0.0, 0.2, 0.0, 0.9, 0.0, 0.0, 0.25, 0.0, 0.2, 0.0, 0.0, 0.9, 0.0, 0.0, 0.3],
+            (1, 3),
+            LenProfile::Plain { normal: 0.5, ghost: Some(0.25), max: 1.0 },
+            Velocity { accent: 108, normal: 92, ghost: 58 },
+            DRUM_SPINE_RECIPE,
+        ),
+        (GenreId::Rollers, Role::Rimshot) => drum_profile(
+            // Off-grid only, and the busiest of the three break-flavoured
+            // kits: this is the voice that fills the space between the kick
+            // and the snare, which at 168 is most of the bar.
+            [0.0, 0.28, 0.0, 0.45, 0.0, 0.3, 0.0, 0.5, 0.0, 0.3, 0.0, 0.45, 0.0, 0.28, 0.0, 0.55],
+            (2, 5),
+            LenProfile::Plain { normal: 0.25, ghost: Some(0.125), max: 0.5 },
+            Velocity { accent: 102, normal: 82, ghost: 54 },
+            DRUM_COLOUR_RECIPE,
+        ),
+        (GenreId::Rollers, Role::ClosedHat) => drum_profile(
+            // Eighths first, sixteenths last — Breaks stocks its off-slots at
+            // 0.5 and gets a sixteenth hat at any density, which is right at
+            // 135 with a sparse bass and wrong here. A tenth, and a floor of
+            // 6, means the hat is an eighth-note pulse until the slider is
+            // pushed and the roll is already carrying the bar.
+            [0.8, 0.08, 0.6, 0.1, 0.7, 0.08, 0.6, 0.1, 0.8, 0.08, 0.6, 0.1, 0.7, 0.08, 0.6, 0.12],
+            (6, 16),
+            LenProfile::Plain { normal: 0.25, ghost: Some(0.125), max: 0.5 },
+            Velocity { accent: 92, normal: 78, ghost: 52 },
+            DRUM_TEXTURE_RECIPE,
+        ),
+        (GenreId::Rollers, Role::OpenHat) => drum_profile(
+            // The "and"s and nowhere else — see `drum_profile`'s note on why
+            // the zeroes here are deliberate rather than a texture bug.
+            [0.0, 0.0, 0.5, 0.0, 0.0, 0.0, 0.6, 0.0, 0.0, 0.0, 0.5, 0.0, 0.0, 0.0, 0.6, 0.0],
+            (2, 4),
+            LenProfile::Plain { normal: 0.25, ghost: Some(0.125), max: 0.5 },
+            Velocity { accent: 98, normal: 82, ghost: 58 },
+            DRUM_COLOUR_RECIPE,
+        ),
+        (GenreId::Rollers, Role::Ride) => drum_profile(
+            // Eighths, which `ROLLERS_GROOVE` leaves straight — the ride is
+            // the one voice here that should not shuffle, because it is what
+            // the shuffled sixteenths are heard against.
+            [0.7, 0.07, 0.55, 0.07, 0.6, 0.07, 0.55, 0.07, 0.7, 0.07, 0.55, 0.07, 0.6, 0.07, 0.55, 0.07],
+            (5, 16),
+            LenProfile::Plain { normal: 0.5, ghost: Some(0.25), max: 1.0 },
+            Velocity { accent: 86, normal: 72, ghost: 50 },
+            DRUM_TEXTURE_RECIPE,
+        ),
+        (GenreId::Rollers, Role::Shaker) => drum_profile(
+            // The "a" outweighs the "e", the same as Breaks' and DnB's, and
+            // `ROLLERS_GROOVE` then pushes the "a"s later still — the weights
+            // and the groove table saying the same thing twice, which is what
+            // makes the shuffle audible rather than theoretical.
+            [0.65, 0.05, 0.5, 0.09, 0.6, 0.05, 0.5, 0.09, 0.65, 0.05, 0.5, 0.09, 0.6, 0.05, 0.5, 0.09],
+            (6, 16),
+            LenProfile::Plain { normal: 0.25, ghost: Some(0.125), max: 0.5 },
+            Velocity { accent: 80, normal: 68, ghost: 48 },
+            DRUM_TEXTURE_RECIPE,
+        ),
+        (GenreId::Rollers, Role::Tom) => drum_profile(
+            // Fill material, weighted to the back half so it runs into the
+            // next 1 rather than competing with the bass for the front of the
+            // bar.
+            [0.0, 0.0, 0.0, 0.2, 0.0, 0.0, 0.0, 0.3, 0.0, 0.0, 0.4, 0.0, 0.0, 0.35, 0.0, 0.5],
+            (1, 3),
+            LenProfile::Plain { normal: 0.5, ghost: Some(0.25), max: 1.0 },
+            Velocity { accent: 112, normal: 92, ghost: 60 },
             DRUM_FILL_RECIPE,
         ),
     }

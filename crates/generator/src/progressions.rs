@@ -21,7 +21,7 @@ pub struct ProgressionEntry {
     pub note: &'static str,
 }
 
-use GenreId::{Breaks, Dnb, Electro, House, Techno};
+use GenreId::{Breaks, Dnb, Electro, House, Rollers, Techno};
 
 pub const PROGRESSIONS: &[ProgressionEntry] = &[
     // --- minor loops, the shared backbone -----------------------------------------
@@ -58,12 +58,12 @@ pub const PROGRESSIONS: &[ProgressionEntry] = &[
     },
     ProgressionEntry {
         text: "i:2 VII:2",
-        genres: &[Dnb],
+        genres: &[Dnb, Rollers],
         note: "pedal-and-move: sit on i, drop a tone",
     },
     ProgressionEntry {
         text: "i7:2 iv7:2",
-        genres: &[Dnb],
+        genres: &[Dnb, Rollers],
         note: "liquid: minor sevenths, two bars each",
     },
     // --- house: seventh vamps -----------------------------------------------------
@@ -84,24 +84,44 @@ pub const PROGRESSIONS: &[ProgressionEntry] = &[
     },
     ProgressionEntry {
         text: "i7:2 VII7:2",
-        genres: &[House, Dnb],
+        genres: &[House, Dnb, Rollers],
         note: "sevenths, two bars each — pads more than stabs",
     },
     // --- electro: static and mechanical -------------------------------------------
     ProgressionEntry {
         text: "i i VI VI",
-        genres: &[Electro, Techno],
+        genres: &[Electro, Techno, Rollers],
         note: "barely moves — the riff does the work",
     },
     ProgressionEntry {
         text: "i III VII iv",
-        genres: &[Electro, Breaks],
+        genres: &[Electro, Breaks, Rollers],
         note: "brighter middle, dark landing",
     },
     ProgressionEntry {
         text: "i:4",
-        genres: &[Electro, Dnb, Breaks, House, Techno],
+        genres: &[Electro, Dnb, Breaks, House, Techno, Rollers],
         note: "one chord, four bars — a modal drone for a riff to sit on",
+    },
+    // --- rollers: pedal, and one move ----------------------------------------------
+    //
+    // **Rollers is deliberately absent from the four-chord backbone at the
+    // top of this list**, which is the only genre here that skips it, and the
+    // omission is the point rather than an oversight. A chord a bar fights a
+    // bassline that spends the bar hammering one root: the ear hears the
+    // third of bar 2 against a root that has not moved, and the roll stops
+    // being a pedal. So every loop tagged `Rollers` either holds a chord for
+    // two bars or barely moves at all — which is also why the tags above sit
+    // on the DnB pedal-and-move entries and on Electro's static ones, and
+    // nowhere else.
+    //
+    // `default_progression_for` takes the *first* tagged entry by the order
+    // of this list, so the default is `i:2 VII:2` — the one Neil was already
+    // working from.
+    ProgressionEntry {
+        text: "i:2 iv:2",
+        genres: &[Rollers],
+        note: "two bars home, two on the minor subdominant — moves without leaving",
     },
     // --- techno: hypnotic and static -----------------------------------------------
     ProgressionEntry {
