@@ -259,6 +259,77 @@ impl SessionPanel {
         }
     }
 
+    /// `Cmd+S` (`Ctrl+S` on Windows): save, from anywhere in the window.
+    ///
+    /// Returns whether the key was taken. Read from the shell rather than from
+    /// this panel's `ui` for the reason the close guard is: the panel can be
+    /// closed, and the whole point of a save key is that you do not have to open
+    /// anything to use it. It is [`SessionPanel::save`] and nothing else — the
+    /// known path, or the dialog if there is none — so the key and the Save
+    /// button cannot come to mean two different things.
+    ///
+    /// **`Cmd+Shift+S` is deliberately left unbound.** `Modifiers::COMMAND` as a
+    /// `consume_key` pattern would swallow it (`matches_logically` ignores a
+    /// shift the pattern does not ask for), and a Save As reflex quietly doing a
+    /// plain Save is the wrong kind of surprise — so the match here is
+    /// `matches_exact` and that chord stays free for Save As to grow into.
+    /// `Cmd+S` itself reaches egui intact: `egui-winit` intercepts only the
+    /// cut/copy/paste chords (`lib.rs` ~1022, and see `ui::tracks` for what that
+    /// cost the first time), and a command chord carries no `Event::Text` twin
+    /// to clean up after.
+    ///
+    /// Guarded on focus and on modals like every other shortcut in this app. The
+    /// modal guard matters more here than most: a close guard asking "save
+    /// first?" is already a question about saving, and answering it with a key
+    /// that runs a *second* save underneath it is two saves and one answer.
+    ///
+    /// It says what happened in the console, because with this panel closed
+    /// there is nowhere else it could: the LAST line is in the panel you did not
+    /// open. A cancelled dialog says nothing — cancelling is a normal answer.
+    pub fn save_shortcut(&mut self, ctx: &egui::Context, session: &Session) -> bool {
+        if crate::ui::tracks::typing_elsewhere(ctx, session)
+            || ctx.memory(|m| m.top_modal_layer().is_some())
+        {
+            return false;
+        }
+        let pressed = ctx.input_mut(|i| {
+            let mut pressed = false;
+            i.events.retain(|event| match event {
+                egui::Event::Key { key: egui::Key::S, pressed: true, repeat, modifiers, .. }
+                    if modifiers.matches_exact(egui::Modifiers::COMMAND) =>
+                {
+                    pressed |= !repeat;
+                    false
+                }
+                _ => true,
+            });
+            pressed
+        });
+        if !pressed {
+            return false;
+        }
+
+        // Whether a `false` was a refusal or a cancelled dialog. A save onto a
+        // path this panel already knows can only have been a refusal; without
+        // one, a status that moved is the tell. (Two identical failures in a row
+        // onto a path chosen twice from the dialog would leave the second silent
+        // here — the panel's LAST line still carries it, and the dirty flag is
+        // still up.)
+        let had_path = self.path.is_some();
+        let before = self.status.clone();
+        let saved = self.save(session);
+        match &self.status {
+            Some(Status::Saved(path)) if saved => {
+                crate::ui::console::post(ctx, format!("Saved to {}", path.display()));
+            }
+            Some(Status::Failed(why)) if !saved && (had_path || self.status != before) => {
+                crate::ui::console::post(ctx, format!("Not saved — {why}"));
+            }
+            _ => {}
+        }
+        true
+    }
+
     /// Ask for a path, then save to it.
     pub fn save_as(&mut self, session: &Session) -> bool {
         let suggested = suggested_name(session);
@@ -592,7 +663,10 @@ impl SessionPanel {
                 ui.horizontal(|ui| {
                     if ui
                         .button("Save")
-                        .on_hover_text("Write to the current file, or ask for one")
+                        .on_hover_text(
+                            "Write to the current file, or ask for one — or press Cmd+S, \
+                             which works with this panel closed",
+                        )
                         .clicked()
                     {
                         self.save(session);

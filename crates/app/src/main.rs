@@ -177,6 +177,21 @@ impl eframe::App for App {
         // joins neither `edited` nor `stepped`.
         transport::shortcuts(ui, &mut self.engine, &self.session);
 
+        // The rail's letters — E, H, G, S, P — and Cmd+S, read here for exactly
+        // the same reason and in the same place: a key that only works while the
+        // panel it belongs to is open is a key nobody finds. Neither is an edit.
+        // The rail's letters move which panel is showing, which is desk state;
+        // the save writes the session out and reports what happened in the
+        // console, since with the Session panel closed there is nowhere else it
+        // could say so.
+        //
+        // Bare letters first, then the command chord: they cannot collide (each
+        // read matches its modifiers exactly, so S and Cmd+S are different keys),
+        // and reading the rail first is what lets a letter and a save land in the
+        // same frame without either eating the other's event.
+        rail::shortcuts(ui, &mut self.bars, &self.session);
+        self.session_file.save_shortcut(ui.ctx(), &self.session);
+
         // **Auto-connect, before the panels are drawn.** It may give a box its
         // ports, and a strip drawn from the old routing would be a frame behind —
         // the same reason `PortsPanel::poll` asks for a repaint when a handshake

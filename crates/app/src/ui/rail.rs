@@ -9,6 +9,7 @@
 // transport's `SETUP` toggle is what reopens the other one — a collapsible panel
 // with no visible way back is a feature that has quietly gone.
 
+use digi_core::Session;
 use eframe::egui::{self, Color32, Ui};
 
 /// The left panel's tools, in rail order. Each one is a slot in the workflow;
@@ -51,8 +52,56 @@ impl Tool {
             Self::Generate => "Bass, chords, lead and a kick/snare/hat kit, generated to agree with each other",
             Self::Song => "The arrangement: rows of scenes, played in order",
             Self::Presets => "The selected box's +Drive soundbanks, by bank, filtered by tag",
-            Self::Session => "Save and open the session file",
+            Self::Session => "Save and open the session file — Cmd+S saves it from anywhere",
         }
+    }
+
+    /// The bare letter that opens this tool from anywhere in the window, or
+    /// `None` for a tool that has no key.
+    ///
+    /// **Initials, and the one collision is resolved in Song's favour.** `S` is
+    /// Song's because Song is a panel you switch *to* while writing. The Session
+    /// panel's own verb is Save, and that is on `Cmd+S`
+    /// ([`super::session::SessionPanel::save_shortcut`]) — a key that saves
+    /// without opening any panel at all, which is the thing actually worth
+    /// having. Giving Session some second-choice letter would be a shortcut
+    /// nobody could guess and nobody would need.
+    ///
+    /// No modifier on any of them: the five that are bound are bound to the
+    /// letter alone, guarded on nothing being typed into
+    /// ([`shortcuts`]), and the chords stay free — `Shift+C`/`Shift+V` are the
+    /// TRACKS clipboard (`super::tracks`) and `Cmd+Z` is the history.
+    pub fn key(self) -> Option<egui::Key> {
+        match self {
+            Self::Edit => Some(egui::Key::E),
+            Self::Harmony => Some(egui::Key::H),
+            Self::Generate => Some(egui::Key::G),
+            Self::Song => Some(egui::Key::S),
+            Self::Presets => Some(egui::Key::P),
+            Self::Session => None,
+        }
+    }
+
+    /// Which tool a bare letter opens. Derived from [`Tool::key`] rather than
+    /// written out a second time, so a key can never open one tool while the
+    /// rail announces it as another's.
+    pub fn from_key(key: egui::Key) -> Option<Self> {
+        Self::ALL.into_iter().find(|tool| tool.key() == Some(key))
+    }
+}
+
+/// The rail row's tooltip: what the panel is for, and the key that opens it.
+///
+/// The key is announced *here* rather than drawn in the row, for the same
+/// reason the transport says "or press Space" in the PLAY button's hover text
+/// and not on its face: the rail is 86px wide and its labels are the one thing
+/// on it that must stay legible. A shortcut nobody is told about is a shortcut
+/// nobody finds, and a hover is where this app has already decided to tell
+/// people about its keys.
+fn row_hint(tool: Tool) -> String {
+    match tool.key() {
+        Some(key) => format!("{} — press {}", tool.hint(), key.name()),
+        None => tool.hint().to_string(),
     }
 }
 
@@ -210,6 +259,102 @@ fn kofi_row(ui: &mut Ui) -> bool {
     response.clicked()
 }
 
+/// What a rail row's click, and the row's letter, both mean.
+///
+/// Clicking (or pressing the letter of) the open tool closes the panel, as
+/// digi-roll's rail did — it is the fastest way to get the roll back. Shared by
+/// [`ui`] and [`shortcuts`] so the key can never drift from the click: whatever
+/// `E` does is by construction what pressing `Edit` does.
+fn open_or_close(bars: &mut Sidebars, tool: Tool) {
+    if bars.tool == tool {
+        bars.tool_open = !bars.tool_open;
+    } else {
+        bars.tool = tool;
+        bars.tool_open = true;
+    }
+}
+
+/// The rail's letters — `E` `H` `G` `S` `P` — read from the shell before any
+/// panel is drawn. Returns whether the key was taken.
+///
+/// Read from the window rather than from the rail's own `ui` for the reason
+/// `edit::shortcuts` and `transport::shortcuts` are: this runs before the
+/// panels, so the frame that presses `G` is also the frame that draws Generate.
+/// Nothing here touches the session, so there is nothing to report to the
+/// engine and nothing for the history to record — which side panel is open is
+/// desk state, not music.
+///
+/// ## Why this is not `consume_key(Modifiers::NONE, Key::E)`
+///
+/// The same two reasons `transport::space_tap` is not, and they bite harder for
+/// a letter. `Modifiers::NONE` as a `consume_key` pattern does not mean "no
+/// modifiers" — `matches_logically` only rejects a modifier the *pattern* asks
+/// for and the input lacks (`modifiers.rs` ~211) — so `Shift+E` and `Alt+E`
+/// would both open Edit, and `Shift+S` would open Song from under the TRACKS
+/// clipboard's own chord family. `matches_exact` binds the letter alone and
+/// leaves every chord on it free. And `count_and_consume_key` never looks at
+/// `repeat`, so a leant-on `E` would flap the panel open and shut at the
+/// key-repeat rate; only the first press of a hold counts here.
+///
+/// The `Event::Text("e")` that `egui-winit` pushes beside the key event goes
+/// with it (`egui-winit` 0.36.1 `lib.rs` ~1046 — text is suppressed for a
+/// command chord but not for a bare letter). Taking the key and leaving the
+/// character is how pressing `S` for Song ends up typing an `s` into whatever
+/// takes focus next.
+///
+/// Guarded on focus and on modals, exactly as the spacebar is. With a
+/// `TextEdit` or a `DragValue` focused a letter is a character being typed and
+/// nothing else; with a write, sync or restore dialog up, the window is a
+/// question waiting for an answer and moving the panel behind it is not one. A
+/// clicked TRACKS cell is the standing exemption — it holds focus, that is what
+/// arms its Delete, and picking a track must not cost you the rail.
+pub fn shortcuts(ui: &Ui, bars: &mut Sidebars, session: &Session) -> bool {
+    let Some(tool) = tool_tapped(ui.ctx(), session) else {
+        return false;
+    };
+    open_or_close(bars, tool);
+    true
+}
+
+/// Which tool's letter arrived this frame, taking it — and the character beside
+/// it — out of the queue. See [`shortcuts`] for why it is written out rather
+/// than left to `consume_key`.
+fn tool_tapped(ctx: &egui::Context, session: &Session) -> Option<Tool> {
+    if crate::ui::tracks::typing_elsewhere(ctx, session)
+        || ctx.memory(|m| m.top_modal_layer().is_some())
+    {
+        return None;
+    }
+    ctx.input_mut(|i| {
+        let mut tapped: Option<Tool> = None;
+        // The letter whose `Event::Text` twin is still to come, if a key was
+        // taken this frame. `Key::name` is "E" for `Key::E`, and the twin is the
+        // lower-case "e" — compared without case so a layout that reports it
+        // otherwise cannot leave half a keypress behind.
+        let mut took: Option<&'static str> = None;
+        i.events.retain(|event| match event {
+            egui::Event::Key { key, pressed: true, repeat, modifiers, .. }
+                if modifiers.matches_exact(egui::Modifiers::NONE) =>
+            {
+                let Some(tool) = Tool::from_key(*key) else {
+                    return true;
+                };
+                took = Some(key.name());
+                // First press only, and the first letter only: two rail letters
+                // in one frame is not a gesture, and the second would land on a
+                // panel the first had just opened.
+                if !*repeat && tapped.is_none() {
+                    tapped = Some(tool);
+                }
+                false
+            }
+            egui::Event::Text(text) => !took.is_some_and(|letter| text.eq_ignore_ascii_case(letter)),
+            _ => true,
+        });
+        tapped
+    })
+}
+
 /// Draw the rail. Nothing here touches the session, so there is nothing to
 /// report to the engine.
 ///
@@ -232,15 +377,8 @@ pub fn ui(ui: &mut Ui, bars: &mut Sidebars) {
             ui.spacing_mut().item_spacing.y = 0.0;
             for tool in Tool::ALL {
                 let active = bars.tool_open && bars.tool == tool;
-                if rail_row(ui, active, tool.title(), tool.hint()) {
-                    if bars.tool == tool {
-                        // Clicking the open tool closes the panel, as digi-roll's
-                        // rail did — it is the fastest way to get the roll back.
-                        bars.tool_open = !bars.tool_open;
-                    } else {
-                        bars.tool = tool;
-                        bars.tool_open = true;
-                    }
+                if rail_row(ui, active, tool.title(), &row_hint(tool)) {
+                    open_or_close(bars, tool);
                 }
             }
 
@@ -331,6 +469,266 @@ mod tests {
             assert!(!tool.title().is_empty());
             assert!(!tool.hint().is_empty());
         }
+    }
+
+    // --- the rail's letters ---------------------------------------------------
+
+    /// A bare letter as the platform really sends it: the key, and the printable
+    /// character `egui-winit` pushes beside it.
+    ///
+    /// Both, for the reason `ui::tracks`' clipboard comment spells out at
+    /// length — a test that feeds the input the code expects rather than the
+    /// input the platform produces cannot fail. The character is the half that
+    /// would otherwise be left in the queue to be typed into whatever takes
+    /// focus next, and the only way to catch that is to send it.
+    fn letter(key: egui::Key) -> Vec<egui::Event> {
+        vec![
+            egui::Event::Key {
+                key,
+                physical_key: Some(key),
+                pressed: true,
+                repeat: false,
+                modifiers: egui::Modifiers::NONE,
+            },
+            egui::Event::Text(key.name().to_ascii_lowercase()),
+        ]
+    }
+
+    /// Letting go, in a frame of its own. Not optional: `InputState::begin_pass`
+    /// rewrites `repeat` from its own `keys_down` set, so a second press with no
+    /// release between is a *held* key — which this shortcut ignores by design.
+    fn release(key: egui::Key) -> Vec<egui::Event> {
+        vec![egui::Event::Key {
+            key,
+            physical_key: Some(key),
+            pressed: false,
+            repeat: false,
+            modifiers: egui::Modifiers::NONE,
+        }]
+    }
+
+    /// One shell pass of the rail's shortcut read. Returns whether the key was
+    /// taken, and what was left in the event queue after it.
+    fn frame(
+        ctx: &egui::Context,
+        events: Vec<egui::Event>,
+        bars: &mut Sidebars,
+        session: &digi_core::Session,
+    ) -> (bool, Vec<egui::Event>) {
+        let mut took = false;
+        let mut left = Vec::new();
+        let mut output = ctx.run_ui(egui::RawInput { events, ..Default::default() }, |ui| {
+            took = shortcuts(ui, bars, session);
+            left = ui.input(|i| i.events.clone());
+        });
+        output.textures_delta.clear();
+        (took, left)
+    }
+
+    /// A press and the release after it, which is what one tap of a key is.
+    fn tap(
+        ctx: &egui::Context,
+        key: egui::Key,
+        bars: &mut Sidebars,
+        session: &digi_core::Session,
+    ) -> (bool, Vec<egui::Event>) {
+        let pressed = frame(ctx, letter(key), bars, session);
+        frame(ctx, release(key), bars, session);
+        pressed
+    }
+
+    #[test]
+    fn every_letter_is_the_tools_own_initial_and_no_two_share_one() {
+        // The whole case for these five keys is that they are guessable. A
+        // letter that is not the tool's initial is one more thing to memorise,
+        // and two tools on one letter is a rail row that can never be reached.
+        let mut seen = Vec::new();
+        for tool in Tool::ALL {
+            let Some(key) = tool.key() else { continue };
+            assert_eq!(
+                key.name(),
+                tool.title()[..1].to_uppercase(),
+                "{}'s key must be its initial",
+                tool.title()
+            );
+            assert!(!seen.contains(&key), "{key:?} is bound twice");
+            seen.push(key);
+            assert_eq!(Tool::from_key(key), Some(tool), "the lookup must agree with the key");
+        }
+        assert_eq!(seen.len(), PANEL_TOOLS - 1, "every tool but one carries a letter");
+    }
+
+    #[test]
+    fn s_is_songs_and_session_has_no_letter_of_its_own() {
+        // The one collision, settled: Session's verb is Save, and that is on
+        // Cmd+S — a key that needs no panel open at all.
+        assert_eq!(Tool::from_key(egui::Key::S), Some(Tool::Song));
+        assert_eq!(Tool::Session.key(), None);
+    }
+
+    #[test]
+    fn the_rows_tooltip_names_the_key_that_opens_it() {
+        // A shortcut nobody is told about is a shortcut nobody finds, and the
+        // hover is where this app has already decided to say so.
+        for tool in Tool::ALL {
+            let hint = row_hint(tool);
+            assert!(hint.starts_with(tool.hint()), "the hint must still say what the panel is for");
+            match tool.key() {
+                Some(key) => assert!(
+                    hint.ends_with(&format!("press {}", key.name())),
+                    "{} must announce its key: {hint}",
+                    tool.title()
+                ),
+                None => assert!(hint.contains("Cmd+S"), "Session must point at the key it does have"),
+            }
+        }
+    }
+
+    #[test]
+    fn a_letter_opens_its_panel_and_the_same_letter_closes_it() {
+        let ctx = egui::Context::default();
+        let session = digi_core::two_box_session();
+        let mut bars = Sidebars::default();
+
+        for tool in Tool::ALL {
+            let Some(key) = tool.key() else { continue };
+            let (took, left) = tap(&ctx, key, &mut bars, &session);
+            assert!(took, "{key:?} is a rail key");
+            assert!(left.is_empty(), "{key:?} and the character beside it both go: {left:?}");
+            assert!(bars.tool_open, "{key:?} opens the panel");
+            assert_eq!(bars.tool, tool, "{key:?} opens {}", tool.title());
+
+            // Pressing it again closes it, exactly as clicking the open row does.
+            tap(&ctx, key, &mut bars, &session);
+            assert!(!bars.tool_open, "{key:?} on the open panel closes it");
+            assert_eq!(bars.tool, tool, "and it is still the tool that would reopen");
+
+            // And back open, so the next tool in the loop is a *switch* rather
+            // than an open — which is the other half of `open_or_close`.
+            tap(&ctx, key, &mut bars, &session);
+            assert!(bars.tool_open);
+        }
+    }
+
+    #[test]
+    fn another_letter_switches_the_open_panel_rather_than_closing_it() {
+        let ctx = egui::Context::default();
+        let session = digi_core::two_box_session();
+        let mut bars = Sidebars::default();
+
+        tap(&ctx, egui::Key::G, &mut bars, &session);
+        assert_eq!((bars.tool, bars.tool_open), (Tool::Generate, true));
+        tap(&ctx, egui::Key::H, &mut bars, &session);
+        assert_eq!((bars.tool, bars.tool_open), (Tool::Harmony, true), "a switch, not a toggle");
+    }
+
+    #[test]
+    fn a_held_letter_is_one_tap_rather_than_a_panel_flapping_at_the_repeat_rate() {
+        let ctx = egui::Context::default();
+        let session = digi_core::two_box_session();
+        let mut bars = Sidebars::default();
+
+        // No release between the two, so egui marks the second a repeat.
+        frame(&ctx, letter(egui::Key::E), &mut bars, &session);
+        assert!(bars.tool_open);
+        let (took, left) = frame(&ctx, letter(egui::Key::E), &mut bars, &session);
+        assert!(bars.tool_open, "a leant-on E must not close what the first press opened");
+        assert!(!took, "a repeat is not a tap, so nothing downstream is told the key moved a panel");
+        assert!(left.is_empty(), "but it is still swallowed rather than typed into the window");
+    }
+
+    #[test]
+    fn a_letter_no_tool_claims_is_left_where_it_was() {
+        let ctx = egui::Context::default();
+        let session = digi_core::two_box_session();
+        let mut bars = Sidebars::default();
+
+        let (took, left) = frame(&ctx, letter(egui::Key::Q), &mut bars, &session);
+        assert!(!took);
+        assert_eq!(left.len(), 2, "the key and its character both pass through: {left:?}");
+        assert!(!bars.tool_open);
+    }
+
+    #[test]
+    fn a_chord_on_a_rail_letter_is_not_a_rail_letter() {
+        let ctx = egui::Context::default();
+        let session = digi_core::two_box_session();
+
+        // `Modifiers::NONE` as a `consume_key` pattern would match every one of
+        // these — see `shortcuts` — which is why this read matches exactly.
+        // Shift+C/Shift+V are the TRACKS clipboard and Cmd+S is the save.
+        for modifiers in [
+            egui::Modifiers::SHIFT,
+            egui::Modifiers::ALT,
+            egui::Modifiers::COMMAND,
+            egui::Modifiers::COMMAND | egui::Modifiers::SHIFT,
+        ] {
+            let mut bars = Sidebars::default();
+            for key in [egui::Key::E, egui::Key::S, egui::Key::P] {
+                let event = egui::Event::Key {
+                    key,
+                    physical_key: Some(key),
+                    pressed: true,
+                    repeat: false,
+                    modifiers,
+                };
+                let (took, left) = frame(&ctx, vec![event], &mut bars, &session);
+                assert!(!took, "{modifiers:?}+{key:?} is not the rail");
+                assert_eq!(left.len(), 1, "and it is left for whoever does want it");
+            }
+            assert!(!bars.tool_open);
+        }
+    }
+
+    #[test]
+    fn a_focused_field_keeps_its_letters() {
+        // With a TextEdit or a DragValue focused, a letter is a character being
+        // typed. The same guard Cmd+Z and the spacebar carry.
+        let ctx = egui::Context::default();
+        let session = digi_core::two_box_session();
+        let mut bars = Sidebars::default();
+        ctx.memory_mut(|m| m.request_focus(egui::Id::new("some-text-field")));
+
+        let (took, left) = frame(&ctx, letter(egui::Key::E), &mut bars, &session);
+        assert!(!took);
+        assert_eq!(left.len(), 2, "the character has to reach the field: {left:?}");
+        assert!(!bars.tool_open);
+    }
+
+    #[test]
+    fn nothing_opens_while_a_dialog_is_waiting_for_an_answer() {
+        // A write, sync or restore dialog is a question, and moving the panel
+        // behind it is not an answer to it. The same guard the spacebar carries.
+        let ctx = egui::Context::default();
+        let session = digi_core::two_box_session();
+        let mut bars = Sidebars::default();
+        let mut output = ctx.run_ui(egui::RawInput::default(), |ui| {
+            egui::Modal::new(egui::Id::new("a-question")).show(ui.ctx(), |ui| {
+                ui.label("Send this pattern to the box?");
+            });
+        });
+        output.textures_delta.clear();
+
+        let (took, left) = frame(&ctx, letter(egui::Key::E), &mut bars, &session);
+        assert!(!took);
+        assert_eq!(left.len(), 2, "the modal has the keyboard until it is answered");
+        assert!(!bars.tool_open);
+    }
+
+    #[test]
+    fn a_clicked_track_cell_does_not_disarm_the_rail() {
+        // The standing exemption `typing_elsewhere` exists for: a TRACKS cell
+        // holds focus — that is what arms its Delete — and picking a track must
+        // not cost you the rail.
+        let ctx = egui::Context::default();
+        let session = digi_core::two_box_session();
+        let mut bars = Sidebars::default();
+        let cell = crate::ui::tracks::cell_id(session.devices[0].id, 0);
+        ctx.memory_mut(|m| m.request_focus(cell));
+
+        let (took, _) = frame(&ctx, letter(egui::Key::P), &mut bars, &session);
+        assert!(took);
+        assert_eq!((bars.tool, bars.tool_open), (Tool::Presets, true));
     }
 
     #[test]

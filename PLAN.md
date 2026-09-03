@@ -492,6 +492,18 @@ clicking the open one closing it. The right panel holds everything per-device: p
 clock, identity, and the fetch/write-back, because a transfer is aimed at one
 box's slot and belongs beside that box rather than beside the notes.
 
+**The rail is on the keyboard** (2026-09-02): `E` `H` `G` `S` `P` open Edit,
+Harmony, Generate, Song and Presets, and the letter of the open panel closes it
+— the key does exactly what clicking the row does, because both go through one
+function. Initials, so there is nothing to memorise; the one collision is
+settled in Song's favour, because Session's own verb is Save and that is on
+**`Cmd+S`**, which writes the session with no panel open at all and says so in
+the console. Read from the shell beside the spacebar and Cmd+Z, guarded the same
+way — not while a field has the keyboard, not while a dialog is waiting — and
+matched on the letter alone, so every chord on those keys stays free (`Shift+C`
+is still the TRACKS clipboard, and `Cmd+Shift+S` is left for the Save As it
+looks like). Each rail row's hover names its key.
+
 Patterns and scenes are **side by side, not stacked**: a scene is built out of
 patterns that already exist, so the two are one sitting, and stacked full-width
 bars spent height the roll needs. The rail cannot be hidden — it is what reopens

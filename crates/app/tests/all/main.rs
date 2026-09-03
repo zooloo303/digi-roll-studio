@@ -15,6 +15,7 @@ mod presets;
 mod restore;
 mod restore_panel;
 mod session_panel;
+mod shell_keys;
 mod sync;
 mod tracks_clear;
 mod tracks_clipboard;
