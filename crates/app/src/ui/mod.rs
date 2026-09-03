@@ -152,6 +152,7 @@
 use eframe::egui::{self, Color32, Ui};
 
 pub mod autoconnect;
+pub mod console;
 pub mod devices;
 pub mod edit;
 pub mod generate;

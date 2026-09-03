@@ -20,6 +20,7 @@ use digi_roll_studio::ui::generate::GeneratePanel;
 use digi_roll_studio::ui::harmony::HarmonyPanel;
 use digi_roll_studio::ui::pianoroll::PianoRoll;
 use digi_roll_studio::ui::ports::PortsPanel;
+use digi_roll_studio::ui::console::Console;
 use digi_roll_studio::ui::rail::{self, Sidebars};
 use digi_roll_studio::ui::autoconnect::AutoConnect;
 use digi_roll_studio::ui::restore::RestorePanel;
@@ -68,6 +69,10 @@ struct App {
     selection: Selection,
     /// Which side panels are open, and which tool the left one shows.
     bars: Sidebars,
+    /// The strip along the window's floor, and the log behind it. See
+    /// `ui::console` for why the TRACKS pane no longer says these things
+    /// itself.
+    console: Console,
     /// The rail's fourth slot: save and open the session file, and the close
     /// guard that stops the window taking unsaved work with it.
     session_file: SessionPanel,
@@ -229,6 +234,23 @@ impl eframe::App for App {
                     &mut self.bars.setup_open,
                 );
             });
+
+        // **The console takes the window's floor before the rail takes its
+        // column**, so the strip runs the full width rather than stopping where
+        // the centre column starts — a log that changed width when a tool panel
+        // opened would read as part of that panel. `exact_size`, for the tool
+        // panel's reason: this is a fixed strip plus, when it is open, a bounded
+        // scrollback, and an auto-sizing panel with a `ScrollArea` in it takes
+        // everything it can see.
+        //
+        // **Whatever it takes, it takes from the roll and never from the TRACKS
+        // grid.** That is the whole point of it being here rather than inside
+        // the pane, whose height is fixed and whose rows are the thing worth
+        // protecting.
+        egui::Panel::bottom("console")
+            .exact_size(self.console.height())
+            .frame(egui::Frame::NONE)
+            .show(ui, |ui| self.console.ui(ui));
 
         // 86px, not 88: `design_handoff_digi_roll_ui_v2/README.md` §2b and its
         // sizes table both say 86, and the rail's rows are drawn to that width.

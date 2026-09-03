@@ -534,15 +534,30 @@ The elements:
   usually is when a part turns out to be an octave out.
 
   **A track moves whole or not at all.** If any note would leave the MIDI range
-  the move is refused and the pane says how much room is left, rather than
+  the move is refused and the console says how much room is left, rather than
   clamping the notes that ran out (which turns a chord into a cluster) or
   dropping them (which makes +12 then -12 lossy). The limit is the MIDI range
   and **not** the roll's own C2–C8 rows: a pattern fetched off a box can hold
   any of the 128 pitches, the roll widens its band to draw them, and a
   band-shaped limit would have refused to move such a track back *towards* the
-  rows. The rows survive as something the status line mentions, not as a wall.
+  rows. The rows survive as something the console mentions, not as a wall.
   P-locks are untouched, because a lock belongs to a *step* and nothing here
   moves in time.
+- **Console** — one line along the window's floor saying what the grid just did,
+  with everything it has said this session behind a disclosure. Added
+  2026-09-02, and **the reason it exists is a mistake worth keeping written
+  down**: those sentences were drawn under the TRACKS pane's own header, and
+  that pane is a *fixed* height, so every pixel the line took came out of the
+  grid's scroll area beneath it. On the three-box desk the A4's row went below
+  the fold — a message about a track was hiding the track. It stuck, too: the
+  line stayed until something replaced it, so a sentence about a slot you had
+  navigated away from sat there being quietly untrue. A `Panel::bottom` can do
+  neither. It takes its height from the roll, which is elastic, and the strip is
+  the same height empty as full, so a message arriving moves nothing. Ages are
+  relative — "just now", "4m ago" — because `safe_write::Timestamp` is UTC-only
+  and this workspace carries no timezone data; a wall clock here is a dependency
+  decision. The other panels' own consequence lines stay where they are: each
+  sits inside the panel that owns the work, in space that panel may reflow.
 - **Scenes pane** — the §2 scenes, showing which slot each box is on and what is
   queued.
 - **SONG panel** — the arrangement, in the two halves the box merges because it

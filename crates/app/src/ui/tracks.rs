@@ -74,6 +74,7 @@ use digi_core::{Device, DeviceId, Pattern, Session, Source, Track, TrackKind};
 use eframe::egui::{self, Align, Align2, FontId, Layout, Pos2, Rect, Sense, Stroke, Ui, Vec2};
 
 use crate::engine::EngineLink;
+use crate::ui::console;
 
 /// Which track the roll is editing: a device by position in the session, and a
 /// track within whatever pattern that device plays in the current scene.
@@ -392,20 +393,17 @@ pub fn track_mut(session: &mut Session, selection: Selection) -> Option<&mut Tra
 /// See the section header above for why here and why a `Selection` rather than
 /// a snapshot of the music.
 ///
-/// Named for the pane rather than the clipboard because the status line below
-/// is not the clipboard's alone: clearing a track (`handle_clear_shortcut`)
-/// speaks in the same one line, and one pane-wide sentence that changes is
-/// what a person reads. Two competing status lines would be two places to
-/// look.
+/// **It used to hold a status line too, and that was the bug.** Copy, paste,
+/// clear and transpose all reported into one sentence drawn under this pane's
+/// header — inside a pane whose height is *fixed* ([`pane_height`]), so the
+/// line's pixels came out of the grid's `ScrollArea` and the third box's row
+/// went below the fold. A message about a track was hiding the track. Those
+/// sentences now go to [`crate::ui::console`], which takes its space off the
+/// window's floor and never off this grid; that module's own doc has the rest.
 #[derive(Clone, Debug, Default)]
 struct PaneState {
     /// The cell Shift+C last copied, if any.
     copied: Option<Selection>,
-    /// The last thing a copy, a paste or a clear had to say, shown in the pane
-    /// header by `ui()`. Untouched by a frame that does none of them, so it
-    /// reads as a status line rather than flickering — the same contract
-    /// `ui::edit`'s `Status` keeps for its panel.
-    message: Option<String>,
 }
 
 /// A fixed id, not one derived from `ui.id()`: this state has to keep meaning
@@ -602,16 +600,19 @@ fn handle_clipboard_shortcuts(ui: &Ui, session: &mut Session, selection: Selecti
         // rather than clearing a working copy on a stray keypress.
         if track(session, selection).is_some() {
             state.copied = Some(selection);
-            state.message = Some(format!("Copied {} — Shift+V onto another cell to paste it.", cell_label(session, selection)));
+            console::post(
+                ui.ctx(),
+                format!("Copied {} — Shift+V onto another cell to paste it.", cell_label(session, selection)),
+            );
         }
     } else {
         match try_paste(session, state.copied, selection) {
             PasteOutcome::Pasted { report, source_label, target_label } => {
                 edited = true;
-                state.message = Some(paste_message(&source_label, &target_label, &report));
+                console::post(ui.ctx(), paste_message(&source_label, &target_label, &report));
             }
             PasteOutcome::SourceGone => {
-                state.message = Some("Nothing pasted — the copied track no longer exists.".to_string());
+                console::post(ui.ctx(), "Nothing pasted — the copied track no longer exists.");
             }
             PasteOutcome::NothingCopied | PasteOutcome::SameCell | PasteOutcome::NoTarget => {}
         }
@@ -700,10 +701,7 @@ fn handle_clear_shortcut(ui: &Ui, session: &mut Session, selection: Selection) -
     } else {
         format!("{label} was already empty.")
     };
-    let id = pane_state_id();
-    let mut state: PaneState = ui.ctx().data(|d| d.get_temp(id)).unwrap_or_default();
-    state.message = Some(message);
-    ui.ctx().data_mut(|d| d.insert_temp(id, state));
+    console::post(ui.ctx(), message);
 
     cleared
 }
@@ -777,12 +775,7 @@ fn handle_transpose_shortcut(ui: &Ui, session: &mut Session, selection: Selectio
     };
     let outcome = digi_core::edit_ops::transpose_track(track, semitones);
     let span = pitch_span(track);
-    let message = transpose_message(&label, semitones, outcome, span.as_deref());
-
-    let id = pane_state_id();
-    let mut state: PaneState = ui.ctx().data(|d| d.get_temp(id)).unwrap_or_default();
-    state.message = Some(message);
-    ui.ctx().data_mut(|d| d.insert_temp(id, state));
+    console::post(ui.ctx(), transpose_message(&label, semitones, outcome, span.as_deref()));
 
     matches!(outcome, digi_core::edit_ops::Transposed::Moved { .. })
 }
@@ -1334,21 +1327,15 @@ pub fn ui(ui: &mut Ui, session: &mut Session, selection: &mut Selection, engine:
                 // top, the grid filling the gap down to the rule above.
                 ui.with_layout(Layout::top_down(Align::Min), |ui| {
                     paint_header(ui, session, *selection);
-                    // The clipboard's last word — what a copy or a paste had to
-                    // say, including any warning a paste came back with — sits
-                    // directly under the header, the pane's own natural home
-                    // for a line about the pane as a whole rather than about
-                    // one track. Above the scroll with the header, for the same
-                    // reason the parameter row is below it: a message you have
-                    // to go looking for is a message that did not arrive.
-                    match state.message.as_deref() {
-                        Some(message) => {
-                            ui.add_space(4.0);
-                            super::consequence_line(ui, message);
-                            ui.add_space(SECTION_GAP - 4.0);
-                        }
-                        None => ui.add_space(SECTION_GAP),
-                    }
+                    // **A fixed gap, and nothing here that can grow.** What a
+                    // copy, a paste, a clear or a transpose has to say goes to
+                    // `ui::console`, along the window's floor. It used to be a
+                    // line right here, and because this pane's height is fixed
+                    // (`pane_height`) every pixel it took came out of the grid
+                    // below — so on a three-box desk the A4's row needed
+                    // scrolling to reach, and what had pushed it down was a
+                    // sentence about a track in it.
+                    ui.add_space(SECTION_GAP);
 
                     egui::ScrollArea::vertical()
                         .id_salt("digi-roll-track-grid")
@@ -2152,6 +2139,18 @@ mod tests {
         edited
     }
 
+    /// The newest thing the pane has said, collected exactly the way the
+    /// window's console collects it — through `Console`, not by reading egui's
+    /// memory behind its back, so these assertions exercise the real path a
+    /// sentence takes from this pane to the strip along the window's floor.
+    ///
+    /// It **drains**, like the real one: call it once per action.
+    fn said(ctx: &egui::Context) -> Option<String> {
+        let mut console = crate::ui::console::Console::default();
+        console.collect(ctx);
+        console.latest().map(|entry| entry.text.clone())
+    }
+
     fn read_state(ctx: &egui::Context) -> PaneState {
         ctx.data(|d| d.get_temp(pane_state_id())).unwrap_or_default()
     }
@@ -2165,9 +2164,8 @@ mod tests {
         let edited = run_clipboard(&ctx, egui::Key::C, &mut session, sel);
 
         assert!(!edited, "a copy alone is never an edit");
-        let clip = read_state(&ctx);
-        assert_eq!(clip.copied, Some(sel));
-        assert_eq!(clip.message.as_deref(), Some("Copied DT2 T01 — Shift+V onto another cell to paste it."));
+        assert_eq!(read_state(&ctx).copied, Some(sel));
+        assert_eq!(said(&ctx).as_deref(), Some("Copied DT2 T01 — Shift+V onto another cell to paste it."));
     }
 
     #[test]
@@ -2205,8 +2203,7 @@ mod tests {
         let edited = run_clipboard(&ctx, egui::Key::V, &mut session, dest_sel);
 
         assert!(edited);
-        let clip = read_state(&ctx);
-        let message = clip.message.expect("a paste always leaves a status line");
+        let message = said(&ctx).expect("a paste always leaves a status line");
         assert!(message.contains("Pasted DT2 T01 onto DT2 T06"), "{message}");
         assert!(message.contains("1 note"), "{message}");
         assert!(message.contains("1 lane"), "{message}");
@@ -2231,7 +2228,7 @@ mod tests {
         let edited = run_clipboard(&ctx, egui::Key::V, &mut session, dest_sel);
 
         assert!(edited, "the note still crosses even though the lane can't");
-        let message = read_state(&ctx).message.unwrap();
+        let message = said(&ctx).unwrap();
         assert!(message.contains("wasn't copied"), "{message}");
     }
 
@@ -2252,7 +2249,7 @@ mod tests {
         let edited = run_clipboard(&ctx, egui::Key::V, &mut session, dt2_sel);
 
         assert!(!edited);
-        let message = read_state(&ctx).message.unwrap();
+        let message = said(&ctx).unwrap();
         assert!(message.contains("no longer exists"), "{message}");
     }
 
@@ -2329,7 +2326,7 @@ mod tests {
             let cleared = track(&session, sel).unwrap();
             assert!(cleared.notes.is_empty(), "{key:?} left trigs behind");
             assert!(cleared.plocks.is_empty(), "{key:?} left p-lock lanes behind — locks ride on trigs");
-            let message = read_state(&ctx).message.expect("a clear always leaves a status line");
+            let message = said(&ctx).expect("a clear always leaves a status line");
             assert!(message.contains("Cleared DT2 T01"), "{message}");
             assert!(message.contains("2 trigs"), "{message}");
             assert!(message.contains("1 p-lock lane"), "{message}");
@@ -2383,7 +2380,7 @@ mod tests {
 
         assert!(!edited);
         assert_eq!(track(&session, sel).unwrap().notes.len(), 2, "the roll's Delete is not this pane's to take");
-        assert!(read_state(&ctx).message.is_none(), "and nothing was reported, because nothing happened");
+        assert!(said(&ctx).is_none(), "and nothing was reported, because nothing happened");
     }
 
     /// A clear that found nothing is not an edit — `edit_ops::clear_track`'s own
@@ -2399,7 +2396,7 @@ mod tests {
         let edited = run_clear(&ctx, egui::Key::Delete, &mut session, sel, true);
 
         assert!(!edited, "nothing went, so there is nothing to undo");
-        assert_eq!(read_state(&ctx).message.as_deref(), Some("DT2 T01 was already empty."));
+        assert_eq!(said(&ctx).as_deref(), Some("DT2 T01 was already empty."));
     }
 
     /// Cmd+Delete is not this shortcut. It is free for whatever wants it, and a
@@ -2541,7 +2538,7 @@ mod tests {
 
         assert!(!edited, "a refused move is not an edit, so it opens no undo step");
         assert_eq!(pitches(&session, sel), [120]);
-        let message = read_state(&ctx).message.expect("a refusal has to say so");
+        let message = said(&ctx).expect("a refusal has to say so");
         assert!(message.contains("will not go up an octave"), "{message}");
         assert!(message.contains("7 semitones of room"), "{message}");
     }
@@ -2555,7 +2552,7 @@ mod tests {
         let edited = run_transpose(&ctx, vec![arrow(egui::Key::ArrowUp, egui::Modifiers::SHIFT)], &mut session, sel);
 
         assert!(!edited);
-        assert_eq!(read_state(&ctx).message.as_deref(), Some("DT2 T01 has no trigs to move."));
+        assert_eq!(said(&ctx).as_deref(), Some("DT2 T01 has no trigs to move."));
     }
 
     /// The guard that keeps a `DragValue`'s own arrows — the parameter row at
@@ -2598,7 +2595,7 @@ mod tests {
         run_transpose(&ctx, vec![arrow(egui::Key::ArrowDown, egui::Modifiers::ALT)], &mut session, sel);
 
         assert_eq!(
-            read_state(&ctx).message.as_deref(),
+            said(&ctx).as_deref(),
             // 59 and 63, named the way an Elektron's screen names them: 60 is
             // C5 here, not C4. See `pianoroll::note_name`.
             Some("Moved DN2 T03 down a semitone — 2 trigs, B4 to D#5 now. Cmd+Z takes it back.")
@@ -2619,7 +2616,7 @@ mod tests {
 
         run_transpose(&ctx, vec![arrow(egui::Key::ArrowUp, egui::Modifiers::SHIFT)], &mut session, sel);
 
-        let message = read_state(&ctx).message.expect("a move says what it did");
+        let message = said(&ctx).expect("a move says what it did");
         assert!(message.contains("1 of them sits outside the roll's C2 to C8 rows"), "{message}");
     }
 
