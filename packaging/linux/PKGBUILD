@@ -8,7 +8,7 @@
 #   packaging/linux/build-pkg.sh
 
 pkgname=digi-roll-studio
-pkgver=0.3.3
+pkgver=0.3.4
 pkgrel=1
 pkgdesc="Native Rust desktop sequencer for the Elektron Digitakt II, Digitone II and Analog Four"
 arch=('x86_64')
