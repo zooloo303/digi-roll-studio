@@ -17,7 +17,7 @@ use std::cell::RefCell;
 use std::path::PathBuf;
 use std::rc::Rc;
 
-use digi_core::edit_ops::{clear_track, duplicate_last_bar};
+use digi_core::edit_ops::{clear_track, duplicate_last_bar, transpose_track, Transposed, OCTAVE};
 use digi_core::history::{Content, History};
 use digi_core::midifile::{midi_file_to_notes, track_to_midi_file};
 use digi_core::{two_box_session, Note, Session};
@@ -443,6 +443,45 @@ fn a_duplicate_bar_is_one_step_and_undoes_whole() {
 }
 
 #[test]
+fn a_transpose_is_one_step_and_undoes_whole() {
+    let mut session = seeded();
+    let mut history = History::default();
+    let before: Vec<u8> = track(&session, FIRST).unwrap().notes.iter().map(|n| n.pitch).collect();
+
+    frame(&mut history, &mut session, false, |s| {
+        matches!(
+            transpose_track(track_mut(s, FIRST).unwrap(), OCTAVE),
+            Transposed::Moved { .. }
+        )
+    });
+    let moved: Vec<u8> = track(&session, FIRST).unwrap().notes.iter().map(|n| n.pitch).collect();
+    assert_eq!(moved, before.iter().map(|p| p + 12).collect::<Vec<_>>());
+
+    assert!(history.undo(&mut session));
+    let back: Vec<u8> = track(&session, FIRST).unwrap().notes.iter().map(|n| n.pitch).collect();
+    assert_eq!(back, before, "one press, one step, all the way back");
+}
+
+/// A refused transpose must not open a step of its own. Otherwise Cmd+Z after a
+/// press that visibly did nothing would take back whatever came *before* it.
+#[test]
+fn a_transpose_with_no_room_leaves_no_undo_step() {
+    let mut session = seeded();
+    let mut history = History::default();
+    track_mut(&mut session, FIRST).unwrap().notes = vec![Note::new(0.0, 126, 1.0, 100, 0.0)];
+
+    frame(&mut history, &mut session, false, |s| {
+        matches!(
+            transpose_track(track_mut(s, FIRST).unwrap(), OCTAVE),
+            Transposed::Moved { .. }
+        )
+    });
+
+    assert_eq!(history.depth(), (0, 0));
+    assert_eq!(track(&session, FIRST).unwrap().notes[0].pitch, 126);
+}
+
+#[test]
 fn a_clear_undoes_the_lanes_along_with_the_notes() {
     let mut session = seeded();
     let mut history = History::default();
@@ -667,6 +706,30 @@ fn the_panel_draws_every_group_without_panicking() {
     }
     history.begin(Content::of(&session));
     history.commit(&session);
+    for _ in 0..2 {
+        draw(&ctx, &mut panel, &mut session, &mut roll, &mut history, vec![]);
+    }
+}
+
+/// The transpose row's other arm: a track pinned against both ends of the MIDI
+/// range, so every one of the four buttons draws disabled and takes the
+/// no-room branch of its own hover text.
+#[test]
+fn the_panel_draws_a_transpose_row_with_no_room_in_either_direction() {
+    let ctx = egui::Context::default();
+    let (mut panel, _) = panel();
+    let mut session = seeded();
+    let mut roll = PianoRoll::default();
+    let mut history = History::default();
+    track_mut(&mut session, FIRST).unwrap().notes =
+        vec![Note::new(0.0, 0, 1.0, 100, 0.0), Note::new(4.0, 127, 1.0, 100, 0.0)];
+    for _ in 0..2 {
+        draw(&ctx, &mut panel, &mut session, &mut roll, &mut history, vec![]);
+    }
+
+    // And the empty-track arm, which is a third branch again: nothing to move
+    // rather than nowhere to move it.
+    track_mut(&mut session, FIRST).unwrap().notes.clear();
     for _ in 0..2 {
         draw(&ctx, &mut panel, &mut session, &mut roll, &mut history, vec![]);
     }

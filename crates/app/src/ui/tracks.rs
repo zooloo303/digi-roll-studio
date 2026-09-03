@@ -222,8 +222,16 @@ pub fn track_tooltip_text(track_number: usize, track: &Track, pattern_source: Op
         // (`pianoroll::interact`, guarded on nothing being focused). Wording it
         // as a bare "Delete to clear it" would promise a key that does nothing
         // when the roll has the focus, so the click is named.
+        //
+        // The transpose pair is on the selection too, so it needs no such
+        // qualifier — and it gets its own line rather than a fourth `·` because
+        // the keyboard line was already the longest thing in this tooltip.
+        // "Up" and "Down" as words, never as arrows: U+2192's neighbours are on
+        // `ui::mod`'s tofu list and this is `.on_hover_text`, which has no way
+        // to draw a shape instead.
         "Track {track_number} — {}\n{}\n{kind} · {} note{} · LEN {} · {} · CH{} · out: {port}\n\
-         Shift+C to copy this track · Shift+V to paste onto it · click it, then Delete to clear it",
+         Shift+C to copy this track · Shift+V to paste onto it · click it, then Delete to clear it\n\
+         Shift+Up or Shift+Down moves it an octave · hold Alt instead for a semitone",
         track.name,
         patch_line(track, pattern_source),
         track.notes.len(),
@@ -700,6 +708,167 @@ fn handle_clear_shortcut(ui: &Ui, session: &mut Session, selection: Selection) -
     cleared
 }
 
+// --- Shift+Up / Shift+Down: transpose the selected track ---------------------
+
+/// Shift+Up and Shift+Down move the selected track an octave; Alt+Up and
+/// Alt+Down move it a semitone. Returns whether the session changed, which a
+/// refused or empty move never does.
+///
+/// **The octave gets the plainer chord because the octave is the gesture.** A
+/// bassline written where it was easy to draw and a lead an octave under the
+/// one it wants are the two reasons anyone reaches for this; a semitone is for
+/// nudging a part into a key, and it can afford the second modifier.
+///
+/// ## Why the arrows are free to bind, and why they need a modifier
+///
+/// egui moves keyboard focus on **unmodified** arrows (`Memory::begin_pass`
+/// takes `ArrowUp if !modifiers.any()`), so a bare Up would be Tab's cousin and
+/// nothing else — it would walk the focus ring across the grid. With any
+/// modifier held that branch is not taken at all, so Shift+Arrow and Alt+Arrow
+/// reach this untouched, and no other pane in this app binds either: the roll
+/// spends Delete, Cmd, Shift and Alt on the pointer, never on the arrows.
+///
+/// **Alt is read before Shift, and that is load-bearing.** `Modifiers::
+/// matches_logically` only asks that the pattern's modifiers are *held*, not
+/// that no others are — the same looseness `edit::shortcuts` handles by
+/// consuming Cmd+Shift+Z before Cmd+Z — so Shift+Alt+Up satisfies both patterns
+/// here. Reading Alt first makes the smaller move the one that wins, which is
+/// the safer way for an ambiguous keystroke to be wrong.
+///
+/// ## Why this is guarded on the selection and not on the click
+///
+/// [`handle_clear_shortcut`] is armed by focus because Delete already means
+/// something in the roll one pane down, and one keystroke must not mean two
+/// things. Nothing else binds these two chords, so they follow Shift+C/Shift+V
+/// instead: they act on the selected track from wherever you are, including
+/// with the roll focused, which is what makes "drop this part an octave"
+/// something you do without first going to find its cell. The guard is still
+/// [`typing_elsewhere`], because a focused `DragValue` or `TextEdit` spends
+/// arrows on its own value or its own caret and must keep them.
+fn handle_transpose_shortcut(ui: &Ui, session: &mut Session, selection: Selection) -> bool {
+    if typing_elsewhere(ui.ctx(), session) {
+        return false;
+    }
+    let semitones = ui.ctx().input_mut(|i| {
+        for (modifiers, size) in
+            [(egui::Modifiers::ALT, 1), (egui::Modifiers::SHIFT, digi_core::edit_ops::OCTAVE)]
+        {
+            // Consumed rather than read, for `handle_clear_shortcut`'s reason: a
+            // spent keystroke left in the queue is how one press ends up meaning
+            // two things to whatever is drawn next.
+            if i.consume_key(modifiers, egui::Key::ArrowUp) {
+                return Some(size);
+            }
+            if i.consume_key(modifiers, egui::Key::ArrowDown) {
+                return Some(-size);
+            }
+        }
+        None
+    });
+    let Some(semitones) = semitones else {
+        return false;
+    };
+
+    let label = cell_label(session, selection);
+    let Some(track) = track_mut(session, selection) else {
+        // No cell on screen to report this against — `PasteOutcome::NoTarget`'s
+        // silence, for the same reason.
+        return false;
+    };
+    let outcome = digi_core::edit_ops::transpose_track(track, semitones);
+    let span = pitch_span(track);
+    let message = transpose_message(&label, semitones, outcome, span.as_deref());
+
+    let id = pane_state_id();
+    let mut state: PaneState = ui.ctx().data(|d| d.get_temp(id)).unwrap_or_default();
+    state.message = Some(message);
+    ui.ctx().data_mut(|d| d.insert_temp(id, state));
+
+    matches!(outcome, digi_core::edit_ops::Transposed::Moved { .. })
+}
+
+/// "C3 to C5" — the pitches a track now spans, or `None` for a track with no
+/// notes in it to span anything. Shared with the Edit panel's own transpose
+/// row, which says the same thing in its hover.
+///
+/// **"to", not an en dash between two note names.** `C3–C5` reads as one token
+/// at this size and the marks either side of a range are exactly where a font
+/// gap would be least noticed; the words cost four characters and cannot come
+/// out as tofu. See `ui::mod`'s glyph table for the four marks that already
+/// have.
+pub(crate) fn pitch_span(track: &Track) -> Option<String> {
+    let lowest = track.notes.iter().map(|n| n.pitch).min()?;
+    let highest = track.notes.iter().map(|n| n.pitch).max()?;
+    let name = crate::ui::pianoroll::note_name;
+    Some(if lowest == highest {
+        name(lowest)
+    } else {
+        format!("{} to {}", name(lowest), name(highest))
+    })
+}
+
+/// How far and which way, in words: "up an octave", "down a semitone". Shared
+/// with the Edit panel, so the button hover and the status line a keystroke
+/// leaves name the same move the same way.
+pub(crate) fn transpose_name(semitones: i32) -> String {
+    let direction = if semitones < 0 { "down" } else { "up" };
+    match semitones.abs() {
+        1 => format!("{direction} a semitone"),
+        12 => format!("{direction} an octave"),
+        n => format!("{direction} {n} semitones"),
+    }
+}
+
+/// The pane's one line about what a transpose did — or did not do, which is the
+/// half worth having: a refusal that says nothing is indistinguishable from a
+/// dead key.
+///
+/// Kept off the widget so the wording can be tested without a context, the way
+/// [`paste_message`] is.
+fn transpose_message(
+    label: &str,
+    semitones: i32,
+    outcome: digi_core::edit_ops::Transposed,
+    span: Option<&str>,
+) -> String {
+    use digi_core::edit_ops::Transposed;
+    let moved = transpose_name(semitones);
+    match outcome {
+        Transposed::Nothing => format!("{label} has no trigs to move."),
+        Transposed::Moved { notes, outside } => {
+            let mut message = format!(
+                "Moved {label} {moved} — {notes} trig{}{}. Cmd+Z takes it back.",
+                if notes == 1 { "" } else { "s" },
+                match span {
+                    Some(span) => format!(", {span} now"),
+                    None => String::new(),
+                },
+            );
+            // Nothing is lost up there — `pianoroll::Band` widens to whatever a
+            // track carries — but a part that has left the rows the roll opens
+            // on is a part someone will otherwise go looking for.
+            if outside > 0 {
+                message.push_str(&format!(
+                    " {outside} of them sit{} outside the roll's C2 to C8 rows, which widen to \
+                     draw them.",
+                    if outside == 1 { "s" } else { "" },
+                ));
+            }
+            message
+        }
+        Transposed::Blocked { notes, room } => format!(
+            "{label} will not go {moved} — {notes} trig{} would leave the MIDI range, and {}. \
+             Nothing moved.",
+            if notes == 1 { "" } else { "s" },
+            match room.abs() {
+                0 => String::from("there is no room left in that direction"),
+                1 => String::from("there is one semitone of room"),
+                n => format!("there are {n} semitones of room"),
+            },
+        ),
+    }
+}
+
 // --- pure geometry and data rules -------------------------------------------
 //
 // Kept off the widget, in `triglane.rs`'s style, so the arithmetic that has to
@@ -1128,6 +1297,10 @@ pub fn ui(ui: &mut Ui, session: &mut Session, selection: &mut Selection, engine:
     // the grid is drawn, which is right: the focus they are guarded on was set
     // by an earlier frame's click, and `Ui` memory carries it across.
     changed |= handle_clear_shortcut(ui, session, *selection);
+    // Shift+Up/Down and Alt+Up/Down, on the selection like the clipboard pair
+    // rather than on the click like Delete — see the function for why the two
+    // guards differ.
+    changed |= handle_transpose_shortcut(ui, session, *selection);
     let state: PaneState = ui.ctx().data(|d| d.get_temp(pane_state_id())).unwrap_or_default();
 
     egui::Frame::new()
@@ -1511,7 +1684,8 @@ mod tests {
             "Track 3 — BD HARD\n\
              SOUND: BD HARD — kit KIT 1, from A01, read 2026-08-20\n\
              Audio · 1 note · LEN 16 · 1x · CH3 · out: none\n\
-             Shift+C to copy this track · Shift+V to paste onto it · click it, then Delete to clear it"
+             Shift+C to copy this track · Shift+V to paste onto it · click it, then Delete to clear it\n\
+             Shift+Up or Shift+Down moves it an octave · hold Alt instead for a semitone"
         );
     }
 
@@ -1525,7 +1699,8 @@ mod tests {
             "Track 1 — T1\n\
              No patch read from the box — \"Read patch names\" in Setup fills this in.\n\
              MIDI · 0 notes · LEN 16 · 1x · CH1 · out: none\n\
-             Shift+C to copy this track · Shift+V to paste onto it · click it, then Delete to clear it"
+             Shift+C to copy this track · Shift+V to paste onto it · click it, then Delete to clear it\n\
+             Shift+Up or Shift+Down moves it an octave · hold Alt instead for a semitone"
         );
     }
 
@@ -2254,6 +2429,239 @@ mod tests {
 
         assert!(!edited);
         assert_eq!(track(&session, sel).unwrap().notes.len(), 2);
+    }
+
+    // --- Shift+Up / Alt+Up: transpose the selected track ------------------------
+
+    fn arrow(key: egui::Key, modifiers: egui::Modifiers) -> egui::Event {
+        egui::Event::Key { key, physical_key: Some(key), pressed: true, repeat: false, modifiers }
+    }
+
+    /// Straight at the handler, with no cell clicked: this shortcut is on the
+    /// *selection*, so a session that has never been touched is the state it
+    /// has to work in.
+    fn run_transpose(
+        ctx: &egui::Context,
+        events: Vec<egui::Event>,
+        session: &mut Session,
+        selection: Selection,
+    ) -> bool {
+        let mut edited = false;
+        let mut output = ctx.run_ui(egui::RawInput { events, ..Default::default() }, |ui| {
+            edited = handle_transpose_shortcut(ui, session, selection);
+        });
+        output.textures_delta.clear();
+        edited
+    }
+
+    fn pitches(session: &Session, selection: Selection) -> Vec<u8> {
+        track(session, selection).unwrap().notes.iter().map(|n| n.pitch).collect()
+    }
+
+    #[test]
+    fn shift_up_and_shift_down_move_the_selected_track_an_octave() {
+        let ctx = egui::Context::default();
+        let mut session = digi_core::two_box_session();
+        let sel = Selection { device: 0, track: 0 };
+        a_track_with_music(&mut session, sel);
+
+        assert!(run_transpose(&ctx, vec![arrow(egui::Key::ArrowUp, egui::Modifiers::SHIFT)], &mut session, sel));
+        assert_eq!(pitches(&session, sel), [72, 76]);
+        assert!(run_transpose(&ctx, vec![arrow(egui::Key::ArrowDown, egui::Modifiers::SHIFT)], &mut session, sel));
+        assert_eq!(pitches(&session, sel), [60, 64], "and back is exactly back");
+    }
+
+    #[test]
+    fn alt_up_and_alt_down_move_it_one_semitone() {
+        let ctx = egui::Context::default();
+        let mut session = digi_core::two_box_session();
+        let sel = Selection { device: 0, track: 0 };
+        a_track_with_music(&mut session, sel);
+
+        assert!(run_transpose(&ctx, vec![arrow(egui::Key::ArrowUp, egui::Modifiers::ALT)], &mut session, sel));
+        assert_eq!(pitches(&session, sel), [61, 65]);
+    }
+
+    /// `Modifiers::matches_logically` asks only that the pattern's modifiers are
+    /// held, so Shift+Alt matches both bindings. Alt is read first, so the
+    /// smaller move is the one an ambiguous keystroke gets.
+    #[test]
+    fn holding_both_modifiers_is_the_semitone_not_the_octave() {
+        let ctx = egui::Context::default();
+        let mut session = digi_core::two_box_session();
+        let sel = Selection { device: 0, track: 0 };
+        a_track_with_music(&mut session, sel);
+
+        let both = egui::Modifiers { alt: true, shift: true, ..egui::Modifiers::NONE };
+        assert!(run_transpose(&ctx, vec![arrow(egui::Key::ArrowUp, both)], &mut session, sel));
+        assert_eq!(pitches(&session, sel), [61, 65]);
+    }
+
+    /// A bare arrow belongs to egui, which moves keyboard focus with it. Binding
+    /// one here would have made the focus ring and the pitch of a track the same
+    /// keystroke.
+    #[test]
+    fn a_bare_arrow_is_not_a_transpose() {
+        let ctx = egui::Context::default();
+        let mut session = digi_core::two_box_session();
+        let sel = Selection { device: 0, track: 0 };
+        a_track_with_music(&mut session, sel);
+
+        for key in [egui::Key::ArrowUp, egui::Key::ArrowDown] {
+            assert!(!run_transpose(&ctx, vec![arrow(key, egui::Modifiers::NONE)], &mut session, sel));
+        }
+        assert_eq!(pitches(&session, sel), [60, 64]);
+    }
+
+    /// Cmd+Up is somebody else's one day. `matches_logically` is exact about
+    /// cmd/ctrl, so neither pattern can swallow it.
+    #[test]
+    fn a_command_arrow_is_not_a_transpose_either() {
+        let ctx = egui::Context::default();
+        let mut session = digi_core::two_box_session();
+        let sel = Selection { device: 0, track: 0 };
+        a_track_with_music(&mut session, sel);
+
+        let held = egui::Modifiers { shift: true, ..egui::Modifiers::COMMAND };
+        assert!(!run_transpose(&ctx, vec![arrow(egui::Key::ArrowUp, held)], &mut session, sel));
+        assert_eq!(pitches(&session, sel), [60, 64]);
+    }
+
+    /// The keyboard is the one place a move with no room can be asked for — the
+    /// Edit panel greys its buttons out instead — so this is where the refusal
+    /// has to be both silent in the music and loud in the status line.
+    #[test]
+    fn a_move_with_no_room_changes_nothing_and_says_how_much_room_there_is() {
+        let ctx = egui::Context::default();
+        let mut session = digi_core::two_box_session();
+        let sel = Selection { device: 0, track: 0 };
+        track_mut(&mut session, sel).unwrap().notes = vec![digi_core::Note::new(0.0, 120, 1.0, 100, 0.0)];
+
+        let edited = run_transpose(&ctx, vec![arrow(egui::Key::ArrowUp, egui::Modifiers::SHIFT)], &mut session, sel);
+
+        assert!(!edited, "a refused move is not an edit, so it opens no undo step");
+        assert_eq!(pitches(&session, sel), [120]);
+        let message = read_state(&ctx).message.expect("a refusal has to say so");
+        assert!(message.contains("will not go up an octave"), "{message}");
+        assert!(message.contains("7 semitones of room"), "{message}");
+    }
+
+    #[test]
+    fn transposing_an_empty_track_is_not_an_edit_but_still_answers() {
+        let ctx = egui::Context::default();
+        let mut session = digi_core::two_box_session();
+        let sel = Selection { device: 0, track: 0 };
+
+        let edited = run_transpose(&ctx, vec![arrow(egui::Key::ArrowUp, egui::Modifiers::SHIFT)], &mut session, sel);
+
+        assert!(!edited);
+        assert_eq!(read_state(&ctx).message.as_deref(), Some("DT2 T01 has no trigs to move."));
+    }
+
+    /// The guard that keeps a `DragValue`'s own arrows — the parameter row at
+    /// the foot of this very pane has three of them.
+    #[test]
+    fn a_focused_field_elsewhere_keeps_its_arrows() {
+        let ctx = egui::Context::default();
+        let mut session = digi_core::two_box_session();
+        let sel = Selection { device: 0, track: 0 };
+        a_track_with_music(&mut session, sel);
+        ctx.memory_mut(|m| m.request_focus(egui::Id::new("some-drag-value")));
+
+        assert!(!run_transpose(&ctx, vec![arrow(egui::Key::ArrowUp, egui::Modifiers::SHIFT)], &mut session, sel));
+        assert_eq!(pitches(&session, sel), [60, 64]);
+    }
+
+    /// And the other half of that guard: a clicked *cell* holds focus too, and
+    /// it is not a field being typed into. Without the exemption
+    /// `typing_elsewhere` carries, picking a track would disarm the shortcut
+    /// aimed at it.
+    #[test]
+    fn a_focused_track_cell_does_not_disarm_the_shortcut_aimed_at_it() {
+        let ctx = egui::Context::default();
+        let mut session = digi_core::two_box_session();
+        let sel = Selection { device: 0, track: 0 };
+        a_track_with_music(&mut session, sel);
+        ctx.memory_mut(|m| m.request_focus(cell_id(session.devices[0].id, 0)));
+
+        assert!(run_transpose(&ctx, vec![arrow(egui::Key::ArrowDown, egui::Modifiers::SHIFT)], &mut session, sel));
+        assert_eq!(pitches(&session, sel), [48, 52]);
+    }
+
+    #[test]
+    fn the_status_line_names_the_move_the_track_and_where_it_landed() {
+        let ctx = egui::Context::default();
+        let mut session = digi_core::two_box_session();
+        let sel = Selection { device: 1, track: 2 };
+        a_track_with_music(&mut session, sel);
+
+        run_transpose(&ctx, vec![arrow(egui::Key::ArrowDown, egui::Modifiers::ALT)], &mut session, sel);
+
+        assert_eq!(
+            read_state(&ctx).message.as_deref(),
+            // 59 and 63, named the way an Elektron's screen names them: 60 is
+            // C5 here, not C4. See `pianoroll::note_name`.
+            Some("Moved DN2 T03 down a semitone — 2 trigs, B4 to D#5 now. Cmd+Z takes it back.")
+        );
+    }
+
+    /// Nothing is lost above C8 — the roll's band widens — but a part that has
+    /// left the rows the roll opens on is one somebody will otherwise hunt for.
+    #[test]
+    fn landing_outside_the_rolls_own_rows_is_said_out_loud() {
+        let ctx = egui::Context::default();
+        let mut session = digi_core::two_box_session();
+        let sel = Selection { device: 0, track: 0 };
+        track_mut(&mut session, sel).unwrap().notes = vec![
+            digi_core::Note::new(0.0, 90, 1.0, 100, 0.0),
+            digi_core::Note::new(4.0, 60, 1.0, 100, 0.0),
+        ];
+
+        run_transpose(&ctx, vec![arrow(egui::Key::ArrowUp, egui::Modifiers::SHIFT)], &mut session, sel);
+
+        let message = read_state(&ctx).message.expect("a move says what it did");
+        assert!(message.contains("1 of them sits outside the roll's C2 to C8 rows"), "{message}");
+    }
+
+    #[test]
+    fn a_transpose_reaches_the_track_through_the_whole_pane() {
+        // Everything above calls the handler; this proves `ui()` calls it, which
+        // is the seam a green suite would otherwise say nothing about.
+        let ctx = egui::Context::default();
+        let mut session = digi_core::two_box_session();
+        let mut selection = Selection { device: 0, track: 0 };
+        let engine = EngineLink::default();
+        a_track_with_music(&mut session, selection);
+
+        frame(&ctx, vec![], &mut session, &mut selection, &engine);
+        frame(
+            &ctx,
+            vec![arrow(egui::Key::ArrowDown, egui::Modifiers::SHIFT)],
+            &mut session,
+            &mut selection,
+            &engine,
+        );
+
+        assert_eq!(pitches(&session, selection), [48, 52]);
+    }
+
+    #[test]
+    fn a_single_pitch_track_spans_one_note_name_rather_than_a_range() {
+        let mut track = Track::new(0, TrackKind::Audio);
+        assert_eq!(pitch_span(&track), None, "no notes, nothing to span");
+        track.notes = vec![digi_core::Note::new(0.0, 60, 1.0, 100, 0.0), digi_core::Note::new(4.0, 60, 1.0, 100, 0.0)];
+        assert_eq!(pitch_span(&track).as_deref(), Some("C5"));
+    }
+
+    #[test]
+    fn every_move_this_binds_has_a_name_in_words() {
+        assert_eq!(transpose_name(12), "up an octave");
+        assert_eq!(transpose_name(-12), "down an octave");
+        assert_eq!(transpose_name(1), "up a semitone");
+        assert_eq!(transpose_name(-1), "down a semitone");
+        // Not reachable from either surface today, and it still has to read as
+        // English the day something asks for one.
+        assert_eq!(transpose_name(-7), "down 7 semitones");
     }
 
     /// Draws a whole frame with a cell marked as the clipboard's source, the

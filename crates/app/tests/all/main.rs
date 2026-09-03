@@ -18,5 +18,6 @@ mod session_panel;
 mod sync;
 mod tracks_clear;
 mod tracks_clipboard;
+mod tracks_transpose;
 mod transport_space;
 mod write;

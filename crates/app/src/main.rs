@@ -72,7 +72,8 @@ struct App {
     /// guard that stops the window taking unsaved work with it.
     session_file: SessionPanel,
     /// The rail's *first* slot, real since Phase 9: velocity, length, PROB,
-    /// swing, duplicate bar, clear, the p-lock lane list, and MIDI files.
+    /// swing, duplicate bar, clear, transpose, the p-lock lane list, and MIDI
+    /// files.
     edit: EditPanel,
     /// The rail's *second* slot, real since Phase 11: the key the roll tints by,
     /// chord draw, and harmonising a selection.

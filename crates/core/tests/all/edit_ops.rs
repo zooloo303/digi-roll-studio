@@ -7,8 +7,9 @@
 use digi_core::edit_ops::{
     adopt_step_trig, clamp_micro, clamp_velocity, clear_track, clipboard_anchor,
     duplicate_last_bar, nudge_velocities, place_clipboard, resize_selection_by,
-    set_selection_length, Caret, ClipNote, LenEntry, PLockShift, PasteBounds, ResizeOpts, MICRO_MAX,
-    MICRO_MIN, PITCH_MAX, PITCH_MIN, VEL_MAX, VEL_MIN,
+    set_selection_length, transpose_room, transpose_track, Caret, ClipNote, LenEntry, PLockShift,
+    PasteBounds, ResizeOpts, Transposed, MICRO_MAX, MICRO_MIN, OCTAVE, PITCH_CEILING, PITCH_MAX,
+    PITCH_MIN, VEL_MAX, VEL_MIN,
 };
 use digi_core::lengths::{snap_len_fine, LEN_MIN};
 use digi_core::model::Note;
@@ -777,4 +778,152 @@ fn a_lane_shorter_than_the_full_step_count_is_indexed_safely() {
     // panic about either.
     assert!(!shift.apply(&mut track, 4.0));
     assert_eq!(track.plocks[0].values.len(), 16, "and the lane is left as it was");
+}
+
+// --- Transpose ---------------------------------------------------------------
+//
+// No JS oracle for these: `js/main.js` has no transpose. The expected values
+// are arithmetic, and the cases are the decisions `transpose_track`'s own doc
+// comment argues for — whole-move-or-nothing, the MIDI range rather than the
+// roll's rows, and the lanes left alone.
+
+#[test]
+fn an_octave_up_moves_every_pitch_and_touches_nothing_else() {
+    let mut track = track_with(16, &[(0.0, 60, 1.0), (4.0, 64, 2.0), (8.0, 67, 1.0)]);
+    track.notes[1].velocity = 42;
+    track.notes[1].micro = 0.25;
+    track.notes[1].cond = Some(String::from("2:4"));
+    let ids: Vec<u32> = track.notes.iter().map(|n| n.id).collect();
+
+    assert_eq!(transpose_track(&mut track, OCTAVE), Transposed::Moved { notes: 3, outside: 0 });
+
+    let pitches: Vec<u8> = track.notes.iter().map(|n| n.pitch).collect();
+    assert_eq!(pitches, [72, 76, 79]);
+    let steps: Vec<f64> = track.notes.iter().map(|n| n.step).collect();
+    assert_eq!(steps, [0.0, 4.0, 8.0], "a transpose moves nothing in time");
+    assert_eq!(track.notes[1].len, 2.0);
+    assert_eq!(track.notes[1].velocity, 42);
+    assert_eq!(track.notes[1].micro, 0.25);
+    assert_eq!(track.notes[1].cond.as_deref(), Some("2:4"), "the trig conditions ride along");
+    let after: Vec<u32> = track.notes.iter().map(|n| n.id).collect();
+    assert_eq!(after, ids, "the same notes, so the roll's selection survives the move");
+}
+
+#[test]
+fn an_octave_down_and_back_up_lands_exactly_where_it_started() {
+    // The reason nothing is dropped and nothing is clamped: the two halves of
+    // the main gesture have to cancel, or -12 becomes a way to lose music.
+    let mut track = track_with(16, &[(0.0, 36, 1.0), (2.0, 40, 1.0), (4.0, 43, 1.0)]);
+    let before = track.notes.clone();
+    transpose_track(&mut track, -OCTAVE);
+    transpose_track(&mut track, OCTAVE);
+    assert_eq!(track.notes, before);
+}
+
+#[test]
+fn a_chord_keeps_its_shape_rather_than_flattening_against_the_ceiling() {
+    // Clamping per note — which is what `nudge_velocities` does, deliberately —
+    // would land these on 125 and 127 and squeeze a fifth into a minor third.
+    // Only the top note is actually blocked, and that is the whole point: one
+    // note out of room stops the move for all of them, because a chord that
+    // arrives with a different shape is worse than one that does not arrive.
+    let mut track = track_with(16, &[(0.0, 113, 1.0), (0.0, 120, 1.0)]);
+    assert_eq!(
+        transpose_track(&mut track, OCTAVE),
+        Transposed::Blocked { notes: 1, room: 7 },
+        "120 has seven semitones over it, so seven is all the track may take"
+    );
+    let pitches: Vec<u8> = track.notes.iter().map(|n| n.pitch).collect();
+    assert_eq!(pitches, [113, 120], "and neither of them moved, not just the one that could not");
+}
+
+#[test]
+fn only_the_notes_that_would_leave_the_range_are_counted_in_a_refusal() {
+    let mut track = track_with(16, &[(0.0, 36, 1.0), (2.0, 120, 1.0), (4.0, 124, 1.0)]);
+    assert_eq!(transpose_track(&mut track, OCTAVE), Transposed::Blocked { notes: 2, room: 3 });
+}
+
+#[test]
+fn a_move_the_lowest_note_cannot_take_is_refused_at_the_floor_too() {
+    let mut track = track_with(16, &[(0.0, 5, 1.0), (4.0, 60, 1.0)]);
+    assert_eq!(transpose_track(&mut track, -OCTAVE), Transposed::Blocked { notes: 1, room: -5 });
+    assert_eq!(track.notes[0].pitch, 5);
+}
+
+#[test]
+fn the_limit_is_the_midi_range_not_the_rolls_own_rows() {
+    // C8 is where the roll stops drawing by default; it is not where notes stop
+    // existing. A track that wants to go above it goes, and the count of what
+    // has landed up there is what the caller has to say out loud.
+    let mut track = track_with(16, &[(0.0, 90, 1.0), (4.0, 60, 1.0)]);
+    assert_eq!(transpose_track(&mut track, OCTAVE), Transposed::Moved { notes: 2, outside: 1 });
+    assert_eq!(track.notes[0].pitch, 102, "above PITCH_MAX and stored anyway");
+    let landed = track.notes[0].pitch;
+    assert!(landed > PITCH_MAX && landed <= PITCH_CEILING, "past the rows, inside the range");
+}
+
+#[test]
+fn a_track_sitting_under_the_rolls_rows_can_still_be_lifted_into_them() {
+    // The case a band-shaped limit would have got wrong: a pattern off a box can
+    // hold a pitch below C2 (`protocol::track_notes` masks with 0x7f), and the
+    // move such a track most wants is the one back towards the rows.
+    let mut track = track_with(16, &[(0.0, 14, 1.0)]);
+    assert_eq!(transpose_track(&mut track, OCTAVE), Transposed::Moved { notes: 1, outside: 0 });
+    assert_eq!(track.notes[0].pitch, 26);
+    assert!(track.notes[0].pitch >= PITCH_MIN, "and it is inside the rows now");
+}
+
+#[test]
+fn a_semitone_is_as_available_as_an_octave() {
+    let mut track = track_with(16, &[(0.0, 60, 1.0)]);
+    assert_eq!(transpose_track(&mut track, 1), Transposed::Moved { notes: 1, outside: 0 });
+    assert_eq!(track.notes[0].pitch, 61);
+    assert_eq!(transpose_track(&mut track, -1), Transposed::Moved { notes: 1, outside: 0 });
+    assert_eq!(track.notes[0].pitch, 60);
+}
+
+#[test]
+fn the_p_lock_lanes_are_left_alone_because_a_lock_belongs_to_a_step() {
+    // The contrast with `PLockShift`, which exists because a note dragged
+    // *sideways* leaves its locks behind. Nothing moves in time here, so every
+    // trig is still on the step its lane holds a value on.
+    let mut track = track_with(16, &[(0.0, 60, 1.0)]);
+    let lane = digi_core::PLockLane::new(
+        Some(String::from("filter.cutoff")),
+        None,
+        Some(String::from("DT2")),
+        false,
+        vec![Some(64), None, Some(90)],
+    )
+    .unwrap();
+    track.plocks = vec![lane.clone()];
+    transpose_track(&mut track, OCTAVE);
+    assert_eq!(track.plocks, vec![lane]);
+}
+
+#[test]
+fn nothing_to_move_is_not_an_edit() {
+    // Both branches leave no undo step and nothing for a status line to say.
+    let mut empty = track_with(16, &[]);
+    assert_eq!(transpose_track(&mut empty, OCTAVE), Transposed::Nothing);
+    let mut track = track_with(16, &[(0.0, 60, 1.0)]);
+    assert_eq!(transpose_track(&mut track, 0), Transposed::Nothing);
+    assert_eq!(track.notes[0].pitch, 60);
+}
+
+#[test]
+fn the_room_is_measured_from_the_lowest_and_the_highest_note() {
+    let track = track_with(16, &[(0.0, 36, 1.0), (4.0, 100, 1.0), (8.0, 60, 1.0)]);
+    assert_eq!(transpose_room(&track), (-36, 27));
+    let empty = track_with(16, &[]);
+    assert_eq!(transpose_room(&empty), (0, 0), "nothing to move is no room in either direction");
+}
+
+#[test]
+fn a_move_that_lands_exactly_on_the_ends_of_the_range_is_allowed() {
+    let mut track = track_with(16, &[(0.0, 115, 1.0)]);
+    assert_eq!(transpose_track(&mut track, 12), Transposed::Moved { notes: 1, outside: 1 });
+    assert_eq!(track.notes[0].pitch, PITCH_CEILING);
+    assert_eq!(transpose_track(&mut track, -i32::from(PITCH_CEILING)), Transposed::Moved { notes: 1, outside: 1 });
+    assert_eq!(track.notes[0].pitch, 0);
 }

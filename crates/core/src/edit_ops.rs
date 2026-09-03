@@ -603,3 +603,115 @@ pub fn clear_track(track: &mut crate::model::Track) -> bool {
     track.plocks.clear();
     true
 }
+
+// --- Transpose ---------------------------------------------------------------
+
+/// An octave, in semitones. **The move this exists for** — a bassline that
+/// wants to sit under the lead, a lead written where it was easy to draw rather
+/// than where it belongs. The single-semitone controls are there because a
+/// track sometimes wants nudging into a key, but they are the small case.
+pub const OCTAVE: i32 = 12;
+
+/// The highest pitch a note can be stored at, and the lowest is 0.
+///
+/// **MIDI's own ceiling, not the roll's [`PITCH_MAX`]**, and the difference is
+/// the whole of what this limit had to decide — see [`transpose_track`].
+pub const PITCH_CEILING: u8 = 127;
+
+/// What a transpose came to.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Transposed {
+    /// A move of no semitones, or a track with no notes to move. Not an edit,
+    /// so it leaves no undo step and nothing to report.
+    Nothing,
+    /// Every note moved by the full amount. `outside` counts the ones that have
+    /// landed beyond the roll's default rows ([`PITCH_MIN`]–[`PITCH_MAX`], C2 to
+    /// C8) — they are still drawn, because the roll widens its band to hold
+    /// whatever a track carries, but a caller that says nothing about them
+    /// leaves someone hunting up a scrollbar for their music.
+    Moved { notes: usize, outside: usize },
+    /// Refused, and **nothing moved**: `notes` of them would have left the MIDI
+    /// range altogether. `room` is the largest move in the same direction that
+    /// would fit, so the caller can say how much headroom there actually is.
+    Blocked { notes: usize, room: i32 },
+}
+
+/// How far this track's notes can move without leaving the MIDI range: the
+/// deepest drop (0 or negative) and the highest lift (0 or positive).
+///
+/// An empty track gets `(0, 0)` — there is nothing to move, which is the same
+/// answer the Edit panel's Clear button gives by being disabled.
+pub fn transpose_room(track: &Track) -> (i32, i32) {
+    let lowest = track.notes.iter().map(|n| n.pitch).min();
+    let highest = track.notes.iter().map(|n| n.pitch).max();
+    match (lowest, highest) {
+        (Some(lo), Some(hi)) => (-i32::from(lo), i32::from(PITCH_CEILING) - i32::from(hi)),
+        _ => (0, 0),
+    }
+}
+
+/// Move every note on the track by `semitones`, or move none of them.
+///
+/// ## Why the whole move or nothing, rather than clamping or dropping
+///
+/// The two things this could have done instead are both in this file already,
+/// and neither is right here. [`nudge_velocities`] clamps per note, so a
+/// selection dragged into the ceiling flattens against it — do that to pitch
+/// and an octave push turns a chord into a cluster, quietly, on the notes that
+/// happened to be highest. [`place_clipboard`] drops what falls outside the
+/// bounds — do that here and a transpose is lossy, so +12 followed by -12 no
+/// longer gives you back what you started with. A track is a body of music
+/// moving as one, and the honest answer when it does not fit is to say so and
+/// leave it where it is. [`resize_selection_by`]'s group clamp is the same
+/// instinct: when a limit is genuinely shared, holding the whole group back is
+/// what preserves the thing the gesture is for.
+///
+/// ## Why the limit is the MIDI range and not the roll's rows
+///
+/// `PITCH_MIN`–`PITCH_MAX` is where the roll *draws* by default and where a
+/// gesture may *create* a note — C2 to C8, seventy-three rows, because five of
+/// the octaves below and above hold nothing either box makes a sound at. It is
+/// not where notes can be. A pattern fetched off a box arrives holding any of
+/// the 128 pitches (`protocol::track_notes` reads a trig's note as
+/// `sl.note & 0x7f`) and `ui::pianoroll`'s band widens to draw them.
+///
+/// So a limit shaped like the band would have refused to move a track that is
+/// *already* outside it — including moving it back **towards** the band, which
+/// is the one direction such a track most wants to go. The band survives as
+/// something to report ([`Transposed::Moved`]'s `outside`), not as a wall.
+///
+/// ## What does not move
+///
+/// **The p-lock lanes, and that is not an oversight.** A lock belongs to its
+/// trig, and a trig is a *step* — which is exactly why a note dragged sideways
+/// has to carry its locks with it ([`PLockShift`], and the paragraph above it
+/// on what happens when it does not). A transpose moves no note in time, so
+/// every trig is still on the step its locks are on. Velocity, length,
+/// micro-timing and the per-trig PROB/FILL/COND are untouched for the same
+/// reason: nothing here changes which notes share a step, so the step
+/// uniformity [`adopt_step_trig`] keeps cannot be broken by it either.
+pub fn transpose_track(track: &mut Track, semitones: i32) -> Transposed {
+    if semitones == 0 || track.notes.is_empty() {
+        return Transposed::Nothing;
+    }
+    let (down, up) = transpose_room(track);
+    if semitones < down || semitones > up {
+        let fits = |pitch: u8| {
+            let landed = i32::from(pitch) + semitones;
+            (0..=i32::from(PITCH_CEILING)).contains(&landed)
+        };
+        return Transposed::Blocked {
+            notes: track.notes.iter().filter(|n| !fits(n.pitch)).count(),
+            room: if semitones < 0 { down } else { up },
+        };
+    }
+    let mut outside = 0;
+    for note in &mut track.notes {
+        // In range by the check above, so this cannot wrap.
+        note.pitch = (i32::from(note.pitch) + semitones) as u8;
+        if note.pitch < PITCH_MIN || note.pitch > PITCH_MAX {
+            outside += 1;
+        }
+    }
+    Transposed::Moved { notes: track.notes.len(), outside }
+}

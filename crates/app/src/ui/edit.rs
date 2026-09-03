@@ -4,7 +4,7 @@
 // This is `js/main.js`'s Edit aside, and PLAN.md §9's four groups in its order:
 //
 //   NOTES     velocity, length, and the track's PROB default
-//   PATTERN   swing, duplicate bar, clear
+//   PATTERN   swing, duplicate bar, clear, transpose
 //   P-LOCKS   add a lane, and the lane list
 //   MIDI FILES import and export a Standard MIDI File
 //   HISTORY   undo and redo
@@ -78,7 +78,8 @@ use std::path::Path;
 
 use digi_core::device::DeviceId;
 use digi_core::edit_ops::{
-    clear_track, duplicate_last_bar, set_selection_length, LenEntry, ResizeOpts, VEL_MAX, VEL_MIN,
+    clear_track, duplicate_last_bar, set_selection_length, transpose_room, transpose_track,
+    LenEntry, ResizeOpts, Transposed, OCTAVE, VEL_MAX, VEL_MIN,
 };
 use digi_core::history::History;
 use digi_core::lengths::snap_len_fine;
@@ -540,7 +541,7 @@ impl EditPanel {
         }
     }
 
-    /// PATTERN: swing, duplicate bar, clear.
+    /// PATTERN: swing, duplicate bar, clear, transpose.
     fn pattern_group(
         &mut self,
         ui: &mut Ui,
@@ -614,6 +615,9 @@ impl EditPanel {
                  channel and port stay as they are.",
             );
         });
+
+        ui.add_space(8.0);
+        changed |= transpose_row(ui, session, selection);
 
         if self.confirm_clear {
             let mut clear_now = false;
@@ -1092,6 +1096,101 @@ fn lane_row((index, lane): (usize, &PLockLane)) -> LaneRow {
         steps: lane.values.iter().filter(|v| v.is_some()).count(),
         summary: describe_lane(lane),
     }
+}
+
+/// PATTERN's transpose row: the whole track, an octave or a semitone at a time.
+///
+/// **Four buttons, not a slider.** Every other number in this panel is a value
+/// you set — a velocity, a length, a swing — and a slider is right for those.
+/// This is a *move*, applied from wherever the track already is, so what the
+/// control has to offer is deltas; a slider would need an origin to be a
+/// displacement from, and the only honest one is "wherever the last press left
+/// it", which is a slider that never sits still. `-12` and `+12` are the wide
+/// pair because the octave is the whole reason this row exists.
+///
+/// **The whole track, never the roll's selection**, and the hover says so. The
+/// controls in NOTES above act on what is selected, so this one is a step away
+/// from being read the same way; but "transpose the notes I have picked" is
+/// already a gesture — drag them up the grid — and a control that silently
+/// meant two different things depending on whether something was selected would
+/// be the trap. `ui::tracks`'s Shift+Up/Down does exactly the same thing from
+/// the keyboard, on the same whole track.
+///
+/// **A move with no room is disabled rather than refused after the fact**, the
+/// pattern `Duplicate bar` above it already keeps for a full-length track: the
+/// hover on the dead button says how much room there actually is. So
+/// `Transposed::Blocked` is unreachable from here and reachable from the
+/// keyboard, where nothing can be greyed out in advance — which is why the
+/// shortcut has a status line and this does not.
+fn transpose_row(ui: &mut Ui, session: &mut Session, selection: Selection) -> bool {
+    let Some(track) = crate::ui::tracks::track(session, selection) else {
+        return false;
+    };
+    let (down, up) = transpose_room(track);
+    let empty = track.notes.is_empty();
+    let span = crate::ui::tracks::pitch_span(track);
+    let mut wanted = None;
+
+    ui.horizontal(|ui| {
+        ui.spacing_mut().item_spacing.x = 6.0;
+        // The same 62px label column `super::slider_row` gives Velocity, Length
+        // and Swing, so this row's buttons start where their tracks do.
+        ui.add_sized(
+            egui::vec2(62.0, 0.0),
+            egui::Label::new(egui::RichText::new("Transpose").size(11.5).color(super::TEXT_MUTED)),
+        );
+        let steps = [-OCTAVE, -1, 1, OCTAVE];
+        let gaps = ui.spacing().item_spacing.x * (steps.len() - 1) as f32;
+        let width = ((ui.available_width() - gaps) / steps.len() as f32).max(24.0);
+        for semitones in steps {
+            let room = if semitones < 0 { down } else { up };
+            let fits = semitones.abs() <= room.abs();
+            // `+12`, `-1`: the sign is the label, so a button reads as the move
+            // it makes rather than as a number to be interpreted.
+            let button = egui::Button::new(format!("{semitones:+}")).min_size(egui::vec2(width, 0.0));
+            let response = ui.add_enabled(!empty && fits, button);
+            if response.clicked() {
+                wanted = Some(semitones);
+            }
+            let moved = crate::ui::tracks::transpose_name(semitones);
+            response.on_hover_text(if empty {
+                String::from("Nothing to move \u{2014} this track has no trigs on it.")
+            } else if fits {
+                format!(
+                    "Move every note on this track {moved} \u{2014} the whole track, not the \
+                     selection. {}Velocities, lengths, micro-timing, trig conditions and p-lock \
+                     lanes all stay as they are, and Cmd+Z takes it back.",
+                    match span.as_deref() {
+                        Some(span) => format!("It spans {span} now. "),
+                        None => String::new(),
+                    },
+                )
+            } else {
+                format!(
+                    "No room to go {moved} \u{2014} {}. Nothing is clamped or dropped to make it \
+                     fit: the track moves whole or not at all.",
+                    match room.abs() {
+                        0 => format!(
+                            "this track is already as far {} as MIDI goes",
+                            if semitones < 0 { "down" } else { "up" }
+                        ),
+                        1 => String::from("it has one semitone left in that direction"),
+                        n => format!("it has {n} semitones left in that direction"),
+                    },
+                )
+            });
+        }
+    });
+
+    let Some(semitones) = wanted else {
+        return false;
+    };
+    let Some(track) = crate::ui::tracks::track_mut(session, selection) else {
+        return false;
+    };
+    // The notes keep their ids, so the roll's selection still names the same
+    // music and does not need clearing the way a clear or an import does.
+    matches!(transpose_track(track, semitones), Transposed::Moved { .. })
 }
 
 /// A dashed rectangle border — the "+ add lane…" affordance's `border: 1px

@@ -522,6 +522,27 @@ The elements:
   it straight back. That focus is exempted from the "not while a field has the
   keyboard" guard the spacebar and Cmd+Z carry — a cell is not a field, and
   undo has to work on the frame after a clear.
+
+  **And it transposes** (2026-09-02): Shift+Up and Shift+Down move the selected
+  track an octave, Alt+Up and Alt+Down a semitone, with the same four moves on
+  buttons in the Edit panel's PATTERN group. The octave is the gesture this is
+  for — a bassline under the lead, a part written where it was easy to draw —
+  and the semitone is for nudging one into a key. Unlike Delete this is guarded
+  on the *selection*, not the click, because nothing collides with it: egui
+  moves focus on **unmodified** arrows only, and no other pane in this app binds
+  an arrow at all. So it works with the roll focused, which is where the hand
+  usually is when a part turns out to be an octave out.
+
+  **A track moves whole or not at all.** If any note would leave the MIDI range
+  the move is refused and the pane says how much room is left, rather than
+  clamping the notes that ran out (which turns a chord into a cluster) or
+  dropping them (which makes +12 then -12 lossy). The limit is the MIDI range
+  and **not** the roll's own C2–C8 rows: a pattern fetched off a box can hold
+  any of the 128 pitches, the roll widens its band to draw them, and a
+  band-shaped limit would have refused to move such a track back *towards* the
+  rows. The rows survive as something the status line mentions, not as a wall.
+  P-locks are untouched, because a lock belongs to a *step* and nothing here
+  moves in time.
 - **Scenes pane** — the §2 scenes, showing which slot each box is on and what is
   queued.
 - **SONG panel** — the arrangement, in the two halves the box merges because it
@@ -1647,7 +1668,9 @@ that run happens the cancel/resume design is justified by a number nobody has
 seen.
 
 **Feature requests from users**
-- transpose track
+- ~~transpose track~~ — **shipped 2026-09-02**, §9's TRACKS paragraph above:
+  Shift+Up/Down for an octave, Alt+Up/Down for a semitone, and four buttons in
+  the Edit panel
 - clicking on the piano itself should sound that midi note
 - draggable plock area height, users want to see the plock area taller to make changes to the settings easier
 - 'check for app updates' option
