@@ -199,14 +199,18 @@ impl eframe::App for App {
         // ports open, and re-enumerating underneath one is not a state to be
         // good at.
         //
-        // Its answer joins `edited` rather than sitting on its own, because a
-        // routing change has to reach the engine or the box would be bound and
-        // silent until the next note moved.
+        // Its answer reaches the engine and the dirty flag the way `edited`
+        // does, because a routing change has to reach the engine or the box
+        // would be bound and silent until the next note moved — but it is kept
+        // as its own flag rather than folded in, because it is the one change in
+        // this app that no person made, and `session_file` below is the one
+        // place that difference matters.
         let talking = self.transfer.busy()
             || self.write.busy()
             || self.restore.busy()
             || self.sync.busy();
-        edited |= self.autoconnect.tick(&mut self.session, &mut self.ports, talking, ui.ctx());
+        let reconnected =
+            self.autoconnect.tick(&mut self.session, &mut self.ports, talking, ui.ctx());
 
         // The ports as of the last enumeration, for rebinding a session off
         // disk. The cached list rather than a fresh one: it is what every other
@@ -333,7 +337,7 @@ impl eframe::App for App {
         // **Not folded into `edited`.** A session just read off disk needs the
         // engine rebuilt around it, but it is not unsaved work — folding the two
         // together would mark a file dirty the instant it was opened.
-        let reloaded = tool_outcome.reloaded;
+        let mut reloaded = tool_outcome.reloaded;
 
         let mut setup_open = self.bars.setup_open;
         // Pinned for the same reason the tool panel is, above — §2c's 320px.
@@ -382,7 +386,47 @@ impl eframe::App for App {
         // settings are saved with the session (`Session::generator`), so moving
         // one is work you can lose; but no note moved, so it must not reach the
         // history step below or the engine sync under it — see `tools::Outcome`.
+        // **The crash copy left behind by a previous run, offered once.** Drawn
+        // from the shell for the close guard's reason and one of its own: it has
+        // to be the first thing on screen at launch, and the Session panel starts
+        // closed. `look_for_recovery` is called every frame and reads the disk on
+        // the first one only — the shell has no other "first frame" hook, and a
+        // second look would re-raise a modal that had just been answered.
+        //
+        // Here rather than beside the close guard because this is the first point
+        // in the frame where the port lists exist: a recovered session is
+        // re-pointed at the desk as it is *now*, the same as an `Open`, and the
+        // list is read after auto-connect for the reason spelled out up there.
+        // Accepting it counts as `reloaded` for exactly the same reasons an
+        // `Open` does, and it is `reloaded` and not `edited`: `recover` sets the
+        // dirty flag itself, because recovered work has still never reached a
+        // file.
+        if let Some(line) = self.session_file.look_for_recovery() {
+            digi_roll_studio::ui::console::post(ui.ctx(), line);
+        }
+        reloaded |= self.session_file.recovery_ui(
+            ui,
+            &mut self.session,
+            &available_in,
+            &available_out,
+        );
+
         self.session_file.mark_edited(edited || stepped || tool_outcome.settings);
+        // **Auto-connect is dirty work, but it is not work to recover.** It
+        // marks the session unsaved exactly as it did before — the desk really
+        // has changed — but it must not start the crash copy's clock, or a
+        // launch with a box plugged in writes a copy of a session nobody has
+        // touched, and the *next* launch offers it back. An offer like that
+        // appears every single run and teaches you to dismiss the modal without
+        // reading it, which costs you the one run it was built for.
+        //
+        // Nothing is lost by leaving it out: auto-connect re-adds whatever is
+        // actually plugged in within a scan of the next launch, which is the
+        // same argument `SessionPanel::confirm_new` makes for a New session
+        // starting with no boxes at all.
+        if reconnected {
+            self.session_file.mark_reconnected();
+        }
 
         // **Where an undo step begins and ends.** `begin` on the first frame of a
         // change, `commit` when the pointer comes up — so a drag across forty
@@ -400,7 +444,7 @@ impl eframe::App for App {
             // notice, because Session is the tool drawing when either path that
             // replaces a session runs — see `GeneratePanel::session_replaced`.
             self.generate.session_replaced(&self.session);
-        } else if edited {
+        } else if edited || reconnected {
             if let Some(before) = before {
                 self.history.begin(before);
             }
@@ -409,12 +453,28 @@ impl eframe::App for App {
             self.history.commit(&self.session);
         }
 
-        if edited || reloaded || stepped {
+        if edited || reconnected || reloaded || stepped {
             // Also picks up a routing change — identifying a box gives it an out
             // port, and the engine has to be rebuilt around the new connection.
             self.engine.sync(&self.session);
         } else {
             self.engine.reroute(&self.session);
+        }
+
+        // **The crash copy, last thing in the frame.** After the engine sync so
+        // that what reaches the disk is the session this frame settled on rather
+        // than one halfway through being changed, and after `mark_edited` so the
+        // edit that just happened is on the clock. Nearly every call returns
+        // without touching the disk — see `ui::recovery` for the two-second
+        // debounce and the twenty-second ceiling that overrides it.
+        self.session_file.autosave(&self.session);
+        // egui draws when something asks it to, and a debounce that fires two
+        // seconds *after* the last edit has, by definition, nothing else asking.
+        // Without this the copy of your last change waits for whatever happens to
+        // request the next frame — which, with your hands off the keyboard, could
+        // be minutes. Same argument as `console::post`'s repaint.
+        if self.session_file.autosave_pending() {
+            ui.ctx().request_repaint_after(digi_roll_studio::ui::recovery::QUIET);
         }
     }
 }

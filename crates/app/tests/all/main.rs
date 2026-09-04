@@ -12,6 +12,7 @@ mod edit_panel;
 mod engine_link;
 mod harmony;
 mod presets;
+mod recovery;
 mod restore;
 mod restore_panel;
 mod session_panel;

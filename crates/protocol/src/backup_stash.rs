@@ -261,10 +261,37 @@ fn parse_name(file: &str) -> (String, String, String, String) {
     }
 }
 
+/// The platform's per-user application-data directory for this app.
+///
+/// Hand-rolled from environment variables rather than through the `dirs` crate:
+/// it is three `cfg` arms, and this crate otherwise depends only on serde.
+/// `HOME` being unset is the one case that has no answer, and it returns an
+/// error rather than writing into the working directory.
+///
+/// **The one place the root is decided**, and a free function rather than a
+/// `Stash` associated one because the stash is no longer the only thing under
+/// it: [`Stash::default_dir`] is this plus `backups`, and the app's crash-copy
+/// store (`ui::recovery`) is this plus `recovery`. Two hand-copies of the three
+/// arms already existed when this was extracted — see
+/// [`crate::preset_index`] — and a third was the thing to avoid.
+pub fn app_data_dir() -> Result<PathBuf, StashError> {
+    let base = if cfg!(target_os = "macos") {
+        std::env::var_os("HOME").map(|h| PathBuf::from(h).join("Library/Application Support"))
+    } else if cfg!(target_os = "windows") {
+        std::env::var_os("APPDATA").map(PathBuf::from)
+    } else {
+        std::env::var_os("XDG_DATA_HOME").map(PathBuf::from).or_else(|| {
+            std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".local/share"))
+        })
+    };
+    base.map(|b| b.join("digi-roll-studio")).ok_or(StashError::NoDefaultDir)
+}
+
 /// A directory holding the backup ring.
 ///
 /// Injectable rather than a global so tests get their own, and so the app can put
 /// it beside its project files instead of somewhere this crate decided.
+///
 /// [`Stash::default_dir`] is what the app uses when the user has not chosen.
 #[derive(Debug, Clone)]
 pub struct Stash {
@@ -277,24 +304,8 @@ impl Stash {
     }
 
     /// The stash in the platform's per-user application-data directory.
-    ///
-    /// Hand-rolled from environment variables rather than through the `dirs`
-    /// crate: it is three `cfg` arms, and this crate otherwise depends only on
-    /// serde. `HOME` being unset is the one case that has no answer, and it
-    /// returns an error rather than writing backups into the working directory.
     pub fn default_dir() -> Result<PathBuf, StashError> {
-        let base = if cfg!(target_os = "macos") {
-            std::env::var_os("HOME")
-                .map(|h| PathBuf::from(h).join("Library/Application Support"))
-        } else if cfg!(target_os = "windows") {
-            std::env::var_os("APPDATA").map(PathBuf::from)
-        } else {
-            std::env::var_os("XDG_DATA_HOME").map(PathBuf::from).or_else(|| {
-                std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".local/share"))
-            })
-        };
-        base.map(|b| b.join("digi-roll-studio").join("backups"))
-            .ok_or(StashError::NoDefaultDir)
+        app_data_dir().map(|d| d.join("backups"))
     }
 
     /// The default stash, or an error saying why there isn't one.

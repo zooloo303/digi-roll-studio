@@ -97,8 +97,17 @@ screen reading beside almost every offset.
   screen** — see §9, which is where that gap is the whole point. What is knowingly
   left out is ROW TEMPO (§2's argument) and syncing a song back to a box's own
   song slots, which is the next session's work.
-- **Crash-safety.** Saving is manual; there is no autosave, so a crash takes the
-  session.
+- ~~**Crash-safety.** Saving is manual; there is no autosave, so a crash takes
+  the session.~~ Built 2026-09-03: `app::ui::recovery`. Unsaved work is copied
+  aside to the per-user application-data directory two seconds after the last
+  edit — or every twenty seconds if the edits never stop — and the next launch
+  offers it back. **The session file is still only written by a deliberate
+  Save**, which was the decision worth making: the other autosave, the one that
+  keeps your chosen file live, deletes "quit without saving" as a way out, and
+  this app has no undo across launches to walk that back. The copy is a plain
+  project file, so the fallback if the offer modal never appears is `Open…` on
+  it. What is knowingly left out is a *ring* of copies and any guard against two
+  instances sharing the one shelf — both argued in the module header.
 - **MIDI import reads only the first note-bearing track**, and cannot offset it.
   The reporting half is fixed; "first track wins" needs a track chooser.
 - **Paste has no caller.** `edit_ops::place_clipboard` is complete and reachable

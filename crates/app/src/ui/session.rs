@@ -33,6 +33,8 @@ use digi_core::device::PortRef;
 use digi_core::project::{Project, ProjectError};
 use digi_core::{DeviceId, Session};
 
+use super::recovery::{Cadence, Found, Recovery};
+
 /// How the app asks the desktop for a path.
 ///
 /// Both methods return `None` for "the user cancelled", which is a normal answer
@@ -112,6 +114,11 @@ pub enum Status {
     Opened(PathBuf),
     /// A fresh session was started, off nothing on disk.
     New,
+    /// A crash copy was taken back up. Carries the file it was a copy *of*, or
+    /// `None` for work that had never been saved anywhere — which is the case
+    /// where the recovery is the only copy there has ever been, and so the one
+    /// the panel says the most about.
+    Recovered(Option<PathBuf>),
     /// Already worded for a person: see [`describe`].
     Failed(String),
 }
@@ -191,11 +198,32 @@ pub struct SessionPanel {
     ///
     /// [`disclosure_row`]: super::disclosure_row
     reference_visible: bool,
+    /// Where the crash copy goes. `None` in two cases that behave identically —
+    /// a machine with no application-data directory, and any panel built by
+    /// [`SessionPanel::with_chooser`], which is every panel in the test suite.
+    /// **Tests opt in to a store rather than out of one**, so no test can write
+    /// into the real user's directory by forgetting to.
+    recovery: Option<Recovery>,
+    /// When the next crash copy is due. See `ui::recovery` for the two clocks.
+    cadence: Cadence,
+    /// A copy left behind by a previous run, found at launch and waiting to be
+    /// offered. `Some` is exactly "the modal is up".
+    offer: Option<Found>,
+    /// Whether [`SessionPanel::look_for_recovery`] has already run. The shell
+    /// calls it every frame and it must only look once — a second look after the
+    /// offer was declined would raise the same modal again.
+    looked: bool,
 }
 
 impl Default for SessionPanel {
     fn default() -> Self {
-        Self::with_chooser(Box::new(NativeChooser))
+        let panel = Self::with_chooser(Box::new(NativeChooser));
+        // A machine with no home directory runs without a crash copy rather than
+        // refusing to start. The Session panel says so on screen; see `ui`.
+        match Recovery::default_store() {
+            Ok(store) => panel.with_recovery(store),
+            Err(_) => panel,
+        }
     }
 }
 
@@ -210,7 +238,21 @@ impl SessionPanel {
             guard: CloseGuard::default(),
             new_guard: NewGuard::default(),
             reference_visible: false,
+            recovery: None,
+            cadence: Cadence::default(),
+            offer: None,
+            looked: false,
         }
+    }
+
+    /// Give this panel somewhere to put its crash copies.
+    ///
+    /// [`Default`] wires the real store in; [`SessionPanel::with_chooser`]
+    /// deliberately does not, so a test that wants the behaviour asks for a
+    /// directory of its own.
+    pub fn with_recovery(mut self, recovery: Recovery) -> Self {
+        self.recovery = Some(recovery);
+        self
     }
 
     // --- state the shell reads -----------------------------------------------
@@ -244,6 +286,166 @@ impl SessionPanel {
     /// one change-tracking path in the app rather than two that can disagree.
     pub fn mark_edited(&mut self, edited: bool) {
         self.dirty |= edited;
+        // The same flag drives the crash copy's clock, so there is still exactly
+        // one change-tracking path in the app rather than a second one that
+        // could think the session was quiet while it was not.
+        if edited {
+            self.cadence.note_edit(std::time::Instant::now());
+        }
+    }
+
+    /// Auto-connect changed the desk: unsaved work, but not work to recover.
+    ///
+    /// The one caller is the shell, and the whole of the difference between this
+    /// and [`SessionPanel::mark_edited`] is the crash copy's clock. Binding a box
+    /// that was plugged in really does change the session, so the dirty flag and
+    /// the close guard treat it exactly as they always have; but the next launch
+    /// will make the identical change again from the identical cable, so there is
+    /// nothing in it worth handing back through a modal. See the call site for
+    /// what happens if the two are not told apart.
+    pub fn mark_reconnected(&mut self) {
+        self.dirty = true;
+    }
+
+    // --- the crash copy -------------------------------------------------------
+
+    /// Take a crash copy if one is due, and say whether one was taken.
+    ///
+    /// Called every frame from the shell. Nearly every call does nothing: an
+    /// app with no unsaved work has no clock running, and an app in the middle
+    /// of a drag is inside [`recovery::QUIET`]. The write itself is a pretty-
+    /// printed session — a `Session` clone is a handful of pointer bumps, per
+    /// the `Arc`s `digi_core`'s manifest explains — so at one write per two
+    /// seconds of editing this stays off the frame budget.
+    ///
+    /// [`recovery::QUIET`]: super::recovery::QUIET
+    pub fn autosave(&mut self, session: &Session) -> bool {
+        if !self.dirty || !self.cadence.due(std::time::Instant::now()) {
+            return false;
+        }
+        self.autosave_now(session)
+    }
+
+    /// Take a crash copy regardless of the clock.
+    ///
+    /// The decision half of [`SessionPanel::autosave`] with the timing taken
+    /// out, which is what makes the wiring — what gets written, when the copy is
+    /// dropped again — testable without a two-second sleep in the suite.
+    ///
+    /// A failure is deliberately silent. This is the one write in the app the
+    /// user did not ask for, and a modal about a directory they have never
+    /// heard of, raised in the middle of their editing, would be the feature
+    /// making itself the problem. What it must never do is claim success: the
+    /// return value is the truth, and the dirty flag is untouched either way, so
+    /// the close guard still stands between the work and the door.
+    pub fn autosave_now(&mut self, session: &Session) -> bool {
+        let Some(store) = &self.recovery else {
+            return false;
+        };
+        let taken = store.write(session, self.path.as_deref()).is_ok();
+        if taken {
+            self.cadence.note_write();
+        }
+        taken
+    }
+
+    /// Whether anything is waiting to be copied, for the shell's repaint.
+    pub fn autosave_pending(&self) -> bool {
+        self.dirty && self.cadence.pending()
+    }
+
+    /// Drop the crash copy. Every path that ends the unsaved work calls this.
+    ///
+    /// Silent on failure for the same reason [`SessionPanel::autosave_now`] is,
+    /// and with a smaller consequence: a copy that could not be removed is
+    /// offered once on the next launch, next to a session that is already saved.
+    fn clear_recovery(&mut self) {
+        if let Some(store) = &self.recovery {
+            let _ = store.clear();
+        }
+        self.cadence.note_write();
+    }
+
+    /// Look for a copy left by a previous run, once, and return a line for the
+    /// console if there is something to say.
+    ///
+    /// Called every frame from the shell and guarded by `looked`, because the
+    /// shell has no other "first frame" hook to hang it on and a second look
+    /// would re-raise a modal the user had just answered.
+    ///
+    /// A copy that is *there and unreadable* is the case worth the console line.
+    /// The offer itself needs no announcement — it is a modal.
+    pub fn look_for_recovery(&mut self) -> Option<String> {
+        if self.looked {
+            return None;
+        }
+        self.looked = true;
+        match self.recovery.as_ref()?.find()? {
+            Ok(found) => {
+                self.offer = Some(found);
+                None
+            }
+            Err(why) => Some(format!("Recovery copy could not be read — {why}")),
+        }
+    }
+
+    /// The copy waiting to be offered, if there is one.
+    pub fn recovery_offer(&self) -> Option<&Found> {
+        self.offer.as_ref()
+    }
+
+    /// Accept the offer: put the recovered session on screen.
+    ///
+    /// Everything the file remembered about ports is re-pointed at the desk as
+    /// it is *now*, exactly as [`SessionPanel::open_from`] does, and for the
+    /// same reason — the copy was taken on a desk that may since have been
+    /// unplugged.
+    ///
+    /// **The result is dirty on purpose.** Recovered work has still never
+    /// reached the file it belongs to, so it is unsaved work and the close guard
+    /// has to keep standing in front of it. The copy is left on disk for the
+    /// same reason: it stops being the last surviving version at the moment a
+    /// real save happens, and not before.
+    ///
+    /// The remembered origin is adopted as this session's path where there was
+    /// one, so the first `Cmd+S` after a recovery goes where it would have gone
+    /// before the crash instead of opening a dialog.
+    pub fn recover(
+        &mut self,
+        session: &mut Session,
+        available_in: &[PortRef],
+        available_out: &[PortRef],
+    ) -> bool {
+        let Some(found) = self.offer.take() else {
+            return false;
+        };
+        match Project::from_json_with_ports(&found.json, available_in, available_out) {
+            Ok((project, unbound)) => {
+                let loaded = project.session;
+                self.lost_ports = names_of(&loaded, &unbound);
+                *session = loaded;
+                self.path = found.origin.clone();
+                self.dirty = true;
+                self.status = Some(Status::Recovered(found.origin));
+                true
+            }
+            Err(e) => {
+                // `look_for_recovery` already parsed this text once, so reaching
+                // here means the file changed underneath a running app. The copy
+                // stays on disk: it is still the only version of that work.
+                self.status = Some(Status::Failed(describe(&e)));
+                false
+            }
+        }
+    }
+
+    /// Decline the offer, and drop the copy.
+    ///
+    /// The only place in this file that throws work away without the session in
+    /// hand being involved, so it asks in the modal rather than here.
+    pub fn discard_recovery(&mut self) {
+        self.offer = None;
+        self.clear_recovery();
     }
 
     // --- the decisions, all reachable without a window ------------------------
@@ -356,6 +558,11 @@ impl SessionPanel {
                 self.path = Some(path.to_path_buf());
                 self.dirty = false;
                 self.status = Some(Status::Saved(path.to_path_buf()));
+                // The work is on disk where the user put it, so the shadow copy
+                // has nothing left to protect. Dropping it here rather than
+                // waiting for exit is what stops a clean quit from leaving an
+                // offer behind for the next launch.
+                self.clear_recovery();
                 true
             }
             Err(e) => {
@@ -409,8 +616,12 @@ impl SessionPanel {
                 self.lost_ports = names_of(&loaded, &unbound);
                 *session = loaded;
                 self.path = Some(path.to_path_buf());
-                // Freshly off disk, so it is not unsaved work.
+                // Freshly off disk, so it is not unsaved work — and so there is
+                // nothing for a crash copy to hold either. Whatever it held a
+                // moment ago belonged to the session this one just replaced,
+                // which the close guard has already asked about.
                 self.dirty = false;
+                self.clear_recovery();
                 self.status = Some(Status::Opened(path.to_path_buf()));
                 true
             }
@@ -431,7 +642,15 @@ impl SessionPanel {
     pub fn allow_close(&mut self) -> bool {
         match self.guard {
             CloseGuard::Confirmed => true,
-            _ if !self.dirty => true,
+            _ if !self.dirty => {
+                // A clean exit, so there is nothing to recover and the shelf is
+                // cleared on the way out. Without this, saving and then quitting
+                // would leave the last crash copy to be offered on the next
+                // launch, and an offer to recover work that is already on disk
+                // is an offer that teaches you to ignore the modal.
+                self.clear_recovery();
+                true
+            }
             // The New modal is already asking the identical question — "keep
             // this unsaved work or not?" — from a different button. Refusing
             // here without touching `self.guard` leaves that modal as the one
@@ -447,8 +666,13 @@ impl SessionPanel {
     }
 
     /// Give up the unsaved work and let the next close through.
+    ///
+    /// The crash copy goes with it. `Discard and close` has to mean discarded —
+    /// handing the same work back through a modal on the next launch would turn
+    /// the one deliberate way to throw work away into a suggestion.
     pub fn discard_and_close(&mut self) {
         self.guard = CloseGuard::Confirmed;
+        self.clear_recovery();
     }
 
     /// Stay open.
@@ -493,6 +717,7 @@ impl SessionPanel {
         self.path = None;
         self.dirty = false;
         self.lost_ports.clear();
+        self.clear_recovery();
         self.status = Some(Status::New);
         self.new_guard = NewGuard::Idle;
     }
@@ -503,6 +728,80 @@ impl SessionPanel {
     }
 
     // --- drawing ---------------------------------------------------------------
+
+    /// The launch-time offer of a crash copy, drawn from the shell.
+    ///
+    /// In the shell for the same reason the close guard is, and one more: this
+    /// modal has to be the first thing on screen, before the user has clicked
+    /// anything at all, and the Session panel starts closed.
+    ///
+    /// Returns whether the session in hand was just replaced, which the shell
+    /// folds into the same `reloaded` path an `Open` takes — the engine has to
+    /// be rebuilt around a session it has not seen, and the undo history that
+    /// belonged to the old one has to go.
+    ///
+    /// **There is no third button.** `Recover it` and `Discard it` are the whole
+    /// question, and neither is destructive of anything on a box. A "decide
+    /// later" would have to leave the copy on the shelf and keep offering it,
+    /// and an offer you can defer forever is one you stop reading.
+    pub fn recovery_ui(
+        &mut self,
+        ui: &mut Ui,
+        session: &mut Session,
+        available_in: &[PortRef],
+        available_out: &[PortRef],
+    ) -> bool {
+        let Some(found) = &self.offer else {
+            return false;
+        };
+        // Read off before the closure, which needs `&mut self` for the answers.
+        let when = found
+            .age
+            .map(super::console::age_label)
+            .unwrap_or_else(|| String::from("at some point"));
+        let origin = found.origin.clone();
+
+        let mut recovered = false;
+        egui::Modal::new(egui::Id::new("session-recovery-offer")).show(ui.ctx(), |ui| {
+            ui.set_max_width(520.0);
+            ui.label(
+                egui::RichText::new("There is unsaved work from a previous run").strong(),
+            );
+            ui.separator();
+            match &origin {
+                Some(path) => ui.label(format!(
+                    "A copy was taken {when}, with changes that had not reached {}.",
+                    path.display()
+                )),
+                None => ui.label(format!(
+                    "A copy was taken {when}. That session had never been saved to \
+                     a file, so this copy is the only version of it there is."
+                )),
+            };
+            ui.add_space(6.0);
+            ui.label(
+                egui::RichText::new(
+                    "Recovering puts it on screen as unsaved work — nothing is \
+                     written to your session file until you save. Nothing on a \
+                     box changes either way.",
+                )
+                .weak(),
+            );
+            ui.separator();
+            ui.horizontal(|ui| {
+                // The keeping answer first and leftmost. Both guards in this file
+                // put the cautious button under a hesitating hand, and here the
+                // cautious one is the one that keeps the work.
+                if ui.button("Recover it").clicked() {
+                    recovered = self.recover(session, available_in, available_out);
+                }
+                if ui.button("Discard it").clicked() {
+                    self.discard_recovery();
+                }
+            });
+        });
+        recovered
+    }
 
     /// The close-guard modal, drawn from the shell rather than from the panel
     /// body.
@@ -544,7 +843,7 @@ impl SessionPanel {
                     self.guard = CloseGuard::Idle;
                 }
                 if ui.button("Discard and close").clicked() {
-                    self.guard = CloseGuard::Confirmed;
+                    self.discard_and_close();
                     close_now = true;
                 }
                 if ui.button("Save and close").clicked() && self.save(session) {
@@ -758,11 +1057,58 @@ impl SessionPanel {
                         Some(Status::New) => {
                             super::consequence_line(ui, "Started a new session.");
                         }
+                        Some(Status::Recovered(origin)) => {
+                            super::consequence_line(
+                                ui,
+                                &match origin {
+                                    Some(path) => format!(
+                                        "Recovered unsaved work on {}. Save to keep it.",
+                                        path.display()
+                                    ),
+                                    None => String::from(
+                                        "Recovered unsaved work. It has never been \
+                                         saved to a file — save it to keep it.",
+                                    ),
+                                },
+                            );
+                        }
                         Some(Status::Failed(why)) => {
                             super::destructive_note(ui, "LAST ATTEMPT FAILED", why);
                         }
                         None => {}
                     }
+                }
+
+                // **The crash copy is stated, not silent.** It is the one thing
+                // in this app that writes without being asked, and a safety net
+                // nobody can see is a safety net nobody trusts — on the day it
+                // matters you need to already know it was running and where it
+                // put things. Outside the `?` fold for the reason the ports
+                // warning is: this is state, not reference prose.
+                ui.add_space(10.0);
+                super::caption(ui, "CRASH COPY");
+                match &self.recovery {
+                    Some(store) => {
+                        super::consequence_line(
+                            ui,
+                            "Unsaved work is copied aside every few seconds and \
+                             offered back if this app stops unexpectedly. Your \
+                             session file is never written without a Save.",
+                        );
+                        ui.label(
+                            egui::RichText::new(store.dir().display().to_string())
+                                .size(11.0)
+                                .color(super::TEXT_SECONDARY),
+                        );
+                    }
+                    // A machine with no home directory. Amber, because this is a
+                    // safety rule that is off rather than a preference.
+                    None => super::destructive_note(
+                        ui,
+                        "NO CRASH COPY",
+                        "This machine has no application-data directory to put one \
+                         in, so unsaved work is not being copied anywhere. Save often.",
+                    ),
                 }
 
                 if self.reference_visible {

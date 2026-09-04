@@ -162,6 +162,7 @@ pub mod plocklane;
 pub mod presets;
 pub mod ports;
 pub mod rail;
+pub mod recovery;
 pub mod restore;
 pub mod scenes;
 pub mod session;

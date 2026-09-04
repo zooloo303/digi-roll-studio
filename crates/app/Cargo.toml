@@ -13,6 +13,9 @@ digi_protocol = { path = "../protocol" }
 digi_generator = { path = "../generator" }
 digi_engine = { path = "../engine" }
 digi_midi = { path = "../midi" }
+# Derive only, for `ui::recovery`'s one-field sidecar. serde is already in the
+# tree by way of digi_core, so this line costs a name and no build time.
+serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 rfd = "0.17.2"
 
