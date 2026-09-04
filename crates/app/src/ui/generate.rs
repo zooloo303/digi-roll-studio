@@ -127,6 +127,31 @@ use crate::ui::{
     TEXT_SECONDARY, WARN_AMBER, WARN_AMBER_BORDER, WARN_AMBER_FILL, WARN_AMBER_TEXT,
 };
 
+/// Move one row up (`delta` −1) or down (`delta` +1), returning whether the
+/// list actually changed — a press at either end of the list is a no-op
+/// rather than a wrap.
+///
+/// **Row order is meaning, not presentation**, which is why this exists at
+/// all. It decides three things, all of them top-down: which `Lead (call)` a
+/// `Lead (response)` answers, which rows' steps a melodic row is working
+/// around (`arrange::generate_arrangement`'s busy map), and who gets first
+/// claim on a slot's p-lock pool when the eighty lanes are over-subscribed
+/// (`cap_lane_pool`). Until this button the only way to reorder was to delete
+/// a row and add it back lower down — which hands it a **new [`PartId`]**,
+/// and a part's id is its RNG stream (`context`'s "stream-tag trap"), so the
+/// row you moved would come back playing different music. Moving it keeps the
+/// id, so every row's own notes are exactly what they were and only the
+/// relationships between them change.
+fn move_row(parts: &mut [Part], id: PartId, delta: isize) -> bool {
+    let Some(from) = parts.iter().position(|p| p.id == id) else { return false };
+    let Ok(to) = usize::try_from(from as isize + delta) else { return false };
+    if to >= parts.len() {
+        return false;
+    }
+    parts.swap(from, to);
+    true
+}
+
 /// The conflicting part card's fill — `#221d12` — the one colour this panel
 /// needs that isn't in `ui::mod`'s shared token table, because no other
 /// panel has a per-row "this is wrong" background yet. If a second panel
@@ -829,7 +854,9 @@ impl GeneratePanel {
 
         let mut remove: Option<PartId> = None;
         let mut reroll: Option<PartId> = None;
+        let mut move_by: Option<(PartId, isize)> = None;
         let ids: Vec<PartId> = self.ctx.parts.iter().map(|p| p.id).collect();
+        let row_count = ids.len();
 
         // **Measured once, before the first card, and handed to every one of
         // them.** A card that overflows pushes the parent `Ui`'s width out,
@@ -878,6 +905,43 @@ impl GeneratePanel {
                             if ui.small_button("×").on_hover_text("Remove this row").clicked() {
                                 remove = Some(id);
                             }
+                            // Added in reverse of reading order, like the
+                            // controls either side of them, and **painted
+                            // rather than typed** — the SONG panel's own
+                            // row-order buttons, whose `paint_vertical_arrow`
+                            // this shares, because `▾` and `▼` were both tofu
+                            // on this screen and `↑`/`↓` have never been drawn
+                            // here at all (see `ui::mod`'s glyph table).
+                            //
+                            // Greyed at the ends rather than hidden, so the
+                            // pair sits in the same place on every card.
+                            for (down, hint) in [
+                                (
+                                    true,
+                                    "Move this row down — it then answers the rows that were \
+                                     below it, and its own notes stay as they are",
+                                ),
+                                (
+                                    false,
+                                    "Move this row up — the rows it used to answer now answer \
+                                     it, and its own notes stay as they are",
+                                ),
+                            ] {
+                                let (rect, response) =
+                                    ui.allocate_exact_size(egui::vec2(14.0, 16.0), egui::Sense::click());
+                                let enabled = if down { index + 1 < row_count } else { index > 0 };
+                                let colour = if enabled && response.hovered() {
+                                    TEXT_BRIGHT
+                                } else if enabled {
+                                    TEXT_DIM
+                                } else {
+                                    super::TEXT_DISABLED
+                                };
+                                super::paint_vertical_arrow(ui.painter(), rect, down, colour);
+                                if response.on_hover_text(hint).clicked() && enabled {
+                                    move_by = Some((id, if down { 1 } else { -1 }));
+                                }
+                            }
                             if ui
                                 .small_button("↻")
                                 .on_hover_text(
@@ -918,6 +982,13 @@ impl GeneratePanel {
         }
         if let Some(id) = remove {
             self.ctx.parts.retain(|p| p.id != id);
+        }
+        // After the re-roll, so a frame that somehow carried both applies the
+        // re-roll to the row where it was pressed. `mirror_into` sees the
+        // reordered list at the end of the frame and marks the file dirty;
+        // there is no history step, because no note moved — see `Outcome`.
+        if let Some((id, delta)) = move_by {
+            move_row(&mut self.ctx.parts, id, delta);
         }
 
         let add_part = ui
@@ -2381,5 +2452,73 @@ mod tests {
             }
             other => panic!("expected a failure the panel can show, got {other:?}"),
         }
+    }
+
+    /// Both ends of the list are a no-op, not a wrap: a top row pressed ↑
+    /// stays where it is rather than reappearing at the bottom.
+    #[test]
+    fn a_move_stops_at_both_ends_of_the_list() {
+        let session = session_with_two_boxes();
+        let mut parts = default_ctx_on(&session).parts;
+        let before: Vec<PartId> = parts.iter().map(|p| p.id).collect();
+        let (first, last) = (before[0], before[before.len() - 1]);
+
+        assert!(!move_row(&mut parts, first, -1));
+        assert!(!move_row(&mut parts, last, 1));
+        assert_eq!(parts.iter().map(|p| p.id).collect::<Vec<_>>(), before);
+
+        assert!(move_row(&mut parts, first, 1));
+        assert_eq!(parts[0].id, before[1]);
+        assert_eq!(parts[1].id, first);
+        assert!(move_row(&mut parts, first, -1));
+        assert_eq!(parts.iter().map(|p| p.id).collect::<Vec<_>>(), before);
+    }
+
+    /// The whole reason the button exists rather than "delete it and add it
+    /// back lower down": a part's id *is* its RNG stream, so a move has to
+    /// keep it. Every row comes out of a move carrying the same id, role,
+    /// destination, density, octave and variation it went in with.
+    #[test]
+    fn a_move_changes_only_the_order() {
+        let session = session_with_two_boxes();
+        let mut parts = default_ctx_on(&session).parts;
+        let mut sorted_before = parts.clone();
+        sorted_before.sort_by_key(|p| p.id);
+
+        assert!(move_row(&mut parts, sorted_before[2].id, -1));
+        assert!(move_row(&mut parts, sorted_before[0].id, 1));
+
+        let mut sorted_after = parts.clone();
+        sorted_after.sort_by_key(|p| p.id);
+        assert_eq!(sorted_after, sorted_before);
+    }
+
+    /// And what a move is *for*. Order is call-and-response top down, so
+    /// moving a lead above the bass it was working around changes the lead's
+    /// music — while the bass, which passes `avoid: 0.0` and never reads the
+    /// busy map, plays exactly what it played before.
+    #[test]
+    fn a_move_re_aims_who_answers_whom_without_re_rolling_anyone() {
+        let session = session_with_two_boxes();
+        let mut ctx = GenContext { genre: GenreId::Dnb, seed: 909, bars: 2, ..default_ctx_on(&session) };
+        ctx.parts.truncate(3); // bass, chords, lead
+
+        let bass_id = ctx.parts[0].id;
+        let lead_id = ctx.parts[2].id;
+        let before = generate_arrangement(&ctx, None).unwrap();
+        let notes_of = |a: &digi_generator::arrange::Arrangement, id: PartId| {
+            let p = a.parts.iter().find(|p| p.part_id == id).unwrap();
+            p.notes.iter().map(|n| (n.step.to_bits(), n.pitch, n.velocity)).collect::<Vec<_>>()
+        };
+        let bass_before = notes_of(&before, bass_id);
+        let lead_before = notes_of(&before, lead_id);
+
+        assert!(move_row(&mut ctx.parts, lead_id, -1));
+        assert!(move_row(&mut ctx.parts, lead_id, -1));
+        assert_eq!(ctx.parts[0].id, lead_id);
+
+        let after = generate_arrangement(&ctx, None).unwrap();
+        assert_eq!(notes_of(&after, bass_id), bass_before, "the bass reads no busy map and should not have moved");
+        assert_ne!(notes_of(&after, lead_id), lead_before, "a lead with nothing above it has nothing to work around");
     }
 }
