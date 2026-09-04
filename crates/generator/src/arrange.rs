@@ -39,7 +39,7 @@ use std::collections::HashSet;
 use digi_core::model::Note;
 
 use crate::context::{resolve_context, GenContext, Part, PartId, ResolvedContext};
-use crate::genres::{role_profile, Role};
+use crate::genres::{is_bed, role_profile, Role};
 use crate::parts::{
     bass::generate_bass,
     chord_lead::generate_chord_lead,
@@ -281,7 +281,10 @@ pub fn generate_arrangement(ctx: &GenContext, device_kind: Option<&'static str>)
         // play: an eight-bar answer came back empty. The default six are
         // unaffected either way, drums being last in that list, but "the
         // order happens not to expose it" is not the same as correct.
-        if !arranged.role.is_drum_voice() {
+        //
+        // **A bed registers nothing either**, and for the same reason — see
+        // `genres::is_bed`, which is where that argument lives.
+        if !arranged.role.is_drum_voice() && !is_bed(resolved.profile.id, arranged.role) {
             busy.extend(arranged.notes.iter().map(|n| n.step as u32));
         }
         if arranged.on {
@@ -986,6 +989,84 @@ mod tests {
             for n in &part.notes {
                 assert_eq!((n.prob, n.fill, n.cond.clone()), (None, None, None));
             }
+        }
+    }
+
+    /// A lead's on-pulse share: what fraction of its notes land on an even
+    /// sixteenth, over enough seeds that one unlucky motif cannot decide it.
+    fn on_the_pulse(genre: crate::genres::GenreId, roles: &[Role]) -> f64 {
+        let (mut even, mut all) = (0usize, 0usize);
+        for seed in 0..120u32 {
+            let parts: Vec<Part> = roles
+                .iter()
+                .enumerate()
+                .map(|(i, &role)| {
+                    let mut p = crate::context::default_parts()[0];
+                    p.id = crate::context::PartId::next();
+                    p.role = role;
+                    p.destination.track = i;
+                    p.density = if role == Role::Bass { 35 } else { 40 };
+                    p.octave = if role == Role::Bass { 3 } else { 5 };
+                    p
+                })
+                .collect();
+            let c = ctx(GenContext { genre, bars: 4, seed, parts, ..GenContext::default() });
+            let arrangement = generate_arrangement(&c, None).unwrap();
+            let lead = arrangement.parts.iter().find(|p| p.role == Role::Lead).unwrap();
+            even += lead.notes.iter().filter(|n| (n.step as u32) % 2 == 0).count();
+            all += lead.notes.len();
+        }
+        even as f64 / all as f64
+    }
+
+    /// A chord lead weights every even step at 0.9 or better, so before
+    /// `genres::is_bed` a lead row placed under one was *arithmetically*
+    /// barred from the eighths: adding the chord row more than halved the
+    /// lead's on-pulse share in all six genres (DnB 55% → 21%, House 37% →
+    /// 12%, Rollers 16% → 7%, measured over 120 seeds each). A comp is
+    /// something a hook plays over, so adding one should now be close to
+    /// neutral.
+    #[test]
+    fn a_chord_bed_does_not_push_a_hook_off_the_pulse() {
+        for genre in crate::genres::GenreId::ALL {
+            let without = on_the_pulse(genre, &[Role::Bass, Role::Lead]);
+            let with_bed = on_the_pulse(genre, &[Role::Bass, Role::ChordLead, Role::Lead]);
+            assert!(
+                with_bed >= without - 0.10,
+                "{}: a chord bed took the lead's on-pulse share from {:.1}% to {:.1}%",
+                genre.as_str(),
+                without * 100.0,
+                with_bed * 100.0
+            );
+        }
+    }
+
+    /// The other bed, and the edit this came from: a Rollers bass pedals its
+    /// root and at density 100 owns all sixteen steps, which used to leave a
+    /// hook nowhere but the "e"s and "a"s — 16% on-pulse with the bass alone,
+    /// 7% with the chord row too. Neil moved twelve of a fourteen-note hook
+    /// back onto the pulse by hand on 2026-09-03.
+    #[test]
+    fn a_rolling_bass_leaves_the_hook_on_the_pulse() {
+        let share = on_the_pulse(crate::genres::GenreId::Rollers, &[Role::Bass, Role::ChordLead, Role::Lead]);
+        assert!(share > 0.4, "a Rollers hook is only {:.1}% on the pulse", share * 100.0);
+    }
+
+    /// A bed claims nothing from the busy map, and that is *all* it changes:
+    /// it is still generated, still counted and still written.
+    #[test]
+    fn a_bed_still_plays_every_note_it_was_given() {
+        let mut c = ctx(GenContext { genre: crate::genres::GenreId::Rollers, seed: 21, bars: 4, ..GenContext::default() });
+        for (i, role) in [Role::Bass, Role::ChordLead, Role::Lead].into_iter().enumerate() {
+            c.parts[i].role = role;
+        }
+        c.parts.truncate(3);
+        let arrangement = generate_arrangement(&c, None).unwrap();
+        for role in [Role::Bass, Role::ChordLead] {
+            let bed = arrangement.parts.iter().find(|p| p.role == role).unwrap();
+            assert!(crate::genres::is_bed(crate::genres::GenreId::Rollers, role));
+            assert!(!bed.notes.is_empty(), "{role:?} generated nothing");
+            assert_eq!(bed.trig_count, bed.notes.iter().map(|n| n.step.to_bits()).collect::<HashSet<u64>>().len());
         }
     }
 }

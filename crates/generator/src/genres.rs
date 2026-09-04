@@ -557,6 +557,44 @@ fn drum_profile(
     }
 }
 
+/// Whether a role's notes are a *line* another part should answer, or a
+/// **bed** it should play over.
+///
+/// The arrangement's busy map means "a pitched part already owns this step",
+/// and [`parts::lead`](crate::parts::lead) reads it as an instruction to
+/// move: a motif note landing on a busy step is nudged one sixteenth later,
+/// or given up where there is no room. That is the right rule for two
+/// melodic voices and the wrong one for a part whose whole job is to hold
+/// still underneath one. Two of those ship here.
+///
+/// **A chord lead, in every genre.** Its grammar is one transcription of the
+/// A4's factory A01 — straight eighths, flat velocity — so it weights *every
+/// even step at 0.9 or better* and, at four to eight trigs a bar, plays most
+/// of them. A lead row placed under one could therefore never land on an
+/// eighth at all: not unlikely, but arithmetically impossible. A hook driven
+/// entirely onto the "e"s and "a"s is not a hook, and a comp is not a voice
+/// arguing with it.
+///
+/// **A Rollers bass**, which pedals one root through the bar (`chord_tone`
+/// 0.15) and at density 100 owns all sixteen steps by design. On 2026-09-03
+/// Neil generated a Rollers pattern with both of those under a lead: twelve
+/// of the hook's fourteen notes came out on a weak sixteenth, and he moved
+/// every one of them back onto the pulse by hand. This is that edit.
+///
+/// So a bed registers nothing, for the same reason a drum voice registers
+/// nothing (see [`crate::arrange::generate_arrangement`]) — a lead doubling
+/// the root of a roll, or landing on a held chord, is a band rather than a
+/// collision, which is the bargain `rhythm.rs`'s own `avoid` already strikes
+/// from the other side. `Role::Chords` is deliberately *not* here: its table
+/// is a genre's own idiom rather than a comp, sparse enough to leave a lead
+/// somewhere to go, and nothing has asked for it.
+///
+/// This changes only what the map *claims*. The part itself is generated,
+/// counted and written exactly as before.
+pub fn is_bed(genre: GenreId, role: Role) -> bool {
+    matches!((genre, role), (_, Role::ChordLead) | (GenreId::Rollers, Role::Bass))
+}
+
 pub fn role_profile(id: GenreId, role: Role) -> RoleProfile {
     match (id, role) {
         // **A call and a response are one voice taking turns**, so both play
@@ -1493,11 +1531,32 @@ pub fn role_profile(id: GenreId, role: Role) -> RoleProfile {
         // sixteenth-note closed hat is mud, so the table leans on the eighths
         // and reaches its sixteenths only near the top of the slider.
         (GenreId::Rollers, Role::Kick) => drum_profile(
-            // Funk-breakbeat syncopation, holding the 1 firmly. The "and of
-            // 3" and the last "and" are the two syncopations a break leans
-            // on; everything else is left for the snare and the bass.
-            [1.0, 0.0, 0.25, 0.0, 0.0, 0.0, 0.45, 0.0, 0.0, 0.35, 0.0, 0.3, 0.0, 0.0, 0.5, 0.0],
-            (2, 5),
+            // The two-step, holding the 1 firmly: the 1 and the **and of 3**,
+            // with the last "and" as the third hit the slider buys. The funk
+            // syncopations are still here, but as shades behind those three
+            // rather than alongside them.
+            //
+            // **Rewritten 2026-09-03 from Neil's own edit.** The first table
+            // said all of the above in its comment and none of it in its
+            // numbers: it weighted the "and of 3" at *step 9*, which is the
+            // "e", left step 10 — the "and" itself — at zero, and spread 0.25
+            // to 0.5 across four more slots. With `(2, 5)` behind it, the
+            // kick row's default density of 60 asked for nearly four trigs a
+            // bar and got them: `1 · e · and-of-2 · e-of-3 · and-of-4`, five
+            // hits in bar one, under a bassline already playing every eighth.
+            // Neil deleted the lot and drew `0, 10` with a conditional `14`,
+            // which is the two-step this genre is named for, so that is what
+            // the numbers say now.
+            //
+            // The "and of 3" sits at 0.75 rather than higher on purpose:
+            // `rhythm_for`'s `accent: is_beat(step) || weight >= 0.8` would
+            // make it as loud as the 1, and Neil's own second kick came in
+            // sixteen velocity units *under* his first.
+            [1.0, 0.0, 0.12, 0.0, 0.0, 0.0, 0.3, 0.0, 0.0, 0.1, 0.75, 0.15, 0.0, 0.0, 0.45, 0.0],
+            // Two a bar at the bottom, three at the top — DnB's own range
+            // shifted up by one, not Breaks' `(2, 5)`. A fourth kick in a bar
+            // is one the roll has no room for.
+            (2, 3),
             LenProfile::Plain { normal: 0.5, ghost: Some(0.25), max: 1.0 },
             Velocity { accent: 118, normal: 100, ghost: 66 },
             DRUM_SPINE_RECIPE,

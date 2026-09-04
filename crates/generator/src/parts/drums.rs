@@ -31,6 +31,33 @@ use super::{len_bounds, GeneratedPart, NoteSpec};
 /// MIDI 60 is C5 here, not C4).
 pub const DRUM_TRIGGER_PITCH: u8 = 60;
 
+/// The steps a drum table declares as *the pattern* rather than as a
+/// preference: every slot it weights at 1.0, in every bar.
+///
+/// A drum table's 1.0s are only ever its spine — a kick's downbeats, a
+/// snare's or clap's backbeat, and never more than four of them
+/// (`genres.rs`). Everything else in a table is a shade. But
+/// [`rhythm_for`] draws proportionally, so until this existed a 1.0 was
+/// merely the likeliest candidate and a four-bar pattern could simply lose
+/// one: measured across 400 seeds at the default densities, **55% of Rollers
+/// snares and 31% of DnB's dropped at least one backbeat**, and House's clap
+/// dropped one in 31%. Neil found exactly that hole in a generated Rollers
+/// pattern on 2026-09-03 and drew the missing beat 2 back in by hand, which
+/// is what this is from.
+///
+/// This is what `anchors` is for — `parts::bass` has always anchored its own
+/// 1 the same way. It cannot fight the density slider, because no shipped
+/// table has more 1.0 slots than its own `trigs_per_bar` *floor* — House's
+/// four-on-the-floor kick and Electro's `(2, 2)` snare spend the whole
+/// budget on their spine and are meant to — so even at density 0 the spine
+/// fits inside the trigs already paid for.
+/// `the_spine_fits_inside_every_density_floor` holds that line for any table
+/// added later.
+fn spine_steps(profile: &RoleProfile, bars: u32) -> Vec<u32> {
+    let spine: Vec<u32> = profile.weights.iter().enumerate().filter(|(_, &w)| w >= 1.0).map(|(i, _)| i as u32).collect();
+    (0..bars).flat_map(|bar| spine.iter().map(move |slot| bar * 16 + slot)).collect()
+}
+
 /// Generate one drum voice: a rhythm, and nothing else. Structurally the
 /// same shape as [`crate::parts::bass::generate_bass`] minus every pitch
 /// decision — `avoid` is always 0, because a kick landing under a hi-hat is
@@ -45,7 +72,7 @@ pub fn generate_drums(ctx: &ResolvedContext, profile: &RoleProfile, density: u8,
             bars: ctx.bars,
             busy,
             avoid: 0.0,
-            anchors: &[],
+            anchors: &spine_steps(profile, ctx.bars),
             trigs_per_bar: profile.trigs_per_bar,
         },
         rng,
@@ -455,6 +482,105 @@ mod tests {
                 let feel_a: Vec<_> = a.notes.iter().map(|n| (n.step, n.prob, n.fill, n.cond)).collect();
                 let feel_b: Vec<_> = b.notes.iter().map(|n| (n.step, n.prob, n.fill, n.cond)).collect();
                 assert_eq!(feel_a, feel_b, "{genre:?}/{voice:?}");
+            }
+        }
+    }
+
+    /// The edit that started this: Neil generated a Rollers pattern on
+    /// 2026-09-03, found beat 2 of bar 1 missing from the snare, and drew it
+    /// back in. Every 1.0 slot of every bar, at any density, for every genre.
+    #[test]
+    fn always_plays_the_spine_the_table_declares() {
+        for genre in GenreId::ALL {
+            for role in Role::ALL.into_iter().filter(|r| r.is_drum_voice()) {
+                let profile = role_profile(genre, role);
+                let spine: Vec<usize> = (0..16).filter(|&i| profile.weights[i] >= 1.0).collect();
+                if spine.is_empty() {
+                    continue;
+                }
+                for density in [0u8, 40, 55, 60, 100] {
+                    for seed in 0..40u32 {
+                        let ctx = ctx_for(genre, seed, 4);
+                        let mut rng = rng_for(seed, "drums");
+                        let part = generate_drums(&ctx, &profile, density, &mut rng, &HashSet::new());
+                        let steps: HashSet<u32> = part.notes.iter().map(|n| n.step).collect();
+                        for bar in 0..4u32 {
+                            for &slot in &spine {
+                                let step = bar * 16 + slot as u32;
+                                assert!(
+                                    steps.contains(&step),
+                                    "{} {role:?} density {density} seed {seed}: no trig on step {step}, \
+                                     which its own table weights at 1.0",
+                                    genre.as_str()
+                                );
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    /// Why [`spine_steps`] cannot fight the density slider: a table's 1.0
+    /// slots always fit inside the trig budget its own `trigs_per_bar` floor
+    /// already grants, so anchoring them never forces a trig that density 0
+    /// would not have paid for. True of every shipped table; this is the line
+    /// a table added later has to stay behind.
+    #[test]
+    fn the_spine_fits_inside_every_density_floor() {
+        for genre in GenreId::ALL {
+            for role in Role::ALL.into_iter().filter(|r| r.is_drum_voice()) {
+                let profile = role_profile(genre, role);
+                let spine = (0..16).filter(|&i| profile.weights[i] >= 1.0).count() as u32;
+                let floor = profile.trigs_per_bar.0;
+                assert!(
+                    spine <= floor,
+                    "{} {role:?} weights {spine} slots at 1.0 but its density-0 floor is only {floor} \
+                     trigs a bar — anchoring the spine would override the slider",
+                    genre.as_str()
+                );
+            }
+        }
+    }
+
+    /// **Rollers' kick is a two-step**, and this is Neil's own edit of
+    /// 2026-09-03 held in place: he deleted a generated four-a-bar funk kick
+    /// and drew `0, 10` with a conditional `14`, which is the pattern the
+    /// genre is named for.
+    ///
+    /// The first table said that in its comment and not in its numbers — it
+    /// put the "and of 3" on step *9*, the "e", and left step 10 at zero — so
+    /// the specific thing asserted here is that the "and" now outplays the
+    /// "e", and that the bar does not fill up behind them.
+    #[test]
+    fn a_rollers_kick_is_a_two_step() {
+        let profile = role_profile(GenreId::Rollers, Role::Kick);
+        let mut hist = [0usize; 16];
+        let mut notes = 0usize;
+        let seeds = 300u32;
+        for seed in 0..seeds {
+            let ctx = ctx_for(GenreId::Rollers, seed, 4);
+            let part = generate_drums(&ctx, &profile, 60, &mut rng_for(seed, "drums"), &HashSet::new());
+            for n in &part.notes {
+                hist[(n.step % 16) as usize] += 1;
+            }
+            notes += part.notes.len();
+        }
+        let bars = f64::from(seeds) * 4.0;
+
+        assert_eq!(hist[0] as f64, bars, "the 1 is the pattern, not a preference");
+        let per_bar = notes as f64 / bars;
+        assert!(per_bar <= 3.0, "{per_bar:.2} kicks a bar leaves the roll no room");
+        let and_of_3 = hist[10];
+        assert!(
+            and_of_3 > hist[9],
+            "the 'and of 3' (step 10, {and_of_3}) should outplay the 'e' (step 9, {}) — \
+             that is the swap Neil's edit asked for",
+            hist[9]
+        );
+        for (step, &count) in hist.iter().enumerate() {
+            if step != 0 && step != 10 {
+                assert!(count <= and_of_3, "step {step} ({count}) outplays the 'and of 3' ({and_of_3})");
             }
         }
     }
