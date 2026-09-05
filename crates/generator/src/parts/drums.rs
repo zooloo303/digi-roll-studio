@@ -29,7 +29,12 @@ use super::{len_bounds, GeneratedPart, NoteSpec};
 /// unremarkable MIDI note. 60 is C5, this app's own convention for "the
 /// middle of the keyboard" (`digi_core::chords`'s octave labelling agrees:
 /// MIDI 60 is C5 here, not C4).
-pub const DRUM_TRIGGER_PITCH: u8 = 60;
+///
+/// The constant lives in `digi_core::midi_import` since the MIDI import's
+/// drum fan-out (MIDI_IMPORT_DESIGN.md §4.5) needed the same number — one
+/// home, read by both crates, rather than two copies agreeing by
+/// coincidence. This re-export keeps every existing reference compiling.
+pub use digi_core::midi_import::DRUM_TRIGGER_PITCH;
 
 /// The steps a drum table declares as *the pattern* rather than as a
 /// preference: every slot it weights at 1.0, in every bar.
@@ -54,15 +59,29 @@ pub const DRUM_TRIGGER_PITCH: u8 = 60;
 /// `the_spine_fits_inside_every_density_floor` holds that line for any table
 /// added later.
 fn spine_steps(profile: &RoleProfile, bars: u32) -> Vec<u32> {
-    let spine: Vec<u32> = profile.weights.iter().enumerate().filter(|(_, &w)| w >= 1.0).map(|(i, _)| i as u32).collect();
-    (0..bars).flat_map(|bar| spine.iter().map(move |slot| bar * 16 + slot)).collect()
+    let spine: Vec<u32> = profile
+        .weights
+        .iter()
+        .enumerate()
+        .filter(|(_, &w)| w >= 1.0)
+        .map(|(i, _)| i as u32)
+        .collect();
+    (0..bars)
+        .flat_map(|bar| spine.iter().map(move |slot| bar * 16 + slot))
+        .collect()
 }
 
 /// Generate one drum voice: a rhythm, and nothing else. Structurally the
 /// same shape as [`crate::parts::bass::generate_bass`] minus every pitch
 /// decision — `avoid` is always 0, because a kick landing under a hi-hat is
 /// the point, not a collision the way a lead doubling a bass would be.
-pub fn generate_drums(ctx: &ResolvedContext, profile: &RoleProfile, density: u8, rng: &mut Rng, busy: &HashSet<u32>) -> GeneratedPart {
+pub fn generate_drums(
+    ctx: &ResolvedContext,
+    profile: &RoleProfile,
+    density: u8,
+    rng: &mut Rng,
+    busy: &HashSet<u32>,
+) -> GeneratedPart {
     let total = ctx.length_steps;
 
     let trigs = rhythm_for(
@@ -78,21 +97,40 @@ pub fn generate_drums(ctx: &ResolvedContext, profile: &RoleProfile, density: u8,
         rng,
     );
 
-    let feel = trig_feel_for(&trigs, profile.conditions, ctx.feel.looseness as u32, ctx.bars, rng);
+    let feel = trig_feel_for(
+        &trigs,
+        profile.conditions,
+        ctx.feel.looseness as u32,
+        ctx.bars,
+        rng,
+    );
     let (len_normal, len_ghost, len_max) = len_bounds(&profile.len);
 
     let mut notes = Vec::with_capacity(trigs.len());
     for (i, trig) in trigs.iter().enumerate() {
         let gap = gap_after(&trigs, i, total);
-        let want = (if trig.ghost { len_ghost } else { len_normal }).min(gap).min(len_max);
+        let want = (if trig.ghost { len_ghost } else { len_normal })
+            .min(gap)
+            .min(len_max);
         let len = digi_core::snap_len_fine(want, f64::from(total - trig.step));
         let t = feel.get(&trig.step);
         notes.push(NoteSpec {
             step: trig.step,
             pitch: DRUM_TRIGGER_PITCH,
             len,
-            velocity: velocity_for(trig.accent, trig.ghost, profile.velocity, u32::from(ctx.feel.humanize), rng),
-            micro: micro_for(trig.step, &ctx.profile.groove, u32::from(ctx.feel.humanize), rng),
+            velocity: velocity_for(
+                trig.accent,
+                trig.ghost,
+                profile.velocity,
+                u32::from(ctx.feel.humanize),
+                rng,
+            ),
+            micro: micro_for(
+                trig.step,
+                &ctx.profile.groove,
+                u32::from(ctx.feel.humanize),
+                rng,
+            ),
             prob: t.and_then(|t| t.prob),
             fill: t.and_then(|t| t.fill),
             cond: t.and_then(|t| t.cond),
@@ -110,7 +148,13 @@ mod tests {
     use crate::rng::rng_for;
 
     fn ctx_for(genre: GenreId, seed: u32, bars: u32) -> ResolvedContext {
-        resolve_context(&GenContext { genre, seed, bars, ..GenContext::default() }).unwrap()
+        resolve_context(&GenContext {
+            genre,
+            seed,
+            bars,
+            ..GenContext::default()
+        })
+        .unwrap()
     }
 
     /// `GenContext::default()`'s looseness is 35 (`context.rs`), which is
@@ -122,7 +166,10 @@ mod tests {
             genre,
             seed,
             bars,
-            feel: crate::context::Feel { looseness, ..crate::context::Feel::default() },
+            feel: crate::context::Feel {
+                looseness,
+                ..crate::context::Feel::default()
+            },
             ..GenContext::default()
         })
         .unwrap()
@@ -137,8 +184,12 @@ mod tests {
                         let ctx = ctx_for(genre, seed, 2);
                         let profile = role_profile(genre, voice);
                         let mut rng = rng_for(seed, "drum");
-                        let part = generate_drums(&ctx, &profile, density, &mut rng, &HashSet::new());
-                        assert!(!part.notes.is_empty(), "{genre:?}/{voice:?} density {density}");
+                        let part =
+                            generate_drums(&ctx, &profile, density, &mut rng, &HashSet::new());
+                        assert!(
+                            !part.notes.is_empty(),
+                            "{genre:?}/{voice:?} density {density}"
+                        );
                         for n in &part.notes {
                             assert!(n.step < ctx.length_steps);
                             assert_eq!(n.pitch, DRUM_TRIGGER_PITCH);
@@ -156,10 +207,28 @@ mod tests {
     fn is_deterministic_for_a_seed_and_different_for_another() {
         let ctx = ctx_for(GenreId::Dnb, 42, 2);
         let profile = role_profile(GenreId::Dnb, Role::Kick);
-        let a = generate_drums(&ctx, &profile, 50, &mut rng_for(42, "kick"), &HashSet::new());
-        let b = generate_drums(&ctx, &profile, 50, &mut rng_for(42, "kick"), &HashSet::new());
+        let a = generate_drums(
+            &ctx,
+            &profile,
+            50,
+            &mut rng_for(42, "kick"),
+            &HashSet::new(),
+        );
+        let b = generate_drums(
+            &ctx,
+            &profile,
+            50,
+            &mut rng_for(42, "kick"),
+            &HashSet::new(),
+        );
         assert_eq!(a.notes, b.notes);
-        let c = generate_drums(&ctx, &profile, 50, &mut rng_for(43, "kick"), &HashSet::new());
+        let c = generate_drums(
+            &ctx,
+            &profile,
+            50,
+            &mut rng_for(43, "kick"),
+            &HashSet::new(),
+        );
         assert_ne!(a.notes, c.notes);
     }
 
@@ -167,7 +236,13 @@ mod tests {
     fn house_kick_is_steady_four_on_the_floor_at_full_density() {
         let ctx = ctx_for(GenreId::House, 1, 1);
         let profile = role_profile(GenreId::House, Role::Kick);
-        let part = generate_drums(&ctx, &profile, 100, &mut rng_for(1, "kick"), &HashSet::new());
+        let part = generate_drums(
+            &ctx,
+            &profile,
+            100,
+            &mut rng_for(1, "kick"),
+            &HashSet::new(),
+        );
         let steps: HashSet<u32> = part.notes.iter().map(|n| n.step).collect();
         for beat in [0, 4, 8, 12] {
             assert!(steps.contains(&beat), "missing beat {beat}");
@@ -181,7 +256,13 @@ mod tests {
         // point of a drum kit, not a collision.
         let ctx = ctx_for(GenreId::House, 2, 1);
         let kick_profile = role_profile(GenreId::House, Role::Kick);
-        let kick = generate_drums(&ctx, &kick_profile, 100, &mut rng_for(2, "kick"), &HashSet::new());
+        let kick = generate_drums(
+            &ctx,
+            &kick_profile,
+            100,
+            &mut rng_for(2, "kick"),
+            &HashSet::new(),
+        );
         let busy: HashSet<u32> = kick.notes.iter().map(|n| n.step).collect();
         let hat_profile = role_profile(GenreId::House, Role::ClosedHat);
         let hat = generate_drums(&ctx, &hat_profile, 100, &mut rng_for(2, "hat"), &busy);
@@ -196,7 +277,13 @@ mod tests {
         // A clap doubling the snare is the point of having both, so the two
         // are expected to agree on steps 4 and 12 rather than avoid them.
         let ctx = ctx_for(GenreId::House, 3, 1);
-        let clap = generate_drums(&ctx, &role_profile(GenreId::House, Role::Clap), 100, &mut rng_for(3, "clap"), &HashSet::new());
+        let clap = generate_drums(
+            &ctx,
+            &role_profile(GenreId::House, Role::Clap),
+            100,
+            &mut rng_for(3, "clap"),
+            &HashSet::new(),
+        );
         let steps: HashSet<u32> = clap.notes.iter().map(|n| n.step).collect();
         for beat in [4, 12] {
             assert!(steps.contains(&beat), "missing backbeat {beat}");
@@ -213,7 +300,13 @@ mod tests {
         // that half is now the opposite of what the ride is for.
         for genre in GenreId::ALL {
             let ctx = ctx_for(genre, 7, 2);
-            let rim = generate_drums(&ctx, &role_profile(genre, Role::Rimshot), 100, &mut rng_for(7, "rim"), &HashSet::new());
+            let rim = generate_drums(
+                &ctx,
+                &role_profile(genre, Role::Rimshot),
+                100,
+                &mut rng_for(7, "rim"),
+                &HashSet::new(),
+            );
             for n in &rim.notes {
                 assert!(n.step % 4 != 0, "{genre:?} rimshot on beat step {}", n.step);
             }
@@ -238,16 +331,30 @@ mod tests {
         for genre in GenreId::ALL {
             for voice in [Role::ClosedHat, Role::Ride, Role::Shaker] {
                 let profile = role_profile(genre, voice);
-                assert_eq!(profile.trigs_per_bar.1, 16, "{genre:?}/{voice:?} cannot be asked for sixteenths");
+                assert_eq!(
+                    profile.trigs_per_bar.1, 16,
+                    "{genre:?}/{voice:?} cannot be asked for sixteenths"
+                );
                 assert!(
                     profile.weights.iter().all(|&w| w > 0.0),
                     "{genre:?}/{voice:?} has an unreachable step in its weight table"
                 );
                 for seed in 0..4u32 {
                     let ctx = ctx_for(genre, seed, 1);
-                    let part = generate_drums(&ctx, &profile, 100, &mut rng_for(seed, "sixteenths"), &HashSet::new());
+                    let part = generate_drums(
+                        &ctx,
+                        &profile,
+                        100,
+                        &mut rng_for(seed, "sixteenths"),
+                        &HashSet::new(),
+                    );
                     let steps: HashSet<u32> = part.notes.iter().map(|n| n.step).collect();
-                    assert_eq!(steps.len(), 16, "{genre:?}/{voice:?} seed {seed} got {} steps, not sixteenths", steps.len());
+                    assert_eq!(
+                        steps.len(),
+                        16,
+                        "{genre:?}/{voice:?} seed {seed} got {} steps, not sixteenths",
+                        steps.len()
+                    );
                 }
             }
         }
@@ -283,7 +390,9 @@ mod tests {
         for genre in GenreId::ALL {
             for voice in [Role::ClosedHat, Role::Ride, Role::Shaker] {
                 let profile = role_profile(genre, voice);
-                let mean = |steps: [usize; 8]| steps.iter().map(|&i| profile.weights[i]).sum::<f64>() / 8.0;
+                let mean = |steps: [usize; 8]| {
+                    steps.iter().map(|&i| profile.weights[i]).sum::<f64>() / 8.0
+                };
                 let evens = mean([0, 2, 4, 6, 8, 10, 12, 14]);
                 let odds = mean([1, 3, 5, 7, 9, 11, 13, 15]);
                 if odds >= evens * 0.5 {
@@ -294,19 +403,31 @@ mod tests {
                 let (mut total, mut on_eighths) = (0usize, 0usize);
                 for seed in 0..8u32 {
                     let ctx = ctx_for(genre, seed, 2);
-                    let part = generate_drums(&ctx, &profile, 0, &mut rng_for(seed, "sparse"), &HashSet::new());
+                    let part = generate_drums(
+                        &ctx,
+                        &profile,
+                        0,
+                        &mut rng_for(seed, "sparse"),
+                        &HashSet::new(),
+                    );
                     total += part.notes.len();
                     on_eighths += part.notes.iter().filter(|n| n.step % 2 == 0).count();
                 }
                 let share = on_eighths as f64 / total as f64;
-                assert!(share > 0.65, "{genre:?}/{voice:?} sparse hits only {share:.2} on the eighth grid");
+                assert!(
+                    share > 0.65,
+                    "{genre:?}/{voice:?} sparse hits only {share:.2} on the eighth grid"
+                );
             }
         }
         // Twelve of the fifteen today: five rides, five shakers, and the
         // House and Electro closed hats. The other three are the
         // deliberately near-even tables — the DnB, Breaks and Techno closed
         // hats, which could already play sixteenths before any of this.
-        assert!(checked >= 10, "only {checked} eighth-weighted texture voices left to check");
+        assert!(
+            checked >= 10,
+            "only {checked} eighth-weighted texture voices left to check"
+        );
     }
 
     #[test]
@@ -340,7 +461,10 @@ mod tests {
                 let profile = role_profile(genre, voice);
                 assert_eq!(profile.weights.len(), 16);
                 assert!(profile.lanes.is_empty());
-                assert!(!profile.conditions.is_empty(), "{genre:?}/{voice:?} has no drum recipe");
+                assert!(
+                    !profile.conditions.is_empty(),
+                    "{genre:?}/{voice:?} has no drum recipe"
+                );
             }
         }
     }
@@ -361,7 +485,13 @@ mod tests {
                 for seed in 0..12u32 {
                     let ctx = ctx_for_looseness(genre, seed, 2, 100);
                     let profile = role_profile(genre, voice);
-                    let part = generate_drums(&ctx, &profile, 100, &mut rng_for(seed, "spine"), &HashSet::new());
+                    let part = generate_drums(
+                        &ctx,
+                        &profile,
+                        100,
+                        &mut rng_for(seed, "spine"),
+                        &HashSet::new(),
+                    );
                     for n in &part.notes {
                         if crate::rhythm::is_beat(n.step) {
                             assert_eq!(
@@ -395,7 +525,10 @@ mod tests {
         use crate::parts::lead::generate_lead;
 
         fn locks(notes: &[NoteSpec]) -> usize {
-            notes.iter().filter(|n| n.prob.is_some() || n.fill.is_some() || n.cond.is_some()).count()
+            notes
+                .iter()
+                .filter(|n| n.prob.is_some() || n.fill.is_some() || n.cond.is_some())
+                .count()
         }
 
         for genre in GenreId::ALL {
@@ -405,12 +538,21 @@ mod tests {
                 for seed in 0..8u32 {
                     let ctx = ctx_for_looseness(genre, seed, 2, 100);
                     let profile = role_profile(genre, voice);
-                    let part = generate_drums(&ctx, &profile, 100, &mut rng_for(seed, "sprinkle-drum"), &HashSet::new());
+                    let part = generate_drums(
+                        &ctx,
+                        &profile,
+                        100,
+                        &mut rng_for(seed, "sprinkle-drum"),
+                        &HashSet::new(),
+                    );
                     drum_trigs += part.notes.len();
                     drum_locks += locks(&part.notes);
                 }
             }
-            assert!(drum_locks > 0, "{genre:?}: drum voices produced no PROB/FILL/COND at all");
+            assert!(
+                drum_locks > 0,
+                "{genre:?}: drum voices produced no PROB/FILL/COND at all"
+            );
 
             let mut melodic_trigs = 0usize;
             let mut melodic_locks = 0usize;
@@ -457,12 +599,31 @@ mod tests {
         // assumed.
         for genre in GenreId::ALL {
             for voice in Role::DRUM_VOICES {
-                let gen_ctx = GenContext { genre, seed: 21, feel: crate::context::Feel { motion: 50, looseness: 0, humanize: 30 }, ..GenContext::default() };
+                let gen_ctx = GenContext {
+                    genre,
+                    seed: 21,
+                    feel: crate::context::Feel {
+                        motion: 50,
+                        looseness: 0,
+                        humanize: 30,
+                    },
+                    ..GenContext::default()
+                };
                 let ctx = resolve_context(&gen_ctx).unwrap();
                 let profile = role_profile(genre, voice);
-                let part = generate_drums(&ctx, &profile, 100, &mut rng_for(21, "loose0"), &HashSet::new());
+                let part = generate_drums(
+                    &ctx,
+                    &profile,
+                    100,
+                    &mut rng_for(21, "loose0"),
+                    &HashSet::new(),
+                );
                 for n in &part.notes {
-                    assert_eq!((n.prob, n.fill, n.cond), (None, None, None), "{genre:?}/{voice:?}");
+                    assert_eq!(
+                        (n.prob, n.fill, n.cond),
+                        (None, None, None),
+                        "{genre:?}/{voice:?}"
+                    );
                 }
             }
         }
@@ -477,10 +638,30 @@ mod tests {
             for voice in Role::DRUM_VOICES {
                 let ctx = ctx_for_looseness(genre, 99, 2, 100);
                 let profile = role_profile(genre, voice);
-                let a = generate_drums(&ctx, &profile, 100, &mut rng_for(99, "det"), &HashSet::new());
-                let b = generate_drums(&ctx, &profile, 100, &mut rng_for(99, "det"), &HashSet::new());
-                let feel_a: Vec<_> = a.notes.iter().map(|n| (n.step, n.prob, n.fill, n.cond)).collect();
-                let feel_b: Vec<_> = b.notes.iter().map(|n| (n.step, n.prob, n.fill, n.cond)).collect();
+                let a = generate_drums(
+                    &ctx,
+                    &profile,
+                    100,
+                    &mut rng_for(99, "det"),
+                    &HashSet::new(),
+                );
+                let b = generate_drums(
+                    &ctx,
+                    &profile,
+                    100,
+                    &mut rng_for(99, "det"),
+                    &HashSet::new(),
+                );
+                let feel_a: Vec<_> = a
+                    .notes
+                    .iter()
+                    .map(|n| (n.step, n.prob, n.fill, n.cond))
+                    .collect();
+                let feel_b: Vec<_> = b
+                    .notes
+                    .iter()
+                    .map(|n| (n.step, n.prob, n.fill, n.cond))
+                    .collect();
                 assert_eq!(feel_a, feel_b, "{genre:?}/{voice:?}");
             }
         }
@@ -502,7 +683,8 @@ mod tests {
                     for seed in 0..40u32 {
                         let ctx = ctx_for(genre, seed, 4);
                         let mut rng = rng_for(seed, "drums");
-                        let part = generate_drums(&ctx, &profile, density, &mut rng, &HashSet::new());
+                        let part =
+                            generate_drums(&ctx, &profile, density, &mut rng, &HashSet::new());
                         let steps: HashSet<u32> = part.notes.iter().map(|n| n.step).collect();
                         for bar in 0..4u32 {
                             for &slot in &spine {
@@ -560,7 +742,13 @@ mod tests {
         let seeds = 300u32;
         for seed in 0..seeds {
             let ctx = ctx_for(GenreId::Rollers, seed, 4);
-            let part = generate_drums(&ctx, &profile, 60, &mut rng_for(seed, "drums"), &HashSet::new());
+            let part = generate_drums(
+                &ctx,
+                &profile,
+                60,
+                &mut rng_for(seed, "drums"),
+                &HashSet::new(),
+            );
             for n in &part.notes {
                 hist[(n.step % 16) as usize] += 1;
             }
@@ -568,9 +756,15 @@ mod tests {
         }
         let bars = f64::from(seeds) * 4.0;
 
-        assert_eq!(hist[0] as f64, bars, "the 1 is the pattern, not a preference");
+        assert_eq!(
+            hist[0] as f64, bars,
+            "the 1 is the pattern, not a preference"
+        );
         let per_bar = notes as f64 / bars;
-        assert!(per_bar <= 3.0, "{per_bar:.2} kicks a bar leaves the roll no room");
+        assert!(
+            per_bar <= 3.0,
+            "{per_bar:.2} kicks a bar leaves the roll no room"
+        );
         let and_of_3 = hist[10];
         assert!(
             and_of_3 > hist[9],
@@ -580,7 +774,10 @@ mod tests {
         );
         for (step, &count) in hist.iter().enumerate() {
             if step != 0 && step != 10 {
-                assert!(count <= and_of_3, "step {step} ({count}) outplays the 'and of 3' ({and_of_3})");
+                assert!(
+                    count <= and_of_3,
+                    "step {step} ({count}) outplays the 'and of 3' ({and_of_3})"
+                );
             }
         }
     }

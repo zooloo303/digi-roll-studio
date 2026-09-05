@@ -12,27 +12,27 @@
 // the process is the difference between a debuggable crash and a silent one.
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+use digi_core::device::PortRef;
+use digi_core::history::{Content, History};
 use digi_roll_studio::engine::EngineLink;
+use digi_roll_studio::ui::autoconnect::AutoConnect;
+use digi_roll_studio::ui::console::Console;
 use digi_roll_studio::ui::edit::EditPanel;
-use digi_roll_studio::ui::presets::PresetsPanel;
-use digi_roll_studio::ui::song::SongPanel;
 use digi_roll_studio::ui::generate::GeneratePanel;
 use digi_roll_studio::ui::harmony::HarmonyPanel;
 use digi_roll_studio::ui::pianoroll::PianoRoll;
 use digi_roll_studio::ui::ports::PortsPanel;
-use digi_roll_studio::ui::console::Console;
+use digi_roll_studio::ui::presets::PresetsPanel;
 use digi_roll_studio::ui::rail::{self, Sidebars};
-use digi_roll_studio::ui::autoconnect::AutoConnect;
 use digi_roll_studio::ui::restore::RestorePanel;
 use digi_roll_studio::ui::session::SessionPanel;
 use digi_roll_studio::ui::setup::SetupPanel;
+use digi_roll_studio::ui::song::SongPanel;
 use digi_roll_studio::ui::sync::SyncPanel;
 use digi_roll_studio::ui::tracks::Selection;
 use digi_roll_studio::ui::transfer::TransferPanel;
 use digi_roll_studio::ui::write::WritePanel;
 use digi_roll_studio::ui::{edit, setup, tools, transport, workspace};
-use digi_core::device::PortRef;
-use digi_core::history::{Content, History};
 use eframe::egui;
 
 #[derive(Default)]
@@ -99,7 +99,6 @@ struct App {
     history: History,
 }
 
-
 impl eframe::App for App {
     // egui 0.36 replaced `App::update(&Context)` with `App::ui(&mut Ui)`, and
     // folded `SidePanel` into `Panel`. Panels now nest inside a Ui rather than
@@ -159,7 +158,8 @@ impl eframe::App for App {
         // closed, and a question nobody can be shown is a window that will not
         // shut.
         if ui.ctx().input(|i| i.viewport().close_requested()) && !self.session_file.allow_close() {
-            ui.ctx().send_viewport_cmd(egui::ViewportCommand::CancelClose);
+            ui.ctx()
+                .send_viewport_cmd(egui::ViewportCommand::CancelClose);
         }
         if self.session_file.guard_ui(ui, &self.session) {
             ui.ctx().send_viewport_cmd(egui::ViewportCommand::Close);
@@ -205,12 +205,11 @@ impl eframe::App for App {
         // as its own flag rather than folded in, because it is the one change in
         // this app that no person made, and `session_file` below is the one
         // place that difference matters.
-        let talking = self.transfer.busy()
-            || self.write.busy()
-            || self.restore.busy()
-            || self.sync.busy();
+        let talking =
+            self.transfer.busy() || self.write.busy() || self.restore.busy() || self.sync.busy();
         let reconnected =
-            self.autoconnect.tick(&mut self.session, &mut self.ports, talking, ui.ctx());
+            self.autoconnect
+                .tick(&mut self.session, &mut self.ports, talking, ui.ctx());
 
         // The ports as of the last enumeration, for rebinding a session off
         // disk. The cached list rather than a fresh one: it is what every other
@@ -223,13 +222,19 @@ impl eframe::App for App {
             .ports
             .inputs()
             .iter()
-            .map(|p| PortRef { id: p.id.clone(), name: p.name.clone() })
+            .map(|p| PortRef {
+                id: p.id.clone(),
+                name: p.name.clone(),
+            })
             .collect();
         let available_out: Vec<PortRef> = self
             .ports
             .outputs()
             .iter()
-            .map(|p| PortRef { id: p.id.clone(), name: p.name.clone() })
+            .map(|p| PortRef {
+                id: p.id.clone(),
+                name: p.name.clone(),
+            })
             .collect();
 
         // **Both of these panels get an explicit frame, and it is a zero-margin
@@ -251,6 +256,10 @@ impl eframe::App for App {
                     &mut self.engine,
                     &mut self.session,
                     &mut self.bars.setup_open,
+                    // The song-import dialog lives on the SongPanel; the
+                    // transport's scene popup shares it (§5.1's two entry
+                    // points, one dialog).
+                    self.song.import_mut(),
                 );
             });
 
@@ -341,10 +350,9 @@ impl eframe::App for App {
 
         let mut setup_open = self.bars.setup_open;
         // Pinned for the same reason the tool panel is, above — §2c's 320px.
-        let panel = egui::Panel::right("setup").exact_size(320.0).show_collapsible(
-            ui,
-            &mut setup_open,
-            |ui| {
+        let panel = egui::Panel::right("setup")
+            .exact_size(320.0)
+            .show_collapsible(ui, &mut setup_open, |ui| {
                 setup::ui(
                     ui,
                     &mut self.session,
@@ -359,8 +367,7 @@ impl eframe::App for App {
                     self.presets.busy(),
                     self.selection,
                 )
-            },
-        );
+            });
         if let Some(response) = panel {
             let (changed, close) = response.inner;
             edited |= changed;
@@ -404,14 +411,12 @@ impl eframe::App for App {
         if let Some(line) = self.session_file.look_for_recovery() {
             digi_roll_studio::ui::console::post(ui.ctx(), line);
         }
-        reloaded |= self.session_file.recovery_ui(
-            ui,
-            &mut self.session,
-            &available_in,
-            &available_out,
-        );
+        reloaded |=
+            self.session_file
+                .recovery_ui(ui, &mut self.session, &available_in, &available_out);
 
-        self.session_file.mark_edited(edited || stepped || tool_outcome.settings);
+        self.session_file
+            .mark_edited(edited || stepped || tool_outcome.settings);
         // **Auto-connect is dirty work, but it is not work to recover.** It
         // marks the session unsaved exactly as it did before — the desk really
         // has changed — but it must not start the crash copy's clock, or a
@@ -474,7 +479,8 @@ impl eframe::App for App {
         // request the next frame — which, with your hands off the keyboard, could
         // be minutes. Same argument as `console::post`'s repaint.
         if self.session_file.autosave_pending() {
-            ui.ctx().request_repaint_after(digi_roll_studio::ui::recovery::QUIET);
+            ui.ctx()
+                .request_repaint_after(digi_roll_studio::ui::recovery::QUIET);
         }
     }
 }
@@ -585,9 +591,8 @@ mod tests {
         const ICO: &[u8] = include_bytes!("../../../icons/windows/icon.ico");
 
         let u16_at = |o: usize| u16::from_le_bytes([ICO[o], ICO[o + 1]]);
-        let u32_at = |o: usize| {
-            u32::from_le_bytes([ICO[o], ICO[o + 1], ICO[o + 2], ICO[o + 3]]) as usize
-        };
+        let u32_at =
+            |o: usize| u32::from_le_bytes([ICO[o], ICO[o + 1], ICO[o + 2], ICO[o + 3]]) as usize;
 
         assert_eq!(u16_at(0), 0, "reserved");
         assert_eq!(u16_at(2), 1, "type 1 is an icon; 2 would be a cursor");
@@ -600,7 +605,11 @@ mod tests {
             // A byte cannot hold 256, so the format spells it 0. Every real
             // packer relies on this and every hand-rolled parser forgets it.
             let width = if ICO[e] == 0 { 256 } else { ICO[e] as usize };
-            let height = if ICO[e + 1] == 0 { 256 } else { ICO[e + 1] as usize };
+            let height = if ICO[e + 1] == 0 {
+                256
+            } else {
+                ICO[e + 1] as usize
+            };
             assert_eq!(width, height, "entry {i} is not square");
             assert_eq!(ICO[e + 2], 0, "entry {i} claims a colour palette");
             assert_eq!(u16_at(e + 6), 32, "entry {i} is not 32-bit");
@@ -626,15 +635,15 @@ mod tests {
                 // beneath them, even at 32-bit where the alpha channel has
                 // already made the mask redundant.
                 let dib = |o: usize| {
-                    u32::from_le_bytes([
-                        payload[o],
-                        payload[o + 1],
-                        payload[o + 2],
-                        payload[o + 3],
-                    ]) as usize
+                    u32::from_le_bytes([payload[o], payload[o + 1], payload[o + 2], payload[o + 3]])
+                        as usize
                 };
                 assert_eq!(dib(0), 40, "entry {i} is not a BITMAPINFOHEADER");
-                assert_eq!(dib(4), width, "entry {i} DIB width disagrees with the index");
+                assert_eq!(
+                    dib(4),
+                    width,
+                    "entry {i} DIB width disagrees with the index"
+                );
                 assert_eq!(
                     dib(8),
                     height * 2,

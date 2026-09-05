@@ -59,13 +59,21 @@ impl digi_roll_studio::ui::session::Chooser for ScriptedChooser {
         let mut s = self.0.borrow_mut();
         s.calls.push("export-midi");
         s.suggested = Some(suggested.to_string());
-        if s.export_answers.is_empty() { None } else { s.export_answers.remove(0) }
+        if s.export_answers.is_empty() {
+            None
+        } else {
+            s.export_answers.remove(0)
+        }
     }
 
     fn open_midi(&mut self) -> Option<PathBuf> {
         let mut s = self.0.borrow_mut();
         s.calls.push("open-midi");
-        if s.open_answers.is_empty() { None } else { s.open_answers.remove(0) }
+        if s.open_answers.is_empty() {
+            None
+        } else {
+            s.open_answers.remove(0)
+        }
     }
 }
 
@@ -76,14 +84,16 @@ fn panel() -> (EditPanel, Rc<RefCell<Script>>) {
 }
 
 fn tmp_dir(tag: &str) -> PathBuf {
-    let dir =
-        std::env::temp_dir().join(format!("digi-roll-edit-{tag}-{}", std::process::id()));
+    let dir = std::env::temp_dir().join(format!("digi-roll-edit-{tag}-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).expect("a temp dir");
     dir
 }
 
-const FIRST: Selection = Selection { device: 0, track: 0 };
+const FIRST: Selection = Selection {
+    device: 0,
+    track: 0,
+};
 
 /// The default session, with three notes on the track the panel will be aimed at
 /// and a swing that is not the default — so a test can see a value being read
@@ -123,7 +133,10 @@ fn an_export_writes_a_file_the_import_can_read_back() {
     let bytes = std::fs::read(&path).expect("the file the panel wrote");
     let back = midi_file_to_notes(&bytes, 128).expect("and it is a MIDI file");
     assert_eq!(back.notes.len(), 3);
-    assert!(matches!(panel.status(), Some(Status::Exported { notes: 3, .. })));
+    assert!(matches!(
+        panel.status(),
+        Some(Status::Exported { notes: 3, .. })
+    ));
 }
 
 #[test]
@@ -175,7 +188,9 @@ fn an_export_to_a_path_that_cannot_be_written_says_which() {
     let path = tmp_dir("unwritable").join("no-such-dir").join("out.mid");
     script.borrow_mut().export_answers.push(Some(path));
     assert!(!panel.export_midi(&session, FIRST));
-    let Some(Status::Failed(why)) = panel.status() else { panic!("expected a refusal") };
+    let Some(Status::Failed(why)) = panel.status() else {
+        panic!("expected a refusal")
+    };
     assert!(why.contains("could not write"), "{why}");
 }
 
@@ -191,9 +206,18 @@ fn an_import_replaces_the_tracks_notes_and_its_length() {
     let source = {
         let mut s = two_box_session();
         let device = s.devices[0].id;
-        let t = s.device_mut(device).unwrap().pattern_mut(0).unwrap().track_mut(0).unwrap();
+        let t = s
+            .device_mut(device)
+            .unwrap()
+            .pattern_mut(0)
+            .unwrap()
+            .track_mut(0)
+            .unwrap();
         t.length_steps = 32;
-        t.notes = vec![Note::new(0.0, 48, 1.0, 90, 0.0), Note::new(20.0, 55, 4.0, 70, 0.0)];
+        t.notes = vec![
+            Note::new(0.0, 48, 1.0, 90, 0.0),
+            Note::new(20.0, 55, 4.0, 70, 0.0),
+        ];
         track_to_midi_file(t, "src", 50, 120.0)
     };
     let path = tmp_dir("import").join("in.mid");
@@ -201,9 +225,22 @@ fn an_import_replaces_the_tracks_notes_and_its_length() {
 
     assert!(panel.import_midi_from(&path, &mut session, FIRST, &mut roll));
     let t = track(&session, FIRST).unwrap();
-    assert_eq!(t.notes.iter().map(|n| n.pitch).collect::<Vec<_>>(), [48, 55]);
-    assert_eq!(t.length_steps, 32, "the file needed two bars, so the track is two bars");
-    assert!(matches!(panel.status(), Some(Status::Imported { notes: 2, dropped: 0, .. })));
+    assert_eq!(
+        t.notes.iter().map(|n| n.pitch).collect::<Vec<_>>(),
+        [48, 55]
+    );
+    assert_eq!(
+        t.length_steps, 32,
+        "the file needed two bars, so the track is two bars"
+    );
+    assert!(matches!(
+        panel.status(),
+        Some(Status::Imported {
+            notes: 2,
+            dropped: 0,
+            ..
+        })
+    ));
 }
 
 #[test]
@@ -240,9 +277,18 @@ fn an_import_takes_the_p_lock_lanes_and_the_provenance_with_the_notes() {
     std::fs::write(&path, source).unwrap();
     panel.import_midi_from(&path, &mut session, FIRST, &mut roll);
 
-    assert!(track(&session, FIRST).unwrap().plocks.is_empty(), "the lanes went");
     assert!(
-        session.device(device).unwrap().pattern(0).unwrap().source.is_none(),
+        track(&session, FIRST).unwrap().plocks.is_empty(),
+        "the lanes went"
+    );
+    assert!(
+        session
+            .device(device)
+            .unwrap()
+            .pattern(0)
+            .unwrap()
+            .source
+            .is_none(),
         "and so did the claim to be a copy of a slot"
     );
 }
@@ -261,9 +307,18 @@ fn an_import_forgets_the_selection_because_those_ids_name_nothing_now() {
     let path = tmp_dir("import-selection").join("in.mid");
     std::fs::write(&path, source).unwrap();
 
-    let held: Vec<u32> = track(&session, FIRST).unwrap().notes.iter().map(|n| n.id).collect();
+    let held: Vec<u32> = track(&session, FIRST)
+        .unwrap()
+        .notes
+        .iter()
+        .map(|n| n.id)
+        .collect();
     roll.select(held.clone());
-    assert_eq!(roll.selection(), held, "the fixture really is holding a selection");
+    assert_eq!(
+        roll.selection(),
+        held,
+        "the fixture really is holding a selection"
+    );
 
     panel.import_midi_from(&path, &mut session, FIRST, &mut roll);
     assert!(
@@ -286,7 +341,9 @@ fn a_file_that_is_not_a_midi_file_leaves_the_track_exactly_as_it_was() {
 
     assert!(!panel.import_midi_from(&path, &mut session, FIRST, &mut roll));
     assert_eq!(track(&session, FIRST).unwrap(), &before);
-    let Some(Status::Failed(why)) = panel.status() else { panic!("expected a refusal") };
+    let Some(Status::Failed(why)) = panel.status() else {
+        panic!("expected a refusal")
+    };
     assert!(why.contains("not a MIDI file"), "{why}");
 }
 
@@ -299,7 +356,9 @@ fn a_missing_file_says_so_rather_than_emptying_the_track() {
 
     assert!(!panel.import_midi_from(&path, &mut session, FIRST, &mut roll));
     assert_eq!(track(&session, FIRST).unwrap().notes.len(), 3);
-    let Some(Status::Failed(why)) = panel.status() else { panic!("expected a refusal") };
+    let Some(Status::Failed(why)) = panel.status() else {
+        panic!("expected a refusal")
+    };
     assert!(why.contains("could not read"), "{why}");
 }
 
@@ -324,46 +383,82 @@ fn a_midi_file_with_no_notes_is_refused_rather_than_emptying_the_track() {
 
     assert!(!panel.import_midi_from(&path, &mut session, FIRST, &mut roll));
     assert_eq!(track(&session, FIRST).unwrap().notes.len(), 3);
-    let Some(Status::Failed(why)) = panel.status() else { panic!("expected a refusal") };
+    let Some(Status::Failed(why)) = panel.status() else {
+        panic!("expected a refusal")
+    };
     assert!(why.contains("no notes found"), "{why}");
 }
 
 #[test]
-fn a_file_whose_notes_all_land_past_the_limit_says_so_rather_than_no_notes_found() {
-    // The fault a hardware session found, in miniature. A ten-track Star Wars
-    // arrangement reported `no notes found` for a file holding ~690 notes: the
-    // first note-bearing track was a bass that does not enter until step 139, a
-    // box holds 128, so every one of its notes was dropped as out of range and
-    // the message named the wrong cause entirely.
+fn a_file_whose_notes_all_land_past_the_limit_now_asks_where_to_start() {
+    // The fault a hardware session found, in miniature — and the one Phase B
+    // of MIDI_IMPORT_DESIGN.md exists to answer. A ten-track Star Wars
+    // arrangement reported `no notes found` for a file holding ~690 notes:
+    // the first note-bearing track was a bass that does not enter until step
+    // 139, a box holds 128, so every one of its notes was dropped as out of
+    // range and the message named the wrong cause entirely.
     //
-    // This is the sibling of the test above, and the pair is the point: that one
-    // has `dropped == 0` and this one has `dropped > 0`, so a single message for
-    // both cases cannot pass them both. Restoring the old one-line version fails
-    // exactly here.
+    // That file used to be refused. Since 2026-09-05 the same file instead
+    // opens the import chooser — it has music the track cannot take from bar
+    // 1, which is exactly the question the chooser asks — and this test now
+    // pins the state that proves it: no notes moved, the chooser is holding
+    // both notes, and its window starts on the bar the bass actually enters
+    // (bar 8, tick 3072) so the default answer is the right one.
     let (mut panel, _) = panel();
     let mut session = seeded();
     let mut roll = PianoRoll::default();
     let source = {
         let mut s = two_box_session();
         let device = s.devices[0].id;
-        let t = s.device_mut(device).unwrap().pattern_mut(0).unwrap().track_mut(0).unwrap();
+        let t = s
+            .device_mut(device)
+            .unwrap()
+            .pattern_mut(0)
+            .unwrap()
+            .track_mut(0)
+            .unwrap();
         // Past MAX_STEPS (128), the way the real file's first track was. The
         // exporter writes what the note vec holds rather than what the track
         // length allows, so this reaches the file and comes back dropped.
-        t.notes = vec![Note::new(139.0, 43, 1.0, 90, 0.0), Note::new(150.0, 45, 1.0, 90, 0.0)];
+        t.notes = vec![
+            Note::new(139.0, 43, 1.0, 90, 0.0),
+            Note::new(150.0, 45, 1.0, 90, 0.0),
+        ];
         track_to_midi_file(t, "far-out", 50, 120.0)
     };
     let path = tmp_dir("import-all-dropped").join("in.mid");
     std::fs::write(&path, source).unwrap();
 
-    assert!(!panel.import_midi_from(&path, &mut session, FIRST, &mut roll));
-    assert_eq!(track(&session, FIRST).unwrap().notes.len(), 3, "the track is untouched");
-    let Some(Status::Failed(why)) = panel.status() else { panic!("expected a refusal") };
-    assert!(why.contains('2'), "it names how many notes were actually found: {why}");
-    assert!(why.contains("past 8 bars"), "and why they did not make it: {why}");
     assert!(
-        !why.contains("no notes found"),
-        "the message that sent someone looking for an empty file: {why}"
+        !panel.import_midi_from(&path, &mut session, FIRST, &mut roll),
+        "no import lands without an answer"
+    );
+    assert_eq!(
+        track(&session, FIRST).unwrap().notes.len(),
+        3,
+        "the track is untouched"
+    );
+    let Some(choice) = panel.midi_choice() else {
+        panic!("the chooser is asking")
+    };
+    assert_eq!(
+        choice.score.parts.len(),
+        1,
+        "one part, too far out — the chooser's other case"
+    );
+    assert_eq!(
+        choice.score.parts[0].notes.len(),
+        2,
+        "both notes are on offer"
+    );
+    assert_eq!(
+        choice.start_bar, 8,
+        "it opens where the music is, not at bar 1"
+    );
+    assert_eq!(choice.bar_count, 2, "and covers the part's own bars");
+    assert!(
+        panel.status().is_none(),
+        "no failure is claimed while a question is open"
     );
 }
 
@@ -388,7 +483,13 @@ fn a_round_trip_through_a_file_keeps_the_notes_and_loses_the_conditions() {
     let mut roll = PianoRoll::default();
     {
         let device = session.devices[0].id;
-        let t = session.device_mut(device).unwrap().pattern_mut(0).unwrap().track_mut(0).unwrap();
+        let t = session
+            .device_mut(device)
+            .unwrap()
+            .pattern_mut(0)
+            .unwrap()
+            .track_mut(0)
+            .unwrap();
         t.notes[0].cond = Some(String::from("2:4"));
         t.notes[0].prob = Some(50);
     }
@@ -398,7 +499,10 @@ fn a_round_trip_through_a_file_keeps_the_notes_and_loses_the_conditions() {
 
     assert!(panel.import_midi_from(&path, &mut session, FIRST, &mut roll));
     let t = track(&session, FIRST).unwrap();
-    assert_eq!(t.notes.iter().map(|n| n.pitch).collect::<Vec<_>>(), [60, 63, 67]);
+    assert_eq!(
+        t.notes.iter().map(|n| n.pitch).collect::<Vec<_>>(),
+        [60, 63, 67]
+    );
     assert!(t.notes.iter().all(|n| n.cond.is_none() && n.prob.is_none()));
 }
 
@@ -446,7 +550,12 @@ fn a_duplicate_bar_is_one_step_and_undoes_whole() {
 fn a_transpose_is_one_step_and_undoes_whole() {
     let mut session = seeded();
     let mut history = History::default();
-    let before: Vec<u8> = track(&session, FIRST).unwrap().notes.iter().map(|n| n.pitch).collect();
+    let before: Vec<u8> = track(&session, FIRST)
+        .unwrap()
+        .notes
+        .iter()
+        .map(|n| n.pitch)
+        .collect();
 
     frame(&mut history, &mut session, false, |s| {
         matches!(
@@ -454,11 +563,21 @@ fn a_transpose_is_one_step_and_undoes_whole() {
             Transposed::Moved { .. }
         )
     });
-    let moved: Vec<u8> = track(&session, FIRST).unwrap().notes.iter().map(|n| n.pitch).collect();
+    let moved: Vec<u8> = track(&session, FIRST)
+        .unwrap()
+        .notes
+        .iter()
+        .map(|n| n.pitch)
+        .collect();
     assert_eq!(moved, before.iter().map(|p| p + 12).collect::<Vec<_>>());
 
     assert!(history.undo(&mut session));
-    let back: Vec<u8> = track(&session, FIRST).unwrap().notes.iter().map(|n| n.pitch).collect();
+    let back: Vec<u8> = track(&session, FIRST)
+        .unwrap()
+        .notes
+        .iter()
+        .map(|n| n.pitch)
+        .collect();
     assert_eq!(back, before, "one press, one step, all the way back");
 }
 
@@ -498,13 +617,19 @@ fn a_clear_undoes_the_lanes_along_with_the_notes() {
             .unwrap(),
         );
     }
-    frame(&mut history, &mut session, false, |s| clear_track(track_mut(s, FIRST).unwrap()));
+    frame(&mut history, &mut session, false, |s| {
+        clear_track(track_mut(s, FIRST).unwrap())
+    });
     assert!(track(&session, FIRST).unwrap().notes.is_empty());
 
     history.undo(&mut session);
     let t = track(&session, FIRST).unwrap();
     assert_eq!(t.notes.len(), 3);
-    assert_eq!(t.plocks.len(), 1, "the automation came back with the trigs it rode on");
+    assert_eq!(
+        t.plocks.len(),
+        1,
+        "the automation came back with the trigs it rode on"
+    );
 }
 
 #[test]
@@ -526,10 +651,19 @@ fn a_slider_dragged_across_frames_is_one_step() {
     // The release frame: the pointer is up and nothing further changed.
     frame(&mut history, &mut session, false, |_| false);
 
-    assert_eq!(history.depth(), (1, 0), "twenty frames of dragging, one step");
+    assert_eq!(
+        history.depth(),
+        (1, 0),
+        "twenty frames of dragging, one step"
+    );
     history.undo(&mut session);
     assert_eq!(
-        session.device(session.devices[0].id).unwrap().pattern(0).unwrap().swing,
+        session
+            .device(session.devices[0].id)
+            .unwrap()
+            .pattern(0)
+            .unwrap()
+            .swing,
         66,
         "back to where the drag started, not to its second-last frame"
     );
@@ -553,7 +687,11 @@ fn an_undo_does_not_itself_become_a_step() {
     assert!(history.undo(&mut session));
     history.commit(&session);
 
-    assert_eq!(history.depth(), (0, 1), "one step forward to redo into, none behind");
+    assert_eq!(
+        history.depth(),
+        (0, 1),
+        "one step forward to redo into, none behind"
+    );
     assert_eq!(track(&session, FIRST).unwrap().notes.len(), 3);
 
     // And redo goes back the other way rather than getting stuck.
@@ -584,7 +722,11 @@ fn an_undo_mid_gesture_abandons_the_open_step_rather_than_committing_it() {
     history.abandon();
     history.undo(&mut session);
     assert!(!history.is_open());
-    assert_eq!(track(&session, FIRST).unwrap().notes.len(), 3, "the clear undid");
+    assert_eq!(
+        track(&session, FIRST).unwrap().notes.len(),
+        3,
+        "the clear undid"
+    );
 }
 
 #[test]
@@ -598,7 +740,13 @@ fn an_import_is_an_ordinary_step_and_undoes() {
     let source = {
         let mut s = two_box_session();
         let device = s.devices[0].id;
-        let t = s.device_mut(device).unwrap().pattern_mut(0).unwrap().track_mut(0).unwrap();
+        let t = s
+            .device_mut(device)
+            .unwrap()
+            .pattern_mut(0)
+            .unwrap()
+            .track_mut(0)
+            .unwrap();
         t.notes = vec![Note::new(0.0, 48, 1.0, 90, 0.0)];
         track_to_midi_file(t, "src", 50, 120.0)
     };
@@ -612,7 +760,10 @@ fn an_import_is_an_ordinary_step_and_undoes() {
 
     history.undo(&mut session);
     let t = track(&session, FIRST).unwrap();
-    assert_eq!(t.notes.iter().map(|n| n.pitch).collect::<Vec<_>>(), [60, 63, 67]);
+    assert_eq!(
+        t.notes.iter().map(|n| n.pitch).collect::<Vec<_>>(),
+        [60, 63, 67]
+    );
 }
 
 #[test]
@@ -677,13 +828,28 @@ fn the_panel_draws_every_group_without_panicking() {
 
     // Nothing selected, no lanes, no history — the state the app opens on.
     for _ in 0..2 {
-        let out = draw(&ctx, &mut panel, &mut session, &mut roll, &mut history, vec![]);
-        assert!(!out.close && !out.edited && !out.stepped, "drawing is not editing");
+        let out = draw(
+            &ctx,
+            &mut panel,
+            &mut session,
+            &mut roll,
+            &mut history,
+            vec![],
+        );
+        assert!(
+            !out.close && !out.edited && !out.stepped,
+            "drawing is not editing"
+        );
     }
 
     // With a selection, a lane, a full-length track and a step on the stack — the
     // other end of every branch in the body.
-    let held: Vec<u32> = track(&session, FIRST).unwrap().notes.iter().map(|n| n.id).collect();
+    let held: Vec<u32> = track(&session, FIRST)
+        .unwrap()
+        .notes
+        .iter()
+        .map(|n| n.id)
+        .collect();
     roll.select(held);
     {
         let t = track_mut(&mut session, FIRST).unwrap();
@@ -707,7 +873,14 @@ fn the_panel_draws_every_group_without_panicking() {
     history.begin(Content::of(&session));
     history.commit(&session);
     for _ in 0..2 {
-        draw(&ctx, &mut panel, &mut session, &mut roll, &mut history, vec![]);
+        draw(
+            &ctx,
+            &mut panel,
+            &mut session,
+            &mut roll,
+            &mut history,
+            vec![],
+        );
     }
 }
 
@@ -721,17 +894,33 @@ fn the_panel_draws_a_transpose_row_with_no_room_in_either_direction() {
     let mut session = seeded();
     let mut roll = PianoRoll::default();
     let mut history = History::default();
-    track_mut(&mut session, FIRST).unwrap().notes =
-        vec![Note::new(0.0, 0, 1.0, 100, 0.0), Note::new(4.0, 127, 1.0, 100, 0.0)];
+    track_mut(&mut session, FIRST).unwrap().notes = vec![
+        Note::new(0.0, 0, 1.0, 100, 0.0),
+        Note::new(4.0, 127, 1.0, 100, 0.0),
+    ];
     for _ in 0..2 {
-        draw(&ctx, &mut panel, &mut session, &mut roll, &mut history, vec![]);
+        draw(
+            &ctx,
+            &mut panel,
+            &mut session,
+            &mut roll,
+            &mut history,
+            vec![],
+        );
     }
 
     // And the empty-track arm, which is a third branch again: nothing to move
     // rather than nowhere to move it.
     track_mut(&mut session, FIRST).unwrap().notes.clear();
     for _ in 0..2 {
-        draw(&ctx, &mut panel, &mut session, &mut roll, &mut history, vec![]);
+        draw(
+            &ctx,
+            &mut panel,
+            &mut session,
+            &mut roll,
+            &mut history,
+            vec![],
+        );
     }
 }
 
@@ -746,7 +935,14 @@ fn the_panel_draws_over_a_selection_that_names_nothing() {
     let mut history = History::default();
     roll.select([999_999, 1_000_000]);
     for _ in 0..2 {
-        draw(&ctx, &mut panel, &mut session, &mut roll, &mut history, vec![]);
+        draw(
+            &ctx,
+            &mut panel,
+            &mut session,
+            &mut roll,
+            &mut history,
+            vec![],
+        );
     }
 }
 
@@ -761,7 +957,14 @@ fn the_panel_draws_when_the_selection_points_at_no_track_at_all() {
     let mut history = History::default();
     session.devices.clear();
     for _ in 0..2 {
-        let out = draw(&ctx, &mut panel, &mut session, &mut roll, &mut history, vec![]);
+        let out = draw(
+            &ctx,
+            &mut panel,
+            &mut session,
+            &mut roll,
+            &mut history,
+            vec![],
+        );
         assert!(!out.edited && !out.stepped);
     }
 }

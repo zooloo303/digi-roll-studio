@@ -19,6 +19,7 @@ pub mod export;
 pub mod history;
 pub mod import;
 pub mod lengths;
+pub mod midi_import;
 pub mod midifile;
 pub mod model;
 pub mod project;
@@ -32,6 +33,11 @@ pub use export::{track_write, ExportError, TrackExport};
 pub use history::{Content, History};
 pub use import::{pattern_from_kit, Fetched, ImportError, ImportReport};
 pub use lengths::{snap_len_fine, LEN_MIN};
+pub use midi_import::{
+    apply_import, default_pattern_bars, fit, gm_drum_name, AppliedImport, ImportPlan,
+    ImportReport as MidiImportReport, Mapping, Options as MidiImportOptions, Overflow, PartMapping,
+    PlanError, PlannedScene, DRUM_TRIGGER_PITCH,
+};
 pub use midifile::{midi_file_to_notes, track_to_midi_file, Imported, MidiFileError};
 pub use model::{ModelError, Note, PLockLane, Pattern, Source, Track, TrackKind, TrackScale};
 pub use project::{Project, ProjectError, FORMAT_VERSION};

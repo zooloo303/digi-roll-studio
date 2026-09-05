@@ -19,7 +19,9 @@
 use digi_core::device::{model_for_key, PatternRoute, PresetLoad};
 use digi_core::import::{patch_read_source, patch_read_source_named, Fetched, PatchReadError};
 use digi_core::model::{PatchSound, Source, TrackPatch};
-use digi_core::{two_box_session, DeviceId, ImportError, Note, PatternRef, Project, Session, TrackKind};
+use digi_core::{
+    two_box_session, DeviceId, ImportError, Note, PatternRef, Project, Session, TrackKind,
+};
 use digi_protocol::pattern::{
     decode_pattern_kit, dn2_spec, dt2_spec, KitInfo, PatternKit, Spec, TrackData,
 };
@@ -38,8 +40,8 @@ fn payload(name: &str) -> Vec<u8> {
     let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("../protocol/tests/fixtures")
         .join(name);
-    let bytes = std::fs::read(&path)
-        .unwrap_or_else(|e| panic!("reading fixture {}: {e}", path.display()));
+    let bytes =
+        std::fs::read(&path).unwrap_or_else(|e| panic!("reading fixture {}: {e}", path.display()));
     let mut payloads = split_sysex_stream(&bytes)
         .into_iter()
         .filter(|m| m.kind == SysExKind::Dump)
@@ -47,8 +49,13 @@ fn payload(name: &str) -> Vec<u8> {
         .inspect(|d| assert!(d.checksum_ok && d.count_ok, "{name}: a dump did not verify"))
         .filter(|d| d.dump_type == DUMP_PATTERN_KIT)
         .map(|d| d.payload);
-    let first = payloads.next().unwrap_or_else(|| panic!("{name}: no pattern-kit dump"));
-    assert!(payloads.next().is_none(), "{name}: expected exactly one pattern-kit dump");
+    let first = payloads
+        .next()
+        .unwrap_or_else(|| panic!("{name}: no pattern-kit dump"));
+    assert!(
+        payloads.next().is_none(),
+        "{name}: expected exactly one pattern-kit dump"
+    );
     first
 }
 
@@ -61,7 +68,11 @@ fn ready(model_key: &str, fixture: &str) -> (Session, DeviceId, Spec, Vec<u8>) {
         .find(|d| d.model.key == model_key)
         .expect("two_box_session has both boxes")
         .id;
-    let spec = if model_key == "DT2" { dt2_spec() } else { dn2_spec() };
+    let spec = if model_key == "DT2" {
+        dt2_spec()
+    } else {
+        dn2_spec()
+    };
     (session, device, spec, payload(fixture))
 }
 
@@ -69,7 +80,15 @@ fn ready(model_key: &str, fixture: &str) -> (Session, DeviceId, Spec, Vec<u8>) {
 /// answerable for. Ids are per process and micro is zero throughout these
 /// captures, so neither is compared.
 fn shape(n: &Note) -> (f64, u8, u8, f64, Option<u8>, Option<bool>, Option<&str>) {
-    (n.step, n.pitch, n.velocity, n.len, n.prob, n.fill, n.cond.as_deref())
+    (
+        n.step,
+        n.pitch,
+        n.velocity,
+        n.len,
+        n.prob,
+        n.fill,
+        n.cond.as_deref(),
+    )
 }
 
 // --- the DT2 fixture ---------------------------------------------------------
@@ -82,7 +101,12 @@ fn a_fetched_pattern_lands_in_a_slot_with_its_trig_locks_intact() {
         .import_pattern(
             device,
             PatternRef::new(0, 0),
-            &Fetched { spec: &spec, kit: &kit, payload: &payload, from: PatternRef::new(0, 0) },
+            &Fetched {
+                spec: &spec,
+                kit: &kit,
+                payload: &payload,
+                from: PatternRef::new(0, 0),
+            },
         )
         .expect("a DT2 pattern into a DT2 slot");
 
@@ -126,7 +150,12 @@ fn the_fifteen_tracks_that_were_never_touched_come_in_empty() {
         .import_pattern(
             device,
             PatternRef::new(0, 0),
-            &Fetched { spec: &spec, kit: &kit, payload: &payload, from: PatternRef::new(0, 0) },
+            &Fetched {
+                spec: &spec,
+                kit: &kit,
+                payload: &payload,
+                from: PatternRef::new(0, 0),
+            },
         )
         .unwrap();
 
@@ -150,7 +179,12 @@ fn the_imported_pattern_is_still_the_shape_its_model_demands() {
         .import_pattern(
             device,
             PatternRef::new(0, 0),
-            &Fetched { spec: &spec, kit: &kit, payload: &payload, from: PatternRef::new(0, 0) },
+            &Fetched {
+                spec: &spec,
+                kit: &kit,
+                payload: &payload,
+                from: PatternRef::new(0, 0),
+            },
         )
         .unwrap();
     // The invariant `Device::validate` and `Project::load` both check: a slot
@@ -166,7 +200,12 @@ fn tracks_are_named_after_the_kits_sounds() {
         .import_pattern(
             device,
             PatternRef::new(0, 0),
-            &Fetched { spec: &spec, kit: &kit, payload: &payload, from: PatternRef::new(0, 0) },
+            &Fetched {
+                spec: &spec,
+                kit: &kit,
+                payload: &payload,
+                from: PatternRef::new(0, 0),
+            },
         )
         .unwrap();
     let pattern = session.device(device).unwrap().pattern(0).unwrap();
@@ -189,18 +228,31 @@ fn a_named_track_carries_a_patch_record_naming_the_sound_and_the_kit_it_came_fro
         .import_pattern(
             device,
             PatternRef::new(0, 0),
-            &Fetched { spec: &spec, kit: &kit, payload: &payload, from: PatternRef::new(0, 0) },
+            &Fetched {
+                spec: &spec,
+                kit: &kit,
+                payload: &payload,
+                from: PatternRef::new(0, 0),
+            },
         )
         .unwrap();
     let pattern = session.device(device).unwrap().pattern(0).unwrap();
-    let patch = pattern.track(0).unwrap().patch.clone().expect("a named sound gets a patch record");
+    let patch = pattern
+        .track(0)
+        .unwrap()
+        .patch
+        .clone()
+        .expect("a named sound gets a patch record");
     // The record names the same sound `Track.name` was just set to — the
     // whole point is that a later rename cannot take this with it.
     assert_eq!(patch.sound, PatchSound::Named("PRESET 1".into()));
     assert_eq!(patch.kit_name, kit.kit.name);
     assert_eq!(patch.kit_index, kit.kit_index);
     assert_eq!(patch.from, pattern.source.clone().unwrap());
-    assert!(patch.seen_at >= before, "seen_at should be no earlier than the import call");
+    assert!(
+        patch.seen_at >= before,
+        "seen_at should be no earlier than the import call"
+    );
 }
 
 // --- reading patch names, stage 2 (packet E, 2026-08-20) --------------------
@@ -215,7 +267,11 @@ fn a_named_track_carries_a_patch_record_naming_the_sound_and_the_kit_it_came_fro
 /// be compared against after a refused `apply_patch_read` call — the only way
 /// to prove a refusal really did leave every record exactly as it was rather
 /// than merely returning `Err` while still mutating something.
-fn all_patches(session: &Session, device: DeviceId, slot: PatternRef) -> Vec<Option<digi_core::model::TrackPatch>> {
+fn all_patches(
+    session: &Session,
+    device: DeviceId,
+    slot: PatternRef,
+) -> Vec<Option<digi_core::model::TrackPatch>> {
     session
         .device(device)
         .unwrap()
@@ -235,11 +291,19 @@ fn a_track_count_mismatch_refuses_apply_patch_read_without_touching_any_existing
         .import_pattern(
             device,
             PatternRef::new(0, 0),
-            &Fetched { spec: &spec, kit: &kit, payload: &payload, from: PatternRef::new(0, 0) },
+            &Fetched {
+                spec: &spec,
+                kit: &kit,
+                payload: &payload,
+                from: PatternRef::new(0, 0),
+            },
         )
         .unwrap();
     let before = all_patches(&session, device, PatternRef::new(0, 0));
-    assert!(before.iter().all(Option::is_some), "the import above already gave every track a record");
+    assert!(
+        before.iter().all(Option::is_some),
+        "the import above already gave every track a record"
+    );
 
     // A kit with the wrong number of tracks is the one failure
     // `apply_patch_read` can hit entirely on its own, with no fetch involved —
@@ -248,14 +312,33 @@ fn a_track_count_mismatch_refuses_apply_patch_read_without_touching_any_existing
     // wipes all sixteen on a refusal instead of leaving them alone.
     let mut short_kit = kit.clone();
     short_kit.tracks.pop();
-    let source = Source { device_slug: "digitakt2".into(), bank: 0, index: 0 };
+    let source = Source {
+        device_slug: "digitakt2".into(),
+        bank: 0,
+        index: 0,
+    };
     let err = session
-        .apply_patch_read(device, PatternRef::new(0, 0), &short_kit, &source, 1_787_184_000)
+        .apply_patch_read(
+            device,
+            PatternRef::new(0, 0),
+            &short_kit,
+            &source,
+            1_787_184_000,
+        )
         .unwrap_err();
-    assert_eq!(err, PatchReadError::TrackCountMismatch { expected: 16, found: 15 });
+    assert_eq!(
+        err,
+        PatchReadError::TrackCountMismatch {
+            expected: 16,
+            found: 15
+        }
+    );
 
     let after = all_patches(&session, device, PatternRef::new(0, 0));
-    assert_eq!(before, after, "a refused read must not have touched a single existing patch record");
+    assert_eq!(
+        before, after,
+        "a refused read must not have touched a single existing patch record"
+    );
 }
 
 #[test]
@@ -270,7 +353,12 @@ fn apply_patch_read_touches_patch_and_nothing_else_on_the_track() {
         .import_pattern(
             device,
             PatternRef::new(0, 0),
-            &Fetched { spec: &spec, kit: &kit, payload: &payload, from: PatternRef::new(0, 0) },
+            &Fetched {
+                spec: &spec,
+                kit: &kit,
+                payload: &payload,
+                from: PatternRef::new(0, 0),
+            },
         )
         .unwrap();
     session
@@ -282,13 +370,31 @@ fn apply_patch_read_touches_patch_and_nothing_else_on_the_track() {
         .unwrap()
         .name = "My Kick".into();
 
-    let source = Source { device_slug: "digitakt2".into(), bank: 0, index: 0 };
-    let n = session.apply_patch_read(device, PatternRef::new(0, 0), &kit, &source, 1_787_184_000).unwrap();
+    let source = Source {
+        device_slug: "digitakt2".into(),
+        bank: 0,
+        index: 0,
+    };
+    let n = session
+        .apply_patch_read(device, PatternRef::new(0, 0), &kit, &source, 1_787_184_000)
+        .unwrap();
     assert_eq!(n, 16);
 
-    let track = session.device(device).unwrap().pattern(0).unwrap().track(0).unwrap();
-    assert_eq!(track.name, "My Kick", "a patch-names read must not rename a track");
-    assert_eq!(track.patch.as_ref().unwrap().sound, PatchSound::Named("PRESET 1".into()));
+    let track = session
+        .device(device)
+        .unwrap()
+        .pattern(0)
+        .unwrap()
+        .track(0)
+        .unwrap();
+    assert_eq!(
+        track.name, "My Kick",
+        "a patch-names read must not rename a track"
+    );
+    assert_eq!(
+        track.patch.as_ref().unwrap().sound,
+        PatchSound::Named("PRESET 1".into())
+    );
 }
 
 #[test]
@@ -301,7 +407,11 @@ fn patch_read_source_refuses_a_pattern_with_no_provenance_rather_than_guessing_a
     let session = two_box_session();
     let device = session.devices[0].id;
     let pattern = session.device(device).unwrap().pattern(0);
-    assert_eq!(pattern.and_then(|p| p.source.as_ref()), None, "a fresh session's slot has no source");
+    assert_eq!(
+        pattern.and_then(|p| p.source.as_ref()),
+        None,
+        "a fresh session's slot has no source"
+    );
     assert_eq!(
         patch_read_source(pattern, session.device(device).unwrap().model.slug),
         Err(PatchReadError::UnknownSlot)
@@ -316,19 +426,34 @@ fn patch_read_source_refuses_a_pattern_provenanced_to_a_different_box() {
         .import_pattern(
             device,
             PatternRef::new(0, 0),
-            &Fetched { spec: &spec, kit: &kit, payload: &payload, from: PatternRef::new(0, 0) },
+            &Fetched {
+                spec: &spec,
+                kit: &kit,
+                payload: &payload,
+                from: PatternRef::new(0, 0),
+            },
         )
         .unwrap();
     // Hand-edit the provenance to name a box this device is not — the
     // mis-cabled-desk case one level up from the wire, which this pure
     // function refuses before anyone opens a port.
-    session.device_mut(device).unwrap().pattern_mut(0).unwrap().source =
-        Some(Source { device_slug: "digitone2".into(), bank: 0, index: 0 });
+    session
+        .device_mut(device)
+        .unwrap()
+        .pattern_mut(0)
+        .unwrap()
+        .source = Some(Source {
+        device_slug: "digitone2".into(),
+        bank: 0,
+        index: 0,
+    });
     let pattern = session.device(device).unwrap().pattern(0);
     let slug = session.device(device).unwrap().model.slug;
     assert_eq!(
         patch_read_source(pattern, slug),
-        Err(PatchReadError::NotThisBox { pattern_slug: "digitone2".into() })
+        Err(PatchReadError::NotThisBox {
+            pattern_slug: "digitone2".into()
+        })
     );
 }
 
@@ -346,13 +471,28 @@ fn patch_read_source_resolves_the_slot_a_pattern_actually_came_from() {
         .import_pattern(
             device,
             PatternRef::new(0, 5),
-            &Fetched { spec: &spec, kit: &kit, payload: &payload, from: PatternRef::new(0, 0) },
+            &Fetched {
+                spec: &spec,
+                kit: &kit,
+                payload: &payload,
+                from: PatternRef::new(0, 0),
+            },
         )
         .unwrap();
-    let pattern = session.device(device).unwrap().pattern(PatternRef::new(0, 5).slot());
+    let pattern = session
+        .device(device)
+        .unwrap()
+        .pattern(PatternRef::new(0, 5).slot());
     let slug = session.device(device).unwrap().model.slug;
     let source = patch_read_source(pattern, slug).expect("this pattern has a source");
-    assert_eq!(source, Source { device_slug: "digitakt2".into(), bank: 0, index: 0 });
+    assert_eq!(
+        source,
+        Source {
+            device_slug: "digitakt2".into(),
+            bank: 0,
+            index: 0
+        }
+    );
 }
 
 #[test]
@@ -366,10 +506,18 @@ fn patch_read_source_named_reads_a_slot_a_pattern_made_here_never_came_from() {
     let session = two_box_session();
     let device = session.devices[0].id;
     let pattern = session.device(device).unwrap().pattern(0);
-    assert_eq!(pattern.and_then(|p| p.source.as_ref()), None, "nothing here was ever fetched");
+    assert_eq!(
+        pattern.and_then(|p| p.source.as_ref()),
+        None,
+        "nothing here was ever fetched"
+    );
     assert_eq!(
         patch_read_source_named(pattern, "digitakt2", PatternRef::new(1, 2)),
-        Ok(Source { device_slug: "digitakt2".into(), bank: 1, index: 2 })
+        Ok(Source {
+            device_slug: "digitakt2".into(),
+            bank: 1,
+            index: 2
+        })
     );
 }
 
@@ -381,17 +529,32 @@ fn patch_read_source_named_still_refuses_a_pattern_provenanced_to_a_different_bo
         .import_pattern(
             device,
             PatternRef::new(0, 0),
-            &Fetched { spec: &spec, kit: &kit, payload: &payload, from: PatternRef::new(0, 0) },
+            &Fetched {
+                spec: &spec,
+                kit: &kit,
+                payload: &payload,
+                from: PatternRef::new(0, 0),
+            },
         )
         .unwrap();
-    session.device_mut(device).unwrap().pattern_mut(0).unwrap().source =
-        Some(Source { device_slug: "digitone2".into(), bank: 0, index: 0 });
+    session
+        .device_mut(device)
+        .unwrap()
+        .pattern_mut(0)
+        .unwrap()
+        .source = Some(Source {
+        device_slug: "digitone2".into(),
+        bank: 0,
+        index: 0,
+    });
     let pattern = session.device(device).unwrap().pattern(0);
     // A slot number is the user's to name. Which box a pattern came off is
     // not, so naming a slot does not get past this one.
     assert_eq!(
         patch_read_source_named(pattern, "digitakt2", PatternRef::new(0, 3)),
-        Err(PatchReadError::NotThisBox { pattern_slug: "digitone2".into() })
+        Err(PatchReadError::NotThisBox {
+            pattern_slug: "digitone2".into()
+        })
     );
 }
 
@@ -405,11 +568,22 @@ fn the_other_box_imports_the_same_way() {
         .import_pattern(
             device,
             PatternRef::new(0, 0),
-            &Fetched { spec: &spec, kit: &kit, payload: &payload, from: PatternRef::new(0, 0) },
+            &Fetched {
+                spec: &spec,
+                kit: &kit,
+                payload: &payload,
+                from: PatternRef::new(0, 0),
+            },
         )
         .expect("a DN2 pattern into a DN2 slot");
 
-    let track = session.device(device).unwrap().pattern(0).unwrap().track(0).unwrap();
+    let track = session
+        .device(device)
+        .unwrap()
+        .pattern(0)
+        .unwrap()
+        .track(0)
+        .unwrap();
     let got: Vec<_> = track.notes.iter().map(shape).collect();
     assert_eq!(
         got,
@@ -450,7 +624,12 @@ fn an_import_keeps_the_slots_own_routing() {
         .import_pattern(
             device,
             PatternRef::new(0, 0),
-            &Fetched { spec: &spec, kit: &kit, payload: &payload, from: PatternRef::new(0, 0) },
+            &Fetched {
+                spec: &spec,
+                kit: &kit,
+                payload: &payload,
+                from: PatternRef::new(0, 0),
+            },
         )
         .unwrap();
 
@@ -473,7 +652,12 @@ fn an_import_never_takes_the_boxs_tempo() {
         .import_pattern(
             device,
             PatternRef::new(0, 0),
-            &Fetched { spec: &spec, kit: &kit, payload: &payload, from: PatternRef::new(0, 0) },
+            &Fetched {
+                spec: &spec,
+                kit: &kit,
+                payload: &payload,
+                from: PatternRef::new(0, 0),
+            },
         )
         .unwrap();
     // One clock, the studio's (PLAN.md §7 rule 8). The box's tempo is reported
@@ -491,7 +675,12 @@ fn only_the_slot_that_was_imported_into_changes() {
         .import_pattern(
             device,
             PatternRef::new(0, 5),
-            &Fetched { spec: &spec, kit: &kit, payload: &payload, from: PatternRef::new(0, 0) },
+            &Fetched {
+                spec: &spec,
+                kit: &kit,
+                payload: &payload,
+                from: PatternRef::new(0, 0),
+            },
         )
         .unwrap();
     for slot in 0..16 {
@@ -500,7 +689,12 @@ fn only_the_slot_that_was_imported_into_changes() {
         assert_eq!(now == then, slot != 5, "slot {slot}");
     }
     // And the other box in the session is untouched.
-    let dn2 = session.devices.iter().find(|d| d.model.key == "DN2").unwrap().id;
+    let dn2 = session
+        .devices
+        .iter()
+        .find(|d| d.model.key == "DN2")
+        .unwrap()
+        .id;
     assert_eq!(session.device(dn2), before.device(dn2));
 }
 
@@ -516,7 +710,12 @@ fn the_pattern_remembers_the_slot_it_came_off_the_box_from() {
         .import_pattern(
             device,
             PatternRef::new(0, 2),
-            &Fetched { spec: &spec, kit: &kit, payload: &payload, from: PatternRef::new(0, 0) },
+            &Fetched {
+                spec: &spec,
+                kit: &kit,
+                payload: &payload,
+                from: PatternRef::new(0, 0),
+            },
         )
         .unwrap();
     let source = session
@@ -542,11 +741,19 @@ fn an_unnamed_pattern_takes_the_label_of_the_slot_it_came_from() {
         .import_pattern(
             device,
             PatternRef::new(0, 0),
-            &Fetched { spec: &spec, kit: &kit, payload: &payload, from: PatternRef::new(0, 3) },
+            &Fetched {
+                spec: &spec,
+                kit: &kit,
+                payload: &payload,
+                from: PatternRef::new(0, 3),
+            },
         )
         .unwrap();
     assert_eq!(report.pattern_name, "");
-    assert_eq!(session.device(device).unwrap().pattern(0).unwrap().name, "A04");
+    assert_eq!(
+        session.device(device).unwrap().pattern(0).unwrap().name,
+        "A04"
+    );
 }
 
 #[test]
@@ -557,7 +764,12 @@ fn swing_comes_across_because_the_box_holds_it_per_pattern() {
         .import_pattern(
             device,
             PatternRef::new(0, 0),
-            &Fetched { spec: &spec, kit: &kit, payload: &payload, from: PatternRef::new(0, 0) },
+            &Fetched {
+                spec: &spec,
+                kit: &kit,
+                payload: &payload,
+                from: PatternRef::new(0, 0),
+            },
         )
         .unwrap();
     // This capture is straight; `protocol`'s swing suite is where the values
@@ -565,7 +777,10 @@ fn swing_comes_across_because_the_box_holds_it_per_pattern() {
     // it is the last of the three things `PLAN.md` §5 said were connected to
     // nothing.
     assert_eq!(report.swing, 50);
-    assert_eq!(session.device(device).unwrap().pattern(0).unwrap().swing, 50);
+    assert_eq!(
+        session.device(device).unwrap().pattern(0).unwrap().swing,
+        50
+    );
 }
 
 // --- refusals -----------------------------------------------------------------
@@ -574,7 +789,12 @@ fn swing_comes_across_because_the_box_holds_it_per_pattern() {
 fn refuses_a_pattern_fetched_from_the_other_box() {
     // A DN2 pattern, aimed at the DT2 that is sitting in the same session.
     let (mut session, _, spec, payload) = ready("DN2", DN2_FIXTURE);
-    let dt2 = session.devices.iter().find(|d| d.model.key == "DT2").unwrap().id;
+    let dt2 = session
+        .devices
+        .iter()
+        .find(|d| d.model.key == "DT2")
+        .unwrap()
+        .id;
     let kit = decode_pattern_kit(&spec, &payload).unwrap();
     // The two boxes' lane offsets differ. Reading a DN2 payload at DT2 offsets
     // would produce plausible-looking nonsense rather than an error, so this is
@@ -583,17 +803,32 @@ fn refuses_a_pattern_fetched_from_the_other_box() {
     let err = session.import_pattern(
         dt2,
         PatternRef::new(0, 0),
-        &Fetched { spec: &spec, kit: &kit, payload: &payload, from: PatternRef::new(0, 0) },
+        &Fetched {
+            spec: &spec,
+            kit: &kit,
+            payload: &payload,
+            from: PatternRef::new(0, 0),
+        },
     );
-    assert_eq!(err, Err(ImportError::NotThisBox { expected: "DT2", found: "DN2" }));
+    assert_eq!(
+        err,
+        Err(ImportError::NotThisBox {
+            expected: "DT2",
+            found: "DN2"
+        })
+    );
 }
 
 #[test]
 fn refuses_a_device_or_a_slot_that_is_not_there() {
     let (mut session, device, spec, payload) = ready("DT2", DT2_FIXTURE);
     let kit = decode_pattern_kit(&spec, &payload).unwrap();
-    let fetched =
-        Fetched { spec: &spec, kit: &kit, payload: &payload, from: PatternRef::new(0, 0) };
+    let fetched = Fetched {
+        spec: &spec,
+        kit: &kit,
+        payload: &payload,
+        from: PatternRef::new(0, 0),
+    };
 
     let ghost = DeviceId(9999);
     assert_eq!(
@@ -604,7 +839,10 @@ fn refuses_a_device_or_a_slot_that_is_not_there() {
     let past_the_end = PatternRef::new(1, 0);
     assert_eq!(
         session.import_pattern(device, past_the_end, &fetched),
-        Err(ImportError::NoSuchSlot { device, slot: past_the_end }),
+        Err(ImportError::NoSuchSlot {
+            device,
+            slot: past_the_end
+        }),
     );
 }
 
@@ -657,11 +895,25 @@ fn trigs_stored_past_the_tracks_own_len_are_dropped() {
         .import_pattern(
             device,
             PatternRef::new(0, 0),
-            &Fetched { spec: &spec, kit: &kit, payload: &[], from: PatternRef::new(0, 0) },
+            &Fetched {
+                spec: &spec,
+                kit: &kit,
+                payload: &[],
+                from: PatternRef::new(0, 0),
+            },
         )
         .unwrap();
-    let track = session.device(device).unwrap().pattern(0).unwrap().track(0).unwrap();
-    assert_eq!(track.notes.iter().map(|n| n.step).collect::<Vec<_>>(), vec![0.0, 15.0]);
+    let track = session
+        .device(device)
+        .unwrap()
+        .pattern(0)
+        .unwrap()
+        .track(0)
+        .unwrap();
+    assert_eq!(
+        track.notes.iter().map(|n| n.step).collect::<Vec<_>>(),
+        vec![0.0, 15.0]
+    );
     // Sixteen tracks, two dropped trigs each.
     assert_eq!(report.trimmed_past_len, 32);
     assert_eq!(report.notes, 32);
@@ -676,7 +928,12 @@ fn an_unnamed_sound_leaves_the_tracks_default_label_alone() {
         .import_pattern(
             device,
             PatternRef::new(0, 0),
-            &Fetched { spec: &spec, kit: &kit, payload: &[], from: PatternRef::new(0, 0) },
+            &Fetched {
+                spec: &spec,
+                kit: &kit,
+                payload: &[],
+                from: PatternRef::new(0, 0),
+            },
         )
         .unwrap();
     let pattern = session.device(device).unwrap().pattern(0).unwrap();
@@ -689,7 +946,12 @@ fn an_unnamed_sound_leaves_the_tracks_default_label_alone() {
     // a record saying exactly that, rather than reading as "never fetched"
     // (which is what `patch: None` claims). `PatchSound::Unnamed` is the
     // third shape, distinct from a named sound and from a MIDI track.
-    let patch = pattern.track(0).unwrap().patch.clone().expect("a fetched track always gets a record");
+    let patch = pattern
+        .track(0)
+        .unwrap()
+        .patch
+        .clone()
+        .expect("a fetched track always gets a record");
     assert_eq!(patch.sound, digi_core::model::PatchSound::Unnamed);
     assert_eq!(patch.kit_name, kit.kit.name);
 }
@@ -702,7 +964,12 @@ fn renaming_a_track_does_not_disturb_its_patch_record() {
         .import_pattern(
             device,
             PatternRef::new(0, 0),
-            &Fetched { spec: &spec, kit: &kit, payload: &payload, from: PatternRef::new(0, 0) },
+            &Fetched {
+                spec: &spec,
+                kit: &kit,
+                payload: &payload,
+                from: PatternRef::new(0, 0),
+            },
         )
         .unwrap();
     let before = session
@@ -720,7 +987,13 @@ fn renaming_a_track_does_not_disturb_its_patch_record() {
     let pattern = d.pattern_mut(0).unwrap();
     pattern.track_mut(0).unwrap().name = "My Kick".into();
 
-    let track = session.device(device).unwrap().pattern(0).unwrap().track(0).unwrap();
+    let track = session
+        .device(device)
+        .unwrap()
+        .pattern(0)
+        .unwrap()
+        .track(0)
+        .unwrap();
     assert_eq!(track.name, "My Kick");
     // The rename touched `name` and nothing else — `patch` is what a rename
     // cannot erase, which is the entire reason it exists apart from `name`.
@@ -736,12 +1009,28 @@ fn a_kit_with_the_wrong_track_count_is_refused_rather_than_half_loaded() {
         session.import_pattern(
             device,
             PatternRef::new(0, 0),
-            &Fetched { spec: &spec, kit: &kit, payload: &[], from: PatternRef::new(0, 0) },
+            &Fetched {
+                spec: &spec,
+                kit: &kit,
+                payload: &[],
+                from: PatternRef::new(0, 0)
+            },
         ),
-        Err(ImportError::TrackCountMismatch { expected: 16, found: 4 }),
+        Err(ImportError::TrackCountMismatch {
+            expected: 16,
+            found: 4
+        }),
     );
     // Nothing landed: the slot is still the empty one the session started with.
-    assert!(session.device(device).unwrap().pattern(0).unwrap().track(0).unwrap().notes.is_empty());
+    assert!(session
+        .device(device)
+        .unwrap()
+        .pattern(0)
+        .unwrap()
+        .track(0)
+        .unwrap()
+        .notes
+        .is_empty());
 }
 
 #[test]
@@ -754,6 +1043,7 @@ fn a_live_only_model_has_nothing_to_import_into() {
         slug: None,
         num_tracks: 4,
         max_steps: 64,
+        notes_per_trig: 4,
         default_track_kind: TrackKind::Audio,
         sysex: None,
         pattern_route: PatternRoute::LiveOnly,
@@ -765,11 +1055,19 @@ fn a_live_only_model_has_nothing_to_import_into() {
     let kit = synthetic_kit(&spec, 16, &[0]);
     let err = digi_core::pattern_from_kit(
         &LIVE_ONLY,
-        &Fetched { spec: &spec, kit: &kit, payload: &[], from: PatternRef::new(0, 0) },
+        &Fetched {
+            spec: &spec,
+            kit: &kit,
+            payload: &[],
+            from: PatternRef::new(0, 0),
+        },
     )
     .expect_err("a model with no spec cannot be imported into");
     assert_eq!(err, ImportError::LiveOnly(&LIVE_ONLY));
-    assert!(model_for_key("LIVE").is_none(), "and it is not in the shipped table");
+    assert!(
+        model_for_key("LIVE").is_none(),
+        "and it is not in the shipped table"
+    );
 }
 
 // --- p-lock lanes ------------------------------------------------------------
@@ -800,16 +1098,32 @@ fn an_imported_pattern_arrives_with_its_lanes_named_and_on_the_display_axis() {
         .import_pattern(
             device,
             PatternRef::new(0, 0),
-            &Fetched { spec: &spec, kit: &kit, payload: &payload, from: PatternRef::new(0, 0) },
+            &Fetched {
+                spec: &spec,
+                kit: &kit,
+                payload: &payload,
+                from: PatternRef::new(0, 0),
+            },
         )
         .expect("a DT2 pattern into a DT2 slot");
 
     let pattern = session.device(device).unwrap().pattern(0).unwrap();
-    let got: Vec<_> = pattern.track(0).unwrap().plocks.iter().map(lane_shape).collect();
+    let got: Vec<_> = pattern
+        .track(0)
+        .unwrap()
+        .plocks
+        .iter()
+        .map(lane_shape)
+        .collect();
     assert_eq!(
         got,
         [
-            (Some("filter.cutoff"), Some(44), false, vec![(0, 0), (4, 64), (8, 127)]),
+            (
+                Some("filter.cutoff"),
+                Some(44),
+                false,
+                vec![(0, 0), (4, 64), (8, 127)]
+            ),
             (Some("amp.pan"), Some(65), false, vec![(4, 0)]),
             (Some("filter.envDepth"), Some(46), false, vec![(8, 32)]),
             (Some("fx.overdrive"), Some(74), false, vec![(12, 127)]),
@@ -825,11 +1139,21 @@ fn an_imported_pattern_arrives_with_its_lanes_named_and_on_the_display_axis() {
     // Track 2's single lane belongs to track 2 and nowhere else — one pool,
     // sixteen tracks, and the import has to sort them out.
     assert_eq!(
-        pattern.track(1).unwrap().plocks.iter().map(lane_shape).collect::<Vec<_>>(),
+        pattern
+            .track(1)
+            .unwrap()
+            .plocks
+            .iter()
+            .map(lane_shape)
+            .collect::<Vec<_>>(),
         [(Some("filter.cutoff"), Some(44), false, vec![(0, 100)])]
     );
     for t in 2..16 {
-        assert!(pattern.track(t).unwrap().plocks.is_empty(), "track {}", t + 1);
+        assert!(
+            pattern.track(t).unwrap().plocks.is_empty(),
+            "track {}",
+            t + 1
+        );
     }
 
     assert_eq!(report.plock_lanes, 11);
@@ -849,17 +1173,29 @@ fn every_lane_remembers_which_box_it_came_off() {
         .import_pattern(
             device,
             PatternRef::new(0, 0),
-            &Fetched { spec: &spec, kit: &kit, payload: &payload, from: PatternRef::new(0, 0) },
+            &Fetched {
+                spec: &spec,
+                kit: &kit,
+                payload: &payload,
+                from: PatternRef::new(0, 0),
+            },
         )
         .expect("a DN2 pattern into a DN2 slot");
 
     let pattern = session.device(device).unwrap().pattern(0).unwrap();
     let lanes = &pattern.track(0).unwrap().plocks;
     assert_eq!(lanes.len(), 10);
-    assert!(lanes.iter().all(|l| l.device_kind.as_deref() == Some("DN2")));
+    assert!(lanes
+        .iter()
+        .all(|l| l.device_kind.as_deref() == Some("DN2")));
     assert_eq!(
         lane_shape(&lanes[0]),
-        (Some("filter.cutoff"), Some(74), false, vec![(0, 0), (4, 64), (8, 127), (12, 32)])
+        (
+            Some("filter.cutoff"),
+            Some(74),
+            false,
+            vec![(0, 0), (4, 64), (8, 127), (12, 32)]
+        )
     );
 }
 
@@ -873,7 +1209,12 @@ fn a_pattern_with_an_empty_pool_imports_no_lanes_and_says_so() {
         .import_pattern(
             device,
             PatternRef::new(0, 0),
-            &Fetched { spec: &spec, kit: &kit, payload: &payload, from: PatternRef::new(0, 0) },
+            &Fetched {
+                spec: &spec,
+                kit: &kit,
+                payload: &payload,
+                from: PatternRef::new(0, 0),
+            },
         )
         .unwrap();
     assert_eq!(report.plock_lanes, 0);
@@ -893,10 +1234,23 @@ fn importing_over_a_slot_replaces_its_lanes_rather_than_adding_to_them() {
         .import_pattern(
             device,
             PatternRef::new(0, 0),
-            &Fetched { spec: &spec, kit: &kit, payload: &with_lanes, from: PatternRef::new(0, 0) },
+            &Fetched {
+                spec: &spec,
+                kit: &kit,
+                payload: &with_lanes,
+                from: PatternRef::new(0, 0),
+            },
         )
         .unwrap();
-    assert!(!session.device(device).unwrap().pattern(0).unwrap().track(0).unwrap().plocks.is_empty());
+    assert!(!session
+        .device(device)
+        .unwrap()
+        .pattern(0)
+        .unwrap()
+        .track(0)
+        .unwrap()
+        .plocks
+        .is_empty());
 
     let empty = payload(DT2_FIXTURE);
     let kit = decode_pattern_kit(&spec, &empty).unwrap();
@@ -904,10 +1258,23 @@ fn importing_over_a_slot_replaces_its_lanes_rather_than_adding_to_them() {
         .import_pattern(
             device,
             PatternRef::new(0, 0),
-            &Fetched { spec: &spec, kit: &kit, payload: &empty, from: PatternRef::new(0, 0) },
+            &Fetched {
+                spec: &spec,
+                kit: &kit,
+                payload: &empty,
+                from: PatternRef::new(0, 0),
+            },
         )
         .unwrap();
-    assert!(session.device(device).unwrap().pattern(0).unwrap().track(0).unwrap().plocks.is_empty());
+    assert!(session
+        .device(device)
+        .unwrap()
+        .pattern(0)
+        .unwrap()
+        .track(0)
+        .unwrap()
+        .plocks
+        .is_empty());
 }
 
 // --- Track.patch round-trips through the project file -------------------------
@@ -917,7 +1284,11 @@ fn a_patch() -> TrackPatch {
         sound: PatchSound::Named("BD HARD".into()),
         kit_name: "KIT 1".into(),
         kit_index: 7,
-        from: Source { device_slug: "digitakt2".into(), bank: 1, index: 5 },
+        from: Source {
+            device_slug: "digitakt2".into(),
+            bank: 1,
+            index: 5,
+        },
         seen_at: 1_787_184_000, // 2026-08-20T00:00:00Z — not the default of nothing
         live: false,
     }
@@ -940,7 +1311,15 @@ fn a_track_with_a_patch_round_trips_through_the_project_file() {
     let back = Project::from_json(&json).unwrap().session;
 
     assert_eq!(back, session);
-    let round_tripped = back.device(device).unwrap().pattern(0).unwrap().track(0).unwrap().patch.clone();
+    let round_tripped = back
+        .device(device)
+        .unwrap()
+        .pattern(0)
+        .unwrap()
+        .track(0)
+        .unwrap()
+        .patch
+        .clone();
     assert_eq!(round_tripped, Some(a_patch()));
 }
 
@@ -949,14 +1328,30 @@ fn a_track_without_a_patch_round_trips_through_the_project_file() {
     let session = two_box_session();
     let device = session.devices[0].id;
     assert_eq!(
-        session.device(device).unwrap().pattern(0).unwrap().track(0).unwrap().patch,
+        session
+            .device(device)
+            .unwrap()
+            .pattern(0)
+            .unwrap()
+            .track(0)
+            .unwrap()
+            .patch,
         None,
         "a fresh session's tracks start with no patch record"
     );
 
     let json = Project::new(session.clone()).to_json_pretty().unwrap();
     let back = Project::from_json(&json).unwrap().session;
-    assert_eq!(back.device(device).unwrap().pattern(0).unwrap().track(0).unwrap().patch, None);
+    assert_eq!(
+        back.device(device)
+            .unwrap()
+            .pattern(0)
+            .unwrap()
+            .track(0)
+            .unwrap()
+            .patch,
+        None
+    );
 }
 
 #[test]
@@ -1000,11 +1395,24 @@ fn a_project_file_written_before_the_patch_field_existed_still_loads() {
             }
         }
     }
-    assert!(stripped > 0, "the fixture must actually have had a patch key to strip");
+    assert!(
+        stripped > 0,
+        "the fixture must actually have had a patch key to strip"
+    );
 
     let old_style_json = serde_json::to_string(&v).unwrap();
     let loaded = Project::from_json(&old_style_json)
         .expect("a project file with no patch key at all must still load");
-    let track = loaded.session.device(device).unwrap().pattern(0).unwrap().track(0).unwrap();
-    assert_eq!(track.patch, None, "with no patch key in the file, the track must load with no patch");
+    let track = loaded
+        .session
+        .device(device)
+        .unwrap()
+        .pattern(0)
+        .unwrap()
+        .track(0)
+        .unwrap();
+    assert_eq!(
+        track.patch, None,
+        "with no patch key in the file, the track must load with no patch"
+    );
 }

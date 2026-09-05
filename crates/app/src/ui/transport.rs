@@ -70,6 +70,7 @@ use digi_core::Session;
 use eframe::egui::{self, Color32, Ui};
 
 use crate::engine::EngineLink;
+use crate::ui::midi_import::MidiImportPanel;
 use crate::ui::scenes;
 
 /// The bar's height — v2 §2a's `height: 40px`.
@@ -79,7 +80,8 @@ const BAR_H: f32 = 40.0;
 /// a hardware-desk warning that has cost somebody an evening, and the pill it
 /// hangs off is the same `send_clock` toggle it was written for. The first line
 /// is new, and only says what the two values on the pill mean.
-const CLOCK_HINT: &str = "INT — this app is the clock master. EXT — every box runs off its own clock.\n\n\
+const CLOCK_HINT: &str =
+    "INT — this app is the clock master. EXT — every box runs off its own clock.\n\n\
      Send MIDI clock to every box that takes it.\n\n\
      Each box also has to be set to receive, and no box may have CLOCK \
      SEND on — one master at a time, and on a DIN-chained desk one box \
@@ -93,6 +95,9 @@ pub fn ui(
     engine: &mut EngineLink,
     session: &mut Session,
     setup_open: &mut bool,
+    // The shell's song-import dialog state, handed down to the scene popup's
+    // IMPORT MIDI FILE… button (MIDI_IMPORT_DESIGN.md §5.1).
+    import: &mut MidiImportPanel,
 ) -> bool {
     let mut changed = false;
     let playing = engine.is_playing();
@@ -112,15 +117,21 @@ pub fn ui(
                     // read as one evenly-spaced row.
                     ui.spacing_mut().item_spacing.x = 0.0;
 
-                    zone(ui, 10.0, 4.0, |ui| transport_zone(ui, engine, session, playing));
+                    zone(ui, 10.0, 4.0, |ui| {
+                        transport_zone(ui, engine, session, playing)
+                    });
                     divider(ui);
-                    zone(ui, 14.0, 8.0, |ui| changed |= tempo_zone(ui, engine, session));
+                    zone(ui, 14.0, 8.0, |ui| {
+                        changed |= tempo_zone(ui, engine, session)
+                    });
                     divider(ui);
                     zone(ui, 14.0, 10.0, |ui| position_zone(ui, engine, playing));
                     divider(ui);
                     zone(ui, 12.0, 6.0, |ui| clock_zone(ui, engine));
                     divider(ui);
-                    zone(ui, 12.0, 8.0, |ui| changed |= scene_zone(ui, session, engine));
+                    zone(ui, 12.0, 8.0, |ui| {
+                        changed |= scene_zone(ui, session, engine, import)
+                    });
                     divider(ui);
 
                     // **The right-hand end is drawn right to left**, so the two
@@ -128,16 +139,13 @@ pub fn ui(
                     // window is — which means the code below reads backwards:
                     // SETUP first because it is furthest right. Each zone's own
                     // contents are therefore listed in reverse too.
-                    ui.with_layout(
-                        egui::Layout::right_to_left(egui::Align::Center),
-                        |ui| {
-                            ui.add_space(10.0);
-                            right_zone_b(ui, engine, setup_open);
-                            ui.add_space(12.0);
-                            divider(ui);
-                            right_zone_a(ui, engine);
-                        },
-                    );
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        ui.add_space(10.0);
+                        right_zone_b(ui, engine, setup_open);
+                        ui.add_space(12.0);
+                        divider(ui);
+                        right_zone_a(ui, engine);
+                    });
                 },
             );
 
@@ -226,16 +234,22 @@ pub fn shortcuts(ui: &Ui, engine: &mut EngineLink, session: &Session) -> bool {
 /// goes with it. Consuming half a keypress and leaving the other half for
 /// whatever takes focus next is how a stray space ends up in a track name.
 fn space_tap(ctx: &egui::Context, session: &digi_core::Session) -> bool {
-    if crate::ui::tracks::typing_elsewhere(ctx, session) || ctx.memory(|m| m.top_modal_layer().is_some()) {
+    if crate::ui::tracks::typing_elsewhere(ctx, session)
+        || ctx.memory(|m| m.top_modal_layer().is_some())
+    {
         return false;
     }
     ctx.input_mut(|i| {
         let mut tapped = false;
         let mut took_key = false;
         i.events.retain(|event| match event {
-            egui::Event::Key { key: egui::Key::Space, pressed: true, repeat, modifiers, .. }
-                if modifiers.matches_exact(egui::Modifiers::NONE) =>
-            {
+            egui::Event::Key {
+                key: egui::Key::Space,
+                pressed: true,
+                repeat,
+                modifiers,
+                ..
+            } if modifiers.matches_exact(egui::Modifiers::NONE) => {
                 took_key = true;
                 tapped |= !repeat;
                 false
@@ -285,7 +299,8 @@ fn transport_zone(ui: &mut Ui, engine: &mut EngineLink, session: &Session, playi
 
     let cont = ui
         .add_enabled_ui(!playing, |ui| {
-            outline_button(ui, "▶▶").on_hover_text("Resume where the cursors are, without rewinding")
+            outline_button(ui, "▶▶")
+                .on_hover_text("Resume where the cursors are, without rewinding")
         })
         .inner;
     if cont.clicked() {
@@ -330,7 +345,11 @@ fn tempo_zone(ui: &mut Ui, engine: &mut EngineLink, session: &mut Session) -> bo
             changed = true;
         }
     });
-    ui.label(egui::RichText::new("BPM").size(9.0).color(super::TEXT_DIMMER));
+    ui.label(
+        egui::RichText::new("BPM")
+            .size(9.0)
+            .color(super::TEXT_DIMMER),
+    );
     changed
 }
 
@@ -352,7 +371,11 @@ fn position_zone(ui: &mut Ui, engine: &EngineLink, playing: bool) {
             rect.left() + DOT_D / 2.0 + beat as f32 * (DOT_D + DOT_GAP),
             rect.center().y,
         );
-        let colour = if lit == Some(beat) { super::TRIG_GREEN } else { super::PANEL_BORDER };
+        let colour = if lit == Some(beat) {
+            super::TRIG_GREEN
+        } else {
+            super::PANEL_BORDER
+        };
         ui.painter().circle_filled(centre, DOT_D / 2.0, colour);
     }
 }
@@ -363,10 +386,17 @@ fn position_zone(ui: &mut Ui, engine: &EngineLink, playing: bool) {
 /// the cyan pill treatment in both states and says which one it is in words, so
 /// nothing on this bar is lit-versus-unlit any more.
 fn clock_zone(ui: &mut Ui, engine: &mut EngineLink) {
-    ui.label(egui::RichText::new("CLOCK").size(9.0).color(super::TEXT_DIMMER));
+    ui.label(
+        egui::RichText::new("CLOCK")
+            .size(9.0)
+            .color(super::TEXT_DIMMER),
+    );
 
     let send_clock = engine.send_clock();
-    if cyan_pill(ui, clock_label(send_clock)).on_hover_text(CLOCK_HINT).clicked() {
+    if cyan_pill(ui, clock_label(send_clock))
+        .on_hover_text(CLOCK_HINT)
+        .clicked()
+    {
         engine.set_send_clock(!send_clock);
     }
 
@@ -385,7 +415,10 @@ fn clock_zone(ui: &mut Ui, engine: &mut EngineLink) {
             super::BORDER_HOVER,
         )
     };
-    if response.on_hover_text("Every trig carrying a FILL condition").clicked() {
+    if response
+        .on_hover_text("Every trig carrying a FILL condition")
+        .clicked()
+    {
         engine.set_fill(!fill);
     }
 }
@@ -409,7 +442,12 @@ fn clock_zone(ui: &mut Ui, engine: &mut EngineLink) {
 /// destination chip had the identical bug from the identical cause. The helper
 /// keeps the open flag out of egui's popup slot and owns the close behaviour;
 /// see its doc comment.
-fn scene_zone(ui: &mut Ui, session: &mut Session, engine: &mut EngineLink) -> bool {
+fn scene_zone(
+    ui: &mut Ui,
+    session: &mut Session,
+    engine: &mut EngineLink,
+    import: &mut MidiImportPanel,
+) -> bool {
     let mut changed = false;
     // **The mode pill, and the song pointer, live in this zone rather than in
     // zone 3.** Zone 3 is the bars-beats-steps readout, six ASCII digits and two
@@ -460,30 +498,55 @@ fn scene_zone(ui: &mut Ui, session: &mut Session, engine: &mut EngineLink) -> bo
             None if has_song => String::from("— stopped"),
             None => String::from("— no rows"),
         };
-        ui.label(egui::RichText::new(text).monospace().size(10.0).color(super::TEXT_SECONDARY));
-        ui.label(egui::RichText::new("·").size(10.0).color(super::TEXT_DIMMEST));
+        ui.label(
+            egui::RichText::new(text)
+                .monospace()
+                .size(10.0)
+                .color(super::TEXT_SECONDARY),
+        );
+        ui.label(
+            egui::RichText::new("·")
+                .size(10.0)
+                .color(super::TEXT_DIMMEST),
+        );
     }
 
-    ui.label(egui::RichText::new("SCENE").size(9.0).color(super::TEXT_DIMMER));
+    ui.label(
+        egui::RichText::new("SCENE")
+            .size(9.0)
+            .color(super::TEXT_DIMMER),
+    );
 
     // A project file is the only way to get here with no scenes — nothing in the
     // app can remove the last one — and the pill below indexes freely.
     if session.scenes.is_empty() {
         ui.label(
-            egui::RichText::new("none — nothing can play").size(10.0).color(super::WARN_AMBER),
+            egui::RichText::new("none — nothing can play")
+                .size(10.0)
+                .color(super::WARN_AMBER),
         );
         return changed;
     }
 
     let playing = engine.playing_scene().min(session.scenes.len() - 1);
-    let name = session.scenes.get(playing).map(|s| s.name.as_str()).unwrap_or("?");
+    let name = session
+        .scenes
+        .get(playing)
+        .map(|s| s.name.as_str())
+        .unwrap_or("?");
     let pill = cyan_pill(ui, name.to_owned())
         .on_hover_text("Click for the scene list, the slot each box plays, and NOW");
 
     if let Some(queued) = engine.queued_scene().filter(|q| *q != playing) {
-        let queued_name = session.scenes.get(queued).map(|s| s.name.as_str()).unwrap_or("?");
+        let queued_name = session
+            .scenes
+            .get(queued)
+            .map(|s| s.name.as_str())
+            .unwrap_or("?");
         ui.label(
-            egui::RichText::new(format!("» {queued_name}")).size(10.0).color(super::ACCENT),
+            egui::RichText::new(format!("» {queued_name}"))
+                .size(10.0)
+                .color(super::ACCENT),
         );
     }
 
@@ -493,7 +556,9 @@ fn scene_zone(ui: &mut Ui, session: &mut Session, engine: &mut EngineLink) -> bo
             .color(super::TEXT_DIM),
     );
 
-    if let Some(inner) = super::working_popup(&pill, 320.0, |ui| scenes::ui(ui, session, engine)) {
+    if let Some(inner) =
+        super::working_popup(&pill, 320.0, |ui| scenes::ui(ui, session, engine, import))
+    {
         changed |= inner;
     }
 
@@ -505,9 +570,17 @@ fn scene_zone(ui: &mut Ui, session: &mut Session, engine: &mut EngineLink) -> bo
 fn right_zone_a(ui: &mut Ui, engine: &EngineLink) {
     ui.add_space(12.0);
     let sounding = engine.active_notes();
-    ui.label(egui::RichText::new("sounding").size(10.5).color(super::TEXT_DIMMER));
+    ui.label(
+        egui::RichText::new("sounding")
+            .size(10.5)
+            .color(super::TEXT_DIMMER),
+    );
     ui.add_space(7.0);
-    ui.label(egui::RichText::new(sounding.to_string()).size(11.0).color(super::TEXT_SECONDARY));
+    ui.label(
+        egui::RichText::new(sounding.to_string())
+            .size(11.0)
+            .color(super::TEXT_SECONDARY),
+    );
     ui.add_space(7.0);
     meter(ui, sounding);
     ui.add_space(12.0);
@@ -569,24 +642,39 @@ fn right_zone_b(ui: &mut Ui, engine: &mut EngineLink, setup_open: &mut bool) {
             // Identify is no longer the only way to get a port: the device
             // strip's pickers will point a box at anything connected, which is
             // what makes an IAC bus or a soft synth reachable.
-            ui.label(egui::RichText::new("no ports").size(10.0).color(super::WARN_AMBER))
-                .on_hover_text(
-                    "Nothing will sound. Open SETUP and give a box an out \
+            ui.label(
+                egui::RichText::new("no ports")
+                    .size(10.0)
+                    .color(super::WARN_AMBER),
+            )
+            .on_hover_text(
+                "Nothing will sound. Open SETUP and give a box an out \
                      port — pick one by hand, or Identify a box",
-                );
+            );
         }
         n => {
-            let names: Vec<&str> =
-                engine.ports().ids().filter_map(|id| engine.ports().name(id)).collect();
+            let names: Vec<&str> = engine
+                .ports()
+                .ids()
+                .filter_map(|id| engine.ports().name(id))
+                .collect();
             // The names are a tooltip rather than a label: they are two long
             // strings that pushed everything else off a narrow window, and the
             // count is the part you check at a glance.
-            ui.label(egui::RichText::new(format!("{n} port(s)")).size(10.0).color(super::TEXT_DIMMER))
-                .on_hover_text(names.join("\n"));
+            ui.label(
+                egui::RichText::new(format!("{n} port(s)"))
+                    .size(10.0)
+                    .color(super::TEXT_DIMMER),
+            )
+            .on_hover_text(names.join("\n"));
         }
     }
     for failure in engine.failures() {
-        ui.label(egui::RichText::new(failure).size(10.0).color(super::WARN_AMBER));
+        ui.label(
+            egui::RichText::new(failure)
+                .size(10.0)
+                .color(super::WARN_AMBER),
+        );
     }
 }
 
@@ -696,7 +784,9 @@ fn pill_button(
 fn cyan_pill(ui: &mut Ui, text: impl Into<String>) -> egui::Response {
     pill_button(
         ui,
-        egui::RichText::new(text.into()).size(11.0).color(super::CYAN_TEXT),
+        egui::RichText::new(text.into())
+            .size(11.0)
+            .color(super::CYAN_TEXT),
         super::CYAN_FILL,
         super::CYAN_TEXT,
         super::CYAN,
@@ -728,7 +818,10 @@ const METER_BAR_GAP: f32 = 2.0;
 /// inside a box this app cannot hear. So the meter is a picture of the same
 /// number printed next to it rather than of any signal level.
 fn meter_lit(active_notes: usize) -> usize {
-    METER_THRESHOLDS.iter().filter(|threshold| active_notes >= **threshold).count()
+    METER_THRESHOLDS
+        .iter()
+        .filter(|threshold| active_notes >= **threshold)
+        .count()
 }
 
 /// The five-bar meter, painted into one allocation.
@@ -742,8 +835,11 @@ fn meter(ui: &mut Ui, active_notes: usize) {
             egui::pos2(left, rect.bottom() - height),
             egui::vec2(METER_BAR_W, *height),
         );
-        let colour =
-            if index < lit { super::TRIG_GREEN } else { super::PANEL_BORDER };
+        let colour = if index < lit {
+            super::TRIG_GREEN
+        } else {
+            super::PANEL_BORDER
+        };
         ui.painter().rect_filled(bar, 0.0, colour);
     }
 }
@@ -756,7 +852,11 @@ fn meter(ui: &mut Ui, active_notes: usize) {
 /// user has to be able to read at a glance before pressing PLAY on a chained
 /// desk.
 fn clock_label(send_clock: bool) -> &'static str {
-    if send_clock { "INT" } else { "EXT" }
+    if send_clock {
+        "INT"
+    } else {
+        "EXT"
+    }
 }
 
 /// Which of the four beats of the bar the playhead is in, counting from 0.
@@ -778,7 +878,12 @@ fn position(steps: f64, playing: bool) -> String {
         return "  ·  ·  ".into();
     }
     let step = steps.max(0.0) as u64;
-    format!("{:>3}.{}.{:02}", step / 16 + 1, (step % 16) / 4 + 1, step % 16 + 1)
+    format!(
+        "{:>3}.{}.{:02}",
+        step / 16 + 1,
+        (step % 16) / 4 + 1,
+        step % 16 + 1
+    )
 }
 
 /// [`position`]'s output split into the runs of digits and the `.` separators
@@ -817,7 +922,11 @@ fn readout_job(text: &str) -> egui::text::LayoutJob {
             0.0,
             egui::TextFormat {
                 font_id: egui::FontId::monospace(14.0),
-                color: if separator { super::TEXT_DIMMEST } else { super::TEXT_PRIMARY },
+                color: if separator {
+                    super::TEXT_DIMMEST
+                } else {
+                    super::TEXT_PRIMARY
+                },
                 ..Default::default()
             },
         );
@@ -882,11 +991,17 @@ mod tests {
         session: &Session,
     ) -> (bool, Vec<egui::Event>) {
         let mut answer = (false, Vec::new());
-        let mut output = ctx.run_ui(egui::RawInput { events, ..Default::default() }, |ui| {
-            let took = space_tap(ui.ctx(), session);
-            let left = ui.ctx().input(|i| i.events.clone());
-            answer = (took, left);
-        });
+        let mut output = ctx.run_ui(
+            egui::RawInput {
+                events,
+                ..Default::default()
+            },
+            |ui| {
+                let took = space_tap(ui.ctx(), session);
+                let left = ui.ctx().input(|i| i.events.clone());
+                answer = (took, left);
+            },
+        );
         output.textures_delta.clear();
         answer
     }
@@ -896,7 +1011,10 @@ mod tests {
         let ctx = egui::Context::default();
         let (took, left) = tap(&ctx, space(egui::Modifiers::NONE));
         assert!(took, "a plain space is a transport tap");
-        assert!(left.is_empty(), "both halves of the keypress are consumed, not just the key");
+        assert!(
+            left.is_empty(),
+            "both halves of the keypress are consumed, not just the key"
+        );
     }
 
     #[test]
@@ -906,15 +1024,24 @@ mod tests {
         // and stop at the key-repeat rate for as long as a thumb rested on the
         // bar. No release goes in between, which is what a hold is.
         let ctx = egui::Context::default();
-        assert!(tap(&ctx, space(egui::Modifiers::NONE)).0, "the press that begins the hold");
+        assert!(
+            tap(&ctx, space(egui::Modifiers::NONE)).0,
+            "the press that begins the hold"
+        );
         for _ in 0..8 {
             let (took, left) = tap(&ctx, space(egui::Modifiers::NONE));
             assert!(!took, "a repeat is the same press still held down");
-            assert!(left.is_empty(), "and it is still eaten, rather than left to fall through");
+            assert!(
+                left.is_empty(),
+                "and it is still eaten, rather than left to fall through"
+            );
         }
         // Let go, and the next press is a tap again.
         tap(&ctx, release());
-        assert!(tap(&ctx, space(egui::Modifiers::NONE)).0, "a second, separate press");
+        assert!(
+            tap(&ctx, space(egui::Modifiers::NONE)).0,
+            "a second, separate press"
+        );
     }
 
     #[test]
@@ -924,10 +1051,18 @@ mod tests {
         // one of these matches a plain space, because that call only rejects the
         // modifiers a pattern *asks for* and is missing.
         let ctx = egui::Context::default();
-        for modifiers in [egui::Modifiers::SHIFT, egui::Modifiers::ALT, egui::Modifiers::COMMAND] {
+        for modifiers in [
+            egui::Modifiers::SHIFT,
+            egui::Modifiers::ALT,
+            egui::Modifiers::COMMAND,
+        ] {
             let (took, left) = tap(&ctx, space(modifiers));
             assert!(!took, "{modifiers:?}+Space is not the transport");
-            assert_eq!(left.len(), 2, "{modifiers:?}+Space is left in the queue untouched");
+            assert_eq!(
+                left.len(),
+                2,
+                "{modifiers:?}+Space is left in the queue untouched"
+            );
             tap(&ctx, release());
         }
     }
@@ -940,12 +1075,16 @@ mod tests {
         let ctx = egui::Context::default();
         let mut text = String::new();
         let mut output = ctx.run_ui(egui::RawInput::default(), |ui| {
-            ui.add(egui::TextEdit::singleline(&mut text)).request_focus();
+            ui.add(egui::TextEdit::singleline(&mut text))
+                .request_focus();
         });
         output.textures_delta.clear();
 
         let (took, left) = tap(&ctx, space(egui::Modifiers::NONE));
-        assert!(!took, "a space is a character while something is being typed into");
+        assert!(
+            !took,
+            "a space is a character while something is being typed into"
+        );
         assert_eq!(left.len(), 2, "and it reaches the field it was typed into");
     }
 
@@ -963,8 +1102,14 @@ mod tests {
         ctx.memory_mut(|m| m.request_focus(cell));
 
         let (took, left) = tap_in(&ctx, space(egui::Modifiers::NONE), &session);
-        assert!(took, "a space with a track cell selected is still the transport");
-        assert!(left.is_empty(), "and it is taken whole, so the cell never sees it as a click");
+        assert!(
+            took,
+            "a space with a track cell selected is still the transport"
+        );
+        assert!(
+            left.is_empty(),
+            "and it is taken whole, so the cell never sees it as a click"
+        );
     }
 
     #[test]
@@ -989,7 +1134,11 @@ mod tests {
         assert_eq!(position(4.4, true), "  1.2.05");
         assert_eq!(position(16.0, true), "  2.1.01");
         assert_eq!(position(35.9, true), "  3.1.04");
-        assert_eq!(position(12.0, false), "  ·  ·  ", "stopped shows no position");
+        assert_eq!(
+            position(12.0, false),
+            "  ·  ·  ",
+            "stopped shows no position"
+        );
     }
 
     #[test]
@@ -1006,7 +1155,11 @@ mod tests {
 
     #[test]
     fn the_beat_index_stays_in_the_bar_and_never_goes_negative() {
-        assert_eq!(beat_of_bar(-9.0), 0, "a negative playhead is the first beat");
+        assert_eq!(
+            beat_of_bar(-9.0),
+            0,
+            "a negative playhead is the first beat"
+        );
         for steps in [0.0, 1.0, 15.0, 16.0, 400.0, 1_000_000.0] {
             assert!(beat_of_bar(steps) < 4, "{steps} landed outside the bar");
         }
@@ -1027,8 +1180,10 @@ mod tests {
         );
         // The whole string survives the split, whatever it is.
         for text in ["  1.1.01", "  ·  ·  ", "", "..."] {
-            let rejoined: String =
-                readout_segments(text).into_iter().map(|(run, _)| run).collect();
+            let rejoined: String = readout_segments(text)
+                .into_iter()
+                .map(|(run, _)| run)
+                .collect();
             assert_eq!(rejoined, text);
         }
     }
@@ -1046,7 +1201,11 @@ mod tests {
         let mut previous = 0;
         for notes in 0..64 {
             let lit = meter_lit(notes);
-            assert!(lit >= previous, "{notes} voices lit fewer bars than {}", notes - 1);
+            assert!(
+                lit >= previous,
+                "{notes} voices lit fewer bars than {}",
+                notes - 1
+            );
             previous = lit;
         }
     }

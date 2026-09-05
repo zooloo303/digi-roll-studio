@@ -59,6 +59,7 @@ fn an_unshipped_live_only_model_constructs_correctly() {
         slug: None,
         num_tracks: 12,
         max_steps: 64,
+        notes_per_trig: 4,
         default_track_kind: TrackKind::Audio,
         sysex: None,
         pattern_route: PatternRoute::LiveOnly,
@@ -100,10 +101,18 @@ fn the_shipped_a4_is_live_only_and_six_tracks() {
 fn every_shipped_model_reports_the_pool_its_pattern_actually_holds() {
     assert_eq!(DT2.plock_pool(), 80);
     assert_eq!(DN2.plock_pool(), 80);
-    assert_eq!(digi_core::A4.plock_pool(), digi_protocol::a4_plocks::NUM_LANES);
+    assert_eq!(
+        digi_core::A4.plock_pool(),
+        digi_protocol::a4_plocks::NUM_LANES
+    );
     // The two digis' number is the `Spec`'s, not a second copy of it.
     for m in [&DT2, &DN2] {
-        assert_eq!(m.plock_pool(), m.spec().unwrap().pattern.num_p_locks, "{}", m.key);
+        assert_eq!(
+            m.plock_pool(),
+            m.spec().unwrap().pattern.num_p_locks,
+            "{}",
+            m.key
+        );
     }
 }
 
@@ -351,7 +360,10 @@ fn a_session_round_trips_through_the_project_file() {
     assert!(!back.device(dt2).unwrap().io.takes_clock);
     assert!(back.device(dn2).unwrap().io.takes_clock);
     assert_eq!(back.device(dt2).unwrap().io.build.as_deref(), Some("0070"));
-    assert_eq!(back.device(dn2).unwrap().io.version.as_deref(), Some("1.10D"));
+    assert_eq!(
+        back.device(dn2).unwrap().io.version.as_deref(),
+        Some("1.10D")
+    );
     assert_eq!(
         back.device(dt2).unwrap().io.output.as_ref().unwrap().name,
         "Digitakt II MIDI Out"
@@ -363,7 +375,10 @@ fn a_session_round_trips_through_the_project_file() {
     assert_eq!(back.harmony.root, 7);
     assert_eq!(back.harmony.scale, Some(Scale::Dorian));
     assert!(back.harmony.chord.on);
-    assert_eq!(back.harmony.chord.quality, QualityChoice::Fixed(Quality::Sus4));
+    assert_eq!(
+        back.harmony.chord.quality,
+        QualityChoice::Fixed(Quality::Sus4)
+    );
     assert!(back.harmony.chord.seventh);
     assert_eq!(back.harmony.chord.inversion, 2);
     assert!(back.harmony.chord.spread);
@@ -464,7 +479,8 @@ fn a_pattern_whose_track_count_disagrees_with_its_model_is_refused() {
         .as_array()
         .unwrap()
         .clone();
-    v["session"]["devices"][0]["patterns"][0]["tracks"] = serde_json::Value::Array(tracks[..4].to_vec());
+    v["session"]["devices"][0]["patterns"][0]["tracks"] =
+        serde_json::Value::Array(tracks[..4].to_vec());
 
     let err = Project::from_json(&v.to_string()).unwrap_err();
     // Rejected, not repaired: padding would invent tracks, truncating would
@@ -485,9 +501,13 @@ fn the_track_vec_cannot_be_resized_through_the_public_api() {
     let d = s.devices[0].id;
     let p = s.device_mut(d).unwrap().pattern_mut(0).unwrap();
     let before = p.num_tracks();
-    p.track_mut(0).unwrap().notes.push(Note::new(0.0, 60, 1.0, 100, 0.0));
+    p.track_mut(0)
+        .unwrap()
+        .notes
+        .push(Note::new(0.0, 60, 1.0, 100, 0.0));
     assert_eq!(p.num_tracks(), before);
-    s.validate().expect("editing a track must not disturb the invariant");
+    s.validate()
+        .expect("editing a track must not disturb the invariant");
 }
 
 // ----------------------------------------------------------------- scenes
@@ -605,8 +625,20 @@ fn a_scene_boundary_is_the_longest_track_across_every_box() {
     // outgoing scene so nothing is cut mid-cycle (PLAN.md §4).
     let mut s = dt2_and_dn2();
     let (dt2, dn2) = (s.devices[0].id, s.devices[1].id);
-    s.device_mut(dt2).unwrap().pattern_mut(0).unwrap().track_mut(0).unwrap().length_steps = 12;
-    s.device_mut(dn2).unwrap().pattern_mut(0).unwrap().track_mut(0).unwrap().length_steps = 48;
+    s.device_mut(dt2)
+        .unwrap()
+        .pattern_mut(0)
+        .unwrap()
+        .track_mut(0)
+        .unwrap()
+        .length_steps = 12;
+    s.device_mut(dn2)
+        .unwrap()
+        .pattern_mut(0)
+        .unwrap()
+        .track_mut(0)
+        .unwrap()
+        .length_steps = 48;
 
     assert_eq!(s.scene_boundary_steps(0), Some(48));
 }
@@ -635,7 +667,10 @@ fn a_scene_added_with_nothing_to_copy_still_names_every_box() {
     let mut s = dt2_and_dn2();
     let added = s.add_scene("From nothing", None);
     for device in &s.devices {
-        assert_eq!(s.slot_in_scene(added, device.id), Some(PatternRef::new(0, 0)));
+        assert_eq!(
+            s.slot_in_scene(added, device.id),
+            Some(PatternRef::new(0, 0))
+        );
     }
 }
 
@@ -687,7 +722,10 @@ fn a_slot_is_never_written_for_a_box_that_is_not_in_the_session() {
 
     assert!(!s.set_slot_in_scene(0, gone, PatternRef::new(0, 3)));
     assert_eq!(s.slot_in_scene(0, gone), None, "and nothing was written");
-    assert!(!s.set_slot_in_scene(4, dt2, PatternRef::new(0, 3)), "no scene 5 either");
+    assert!(
+        !s.set_slot_in_scene(4, dt2, PatternRef::new(0, 3)),
+        "no scene 5 either"
+    );
     assert!(s.set_slot_in_scene(0, dt2, PatternRef::new(0, 3)));
     assert_eq!(s.slot_in_scene(0, dt2), Some(PatternRef::new(0, 3)));
 }
@@ -698,15 +736,35 @@ fn solo_is_session_wide_so_soloing_a_dt2_track_silences_dn2_tracks() {
     let (dt2, dn2) = (s.devices[0].id, s.devices[1].id);
 
     assert!(!s.any_solo());
-    let dn2_track = s.device(dn2).unwrap().pattern(0).unwrap().track(0).unwrap().clone();
+    let dn2_track = s
+        .device(dn2)
+        .unwrap()
+        .pattern(0)
+        .unwrap()
+        .track(0)
+        .unwrap()
+        .clone();
     assert!(s.track_audible(&dn2_track));
 
-    s.device_mut(dt2).unwrap().pattern_mut(0).unwrap().track_mut(2).unwrap().solo = true;
+    s.device_mut(dt2)
+        .unwrap()
+        .pattern_mut(0)
+        .unwrap()
+        .track_mut(2)
+        .unwrap()
+        .solo = true;
 
     assert!(s.any_solo());
     // The DN2 track is on a different box and is silenced anyway.
     assert!(!s.track_audible(&dn2_track));
-    let soloed = s.device(dt2).unwrap().pattern(0).unwrap().track(2).unwrap().clone();
+    let soloed = s
+        .device(dt2)
+        .unwrap()
+        .pattern(0)
+        .unwrap()
+        .track(2)
+        .unwrap()
+        .clone();
     assert!(s.track_audible(&soloed));
 }
 
@@ -714,7 +772,13 @@ fn solo_is_session_wide_so_soloing_a_dt2_track_silences_dn2_tracks() {
 fn a_muted_track_stays_silent_even_when_it_is_soloed() {
     let mut s = dt2_and_dn2();
     let dt2 = s.devices[0].id;
-    let t = s.device_mut(dt2).unwrap().pattern_mut(0).unwrap().track_mut(0).unwrap();
+    let t = s
+        .device_mut(dt2)
+        .unwrap()
+        .pattern_mut(0)
+        .unwrap()
+        .track_mut(0)
+        .unwrap();
     t.mute = true;
     t.solo = true;
     let t = t.clone();
@@ -742,7 +806,10 @@ fn ports_rebind_by_id_first() {
         &[port("222", "Renamed By The OS")],
     );
     assert!(unbound.is_empty());
-    assert_eq!(s.device(dt2).unwrap().io.input.as_ref().unwrap().name, "Renamed By The OS");
+    assert_eq!(
+        s.device(dt2).unwrap().io.input.as_ref().unwrap().name,
+        "Renamed By The OS"
+    );
 }
 
 #[test]
@@ -767,16 +834,35 @@ fn a_missing_port_disables_that_devices_io_and_touches_nothing_else() {
     let dt2 = s.devices[0].id;
     s.device_mut(dt2).unwrap().io.input = Some(port("111", "Elektron Digitakt II"));
     s.device_mut(dt2).unwrap().io.output = Some(port("222", "Elektron Digitakt II"));
-    s.device_mut(dt2).unwrap().pattern_mut(0).unwrap().track_mut(0).unwrap()
-        .notes.push(Note::new(0.0, 60, 1.0, 100, 0.0));
+    s.device_mut(dt2)
+        .unwrap()
+        .pattern_mut(0)
+        .unwrap()
+        .track_mut(0)
+        .unwrap()
+        .notes
+        .push(Note::new(0.0, 60, 1.0, 100, 0.0));
 
-    let unbound = s.rebind_ports(&[port("777", "Some Other Box")], &[port("778", "Some Other Box")]);
+    let unbound = s.rebind_ports(
+        &[port("777", "Some Other Box")],
+        &[port("778", "Some Other Box")],
+    );
 
     assert_eq!(unbound, vec![dt2]);
     assert!(s.device(dt2).unwrap().io.input.is_none());
     assert!(s.device(dt2).unwrap().io.output.is_none());
     // The patterns are untouched: a missing box costs you its I/O and nothing else.
-    assert_eq!(s.device(dt2).unwrap().pattern(0).unwrap().track(0).unwrap().notes.len(), 1);
+    assert_eq!(
+        s.device(dt2)
+            .unwrap()
+            .pattern(0)
+            .unwrap()
+            .track(0)
+            .unwrap()
+            .notes
+            .len(),
+        1
+    );
 }
 
 #[test]
@@ -796,7 +882,15 @@ fn ports_are_rematched_on_load() {
 
     assert!(unbound.is_empty());
     assert_eq!(
-        project.session.device(dt2).unwrap().io.input.as_ref().unwrap().id,
+        project
+            .session
+            .device(dt2)
+            .unwrap()
+            .io
+            .input
+            .as_ref()
+            .unwrap()
+            .id,
         "new"
     );
 }
@@ -808,7 +902,10 @@ fn a_device_added_after_a_load_cannot_collide_with_a_loaded_id() {
     let existing: Vec<_> = loaded.devices.iter().map(|d| d.id).collect();
 
     let fresh = loaded.add_device(Device::new("Another DT2", &DT2, 16));
-    assert!(!existing.contains(&fresh), "id {fresh:?} collided with {existing:?}");
+    assert!(
+        !existing.contains(&fresh),
+        "id {fresh:?} collided with {existing:?}"
+    );
 }
 
 // ------------------------------------------------- binding an identity reply
@@ -873,11 +970,22 @@ fn each_reply_binds_to_the_box_of_its_own_model() {
 fn binding_writes_io_and_touches_nothing_else() {
     let mut s = dt2_and_dn2();
     let dt2 = s.devices[0].id;
-    s.device_mut(dt2).unwrap().pattern_mut(0).unwrap().track_mut(0).unwrap()
-        .notes.push(Note::new(0.0, 60, 1.0, 100, 0.0));
+    s.device_mut(dt2)
+        .unwrap()
+        .pattern_mut(0)
+        .unwrap()
+        .track_mut(0)
+        .unwrap()
+        .notes
+        .push(Note::new(0.0, 60, 1.0, 100, 0.0));
     let before = s.device(dt2).unwrap().patterns.clone();
 
-    s.bind_identity(&dt2_identity(), port("111", "DT2 in"), port("222", "DT2 out")).unwrap();
+    s.bind_identity(
+        &dt2_identity(),
+        port("111", "DT2 in"),
+        port("222", "DT2 out"),
+    )
+    .unwrap();
 
     // An identity reply is session state. It must never reach a pattern byte.
     assert_eq!(s.device(dt2).unwrap().patterns, before);
@@ -893,7 +1001,11 @@ fn re_identifying_the_same_ports_updates_that_box_rather_than_claiming_another()
     let second_dt2 = s.add_device(Device::new("DT2 b", &DT2, 16));
 
     let first = s
-        .bind_identity(&dt2_identity(), port("111", "Elektron Digitakt II"), port("222", "Elektron Digitakt II"))
+        .bind_identity(
+            &dt2_identity(),
+            port("111", "Elektron Digitakt II"),
+            port("222", "Elektron Digitakt II"),
+        )
         .unwrap();
     let again = s
         .bind_identity(
@@ -916,25 +1028,45 @@ fn two_identical_boxes_are_told_apart_by_their_ports() {
     let b = s.add_device(Device::new("DT2 b", &DT2, 16));
 
     let first = s
-        .bind_identity(&dt2_identity(), port("111", "Elektron Digitakt II"), port("222", "Elektron Digitakt II"))
+        .bind_identity(
+            &dt2_identity(),
+            port("111", "Elektron Digitakt II"),
+            port("222", "Elektron Digitakt II"),
+        )
         .unwrap();
     let second = s
-        .bind_identity(&dt2_identity(), port("333", "Elektron Digitakt II #2"), port("444", "Elektron Digitakt II #2"))
+        .bind_identity(
+            &dt2_identity(),
+            port("333", "Elektron Digitakt II #2"),
+            port("444", "Elektron Digitakt II #2"),
+        )
         .unwrap();
 
     assert_eq!(first, a);
-    assert_eq!(second, b, "the second box must take the still-unbound device");
+    assert_eq!(
+        second, b,
+        "the second box must take the still-unbound device"
+    );
 }
 
 #[test]
 fn the_only_box_of_its_model_follows_a_replug() {
     let mut s = dt2_and_dn2();
     let dt2 = s.devices[0].id;
-    s.bind_identity(&dt2_identity(), port("111", "Elektron Digitakt II"), port("222", "Elektron Digitakt II")).unwrap();
+    s.bind_identity(
+        &dt2_identity(),
+        port("111", "Elektron Digitakt II"),
+        port("222", "Elektron Digitakt II"),
+    )
+    .unwrap();
 
     // Same box, different socket: nothing else could be meant.
     let again = s
-        .bind_identity(&dt2_identity(), port("999", "Elektron Digitakt II"), port("888", "Elektron Digitakt II"))
+        .bind_identity(
+            &dt2_identity(),
+            port("999", "Elektron Digitakt II"),
+            port("888", "Elektron Digitakt II"),
+        )
         .unwrap();
 
     assert_eq!(again, dt2);
@@ -946,8 +1078,10 @@ fn several_boxes_of_one_model_all_bound_elsewhere_refuse_to_guess() {
     let mut s = dt2_and_dn2();
     let a = s.devices[0].id;
     let b = s.add_device(Device::new("DT2 b", &DT2, 16));
-    s.bind_identity(&dt2_identity(), port("1", "A in"), port("2", "A out")).unwrap();
-    s.bind_identity(&dt2_identity(), port("3", "B in"), port("4", "B out")).unwrap();
+    s.bind_identity(&dt2_identity(), port("1", "A in"), port("2", "A out"))
+        .unwrap();
+    s.bind_identity(&dt2_identity(), port("3", "B in"), port("4", "B out"))
+        .unwrap();
 
     let err = s
         .bind_identity(&dt2_identity(), port("5", "C in"), port("6", "C out"))
@@ -980,11 +1114,18 @@ fn a_port_belongs_to_one_box() {
     s.device_mut(dn2).unwrap().io.output = Some(port("222", "Elektron Digitakt II"));
 
     let bound = s
-        .bind_identity(&dt2_identity(), port("111", "Elektron Digitakt II"), port("222", "Elektron Digitakt II"))
+        .bind_identity(
+            &dt2_identity(),
+            port("111", "Elektron Digitakt II"),
+            port("222", "Elektron Digitakt II"),
+        )
         .unwrap();
 
     assert_eq!(bound, dt2);
-    assert!(!s.device(dn2).unwrap().has_ports(), "the DN2 must have lost the ports it does not own");
+    assert!(
+        !s.device(dn2).unwrap().has_ports(),
+        "the DN2 must have lost the ports it does not own"
+    );
 }
 
 #[test]
@@ -993,9 +1134,21 @@ fn an_unknown_box_stays_unbound_rather_than_becoming_the_nearest_model() {
     // What `identity_from_responses` produces for a product id we do not know.
     let unknown = identity("elektron", "Syntakt", "0001", "1.0");
 
-    let err = s.bind_identity(&unknown, port("1", "Elektron Syntakt"), port("2", "Elektron Syntakt")).unwrap_err();
+    let err = s
+        .bind_identity(
+            &unknown,
+            port("1", "Elektron Syntakt"),
+            port("2", "Elektron Syntakt"),
+        )
+        .unwrap_err();
 
-    assert_eq!(err, BindError::UnknownModel { slug: "elektron".into(), name: "Syntakt".into() });
+    assert_eq!(
+        err,
+        BindError::UnknownModel {
+            slug: "elektron".into(),
+            name: "Syntakt".into()
+        }
+    );
     assert!(s.devices.iter().all(|d| !d.has_ports()));
 }
 
@@ -1004,7 +1157,9 @@ fn a_session_with_no_box_of_that_model_says_so() {
     let mut s = Session::default();
     s.add_device(Device::new("DN2", &DN2, 16));
 
-    let err = s.bind_identity(&dt2_identity(), port("1", "in"), port("2", "out")).unwrap_err();
+    let err = s
+        .bind_identity(&dt2_identity(), port("1", "in"), port("2", "out"))
+        .unwrap_err();
 
     assert_eq!(err, BindError::NoDeviceOfModel(&DT2));
 }
@@ -1019,7 +1174,9 @@ fn a_reply_is_refused_for_a_device_of_another_model() {
         .unwrap_err();
 
     match err {
-        BindError::ModelMismatch { expected, found, .. } => {
+        BindError::ModelMismatch {
+            expected, found, ..
+        } => {
             assert_eq!(expected.key, "DT2");
             assert_eq!(found.key, "DN2");
         }
@@ -1032,7 +1189,12 @@ fn a_reply_is_refused_for_a_device_of_another_model() {
 fn a_bound_identity_survives_the_project_file() {
     let mut s = dt2_and_dn2();
     let dt2 = s.devices[0].id;
-    s.bind_identity(&dt2_identity(), port("111", "Elektron Digitakt II"), port("222", "Elektron Digitakt II")).unwrap();
+    s.bind_identity(
+        &dt2_identity(),
+        port("111", "Elektron Digitakt II"),
+        port("222", "Elektron Digitakt II"),
+    )
+    .unwrap();
 
     let json = Project::new(s).to_json().unwrap();
     let loaded = Project::from_json(&json).unwrap().session;
@@ -1078,7 +1240,10 @@ fn a_port_can_be_picked_by_hand_with_no_box_to_identify() {
 
     assert!(s.set_device_port(dt2, PortEnd::Output, Some(port("iac1", "IAC Driver Bus 1"))));
 
-    assert_eq!(s.device(dt2).unwrap().io.output.as_ref().unwrap().name, "IAC Driver Bus 1");
+    assert_eq!(
+        s.device(dt2).unwrap().io.output.as_ref().unwrap().name,
+        "IAC Driver Bus 1"
+    );
     // Only the end that was asked for.
     assert!(s.device(dt2).unwrap().io.input.is_none());
 }
@@ -1094,7 +1259,10 @@ fn a_hand_picked_port_belongs_to_one_box_like_an_identified_one() {
 
     // Two devices on one socket is a DT2 trig coming out of the DN2.
     assert!(s.device(dt2).unwrap().io.output.is_none());
-    assert_eq!(s.device(dn2).unwrap().io.output.as_ref().unwrap().id, "iac1");
+    assert_eq!(
+        s.device(dn2).unwrap().io.output.as_ref().unwrap().id,
+        "iac1"
+    );
 }
 
 #[test]
@@ -1104,14 +1272,32 @@ fn releasing_an_output_leaves_an_input_of_the_same_name_alone() {
     // the wrong half.
     let mut s = dt2_and_dn2();
     let (dt2, dn2) = (s.devices[0].id, s.devices[1].id);
-    s.set_device_port(dt2, PortEnd::Input, Some(port("in-1", "Elektron Digitakt II")));
-    s.set_device_port(dt2, PortEnd::Output, Some(port("out-1", "Elektron Digitakt II")));
+    s.set_device_port(
+        dt2,
+        PortEnd::Input,
+        Some(port("in-1", "Elektron Digitakt II")),
+    );
+    s.set_device_port(
+        dt2,
+        PortEnd::Output,
+        Some(port("out-1", "Elektron Digitakt II")),
+    );
 
     // The DN2 takes the *output* of that name.
-    s.set_device_port(dn2, PortEnd::Output, Some(port("out-1", "Elektron Digitakt II")));
+    s.set_device_port(
+        dn2,
+        PortEnd::Output,
+        Some(port("out-1", "Elektron Digitakt II")),
+    );
 
-    assert!(s.device(dt2).unwrap().io.output.is_none(), "the output moved");
-    assert!(s.device(dt2).unwrap().io.input.is_some(), "the input is a different port");
+    assert!(
+        s.device(dt2).unwrap().io.output.is_none(),
+        "the output moved"
+    );
+    assert!(
+        s.device(dt2).unwrap().io.input.is_some(),
+        "the input is a different port"
+    );
 }
 
 #[test]
@@ -1132,7 +1318,11 @@ fn moving_a_device_off_its_ports_drops_the_os_it_reported() {
     // that leaving a device visibly unbound exists to avoid.
     let mut s = dt2_and_dn2();
     let dt2 = s
-        .bind_identity(&dt2_identity(), port("111", "Elektron Digitakt II"), port("222", "Elektron Digitakt II"))
+        .bind_identity(
+            &dt2_identity(),
+            port("111", "Elektron Digitakt II"),
+            port("222", "Elektron Digitakt II"),
+        )
         .unwrap();
     assert_eq!(s.device(dt2).unwrap().io.build.as_deref(), Some("0070"));
 
@@ -1149,11 +1339,19 @@ fn picking_the_port_already_there_changes_nothing() {
     // is already set must not report a change — nor quietly drop the OS report.
     let mut s = dt2_and_dn2();
     let dt2 = s
-        .bind_identity(&dt2_identity(), port("111", "Elektron Digitakt II"), port("222", "Elektron Digitakt II"))
+        .bind_identity(
+            &dt2_identity(),
+            port("111", "Elektron Digitakt II"),
+            port("222", "Elektron Digitakt II"),
+        )
         .unwrap();
     let before = s.clone();
 
-    assert!(!s.set_device_port(dt2, PortEnd::Output, Some(port("222", "Elektron Digitakt II"))));
+    assert!(!s.set_device_port(
+        dt2,
+        PortEnd::Output,
+        Some(port("222", "Elektron Digitakt II"))
+    ));
 
     assert_eq!(s.device(dt2).unwrap().io, before.device(dt2).unwrap().io);
     assert_eq!(s.device(dt2).unwrap().io.build.as_deref(), Some("0070"));
@@ -1165,7 +1363,11 @@ fn setting_a_port_on_a_device_that_is_not_there_changes_nothing() {
     let before = s.clone();
     let gone = digi_core::DeviceId(9_999);
 
-    assert!(!s.set_device_port(gone, PortEnd::Output, Some(port("iac1", "IAC Driver Bus 1"))));
+    assert!(!s.set_device_port(
+        gone,
+        PortEnd::Output,
+        Some(port("iac1", "IAC Driver Bus 1"))
+    ));
     assert_eq!(s.devices.len(), before.devices.len());
     for (a, b) in s.devices.iter().zip(&before.devices) {
         assert_eq!(a.io, b.io);
@@ -1181,16 +1383,19 @@ fn a_hand_picked_port_survives_the_project_file() {
     s.set_device_port(dt2, PortEnd::Output, Some(port("iac1", "IAC Driver Bus 1")));
 
     let json = Project::new(s).to_json().unwrap();
-    let (project, unbound) = Project::from_json_with_ports(
-        &json,
-        &[],
-        &[port("iac1", "IAC Driver Bus 1")],
-    )
-    .unwrap();
+    let (project, unbound) =
+        Project::from_json_with_ports(&json, &[], &[port("iac1", "IAC Driver Bus 1")]).unwrap();
     let loaded = project.session;
 
-    assert_eq!(unbound, vec![loaded.devices[0].id], "the input never was bound");
-    assert_eq!(loaded.devices[0].io.output.as_ref().unwrap().name, "IAC Driver Bus 1");
+    assert_eq!(
+        unbound,
+        vec![loaded.devices[0].id],
+        "the input never was bound"
+    );
+    assert_eq!(
+        loaded.devices[0].io.output.as_ref().unwrap().name,
+        "IAC Driver Bus 1"
+    );
 }
 
 // -------------------------------------------------------------- the song
@@ -1268,7 +1473,13 @@ fn a_new_row_takes_its_mutes_from_the_pattern_it_plays() {
     let mut s = dt2_and_dn2();
     let dt2 = s.devices[0].id;
     let dn2 = s.devices[1].id;
-    s.device_mut(dt2).unwrap().pattern_mut(0).unwrap().track_mut(3).unwrap().mute = true;
+    s.device_mut(dt2)
+        .unwrap()
+        .pattern_mut(0)
+        .unwrap()
+        .track_mut(3)
+        .unwrap()
+        .mute = true;
 
     let row = s.add_song_row(0).unwrap();
     let row = s.song_row(row).unwrap();
@@ -1313,7 +1524,13 @@ fn removing_a_device_takes_its_row_mutes_with_it() {
 fn a_row_mute_substitutes_for_the_patterns_mute_rather_than_stacking() {
     let mut s = dt2_and_dn2();
     let dt2 = s.devices[0].id;
-    s.device_mut(dt2).unwrap().pattern_mut(0).unwrap().track_mut(0).unwrap().mute = true;
+    s.device_mut(dt2)
+        .unwrap()
+        .pattern_mut(0)
+        .unwrap()
+        .track_mut(0)
+        .unwrap()
+        .mute = true;
     let mut row = digi_core::SongRow::new(0);
     // The row sounds a track the pattern mutes — a substitution, not a second
     // mute stage.
@@ -1329,11 +1546,25 @@ fn a_row_mute_does_not_undo_a_solo() {
     // Solo is the desk, not the arrangement (PLAN.md §2).
     let mut s = dt2_and_dn2();
     let dt2 = s.devices[0].id;
-    s.device_mut(dt2).unwrap().pattern_mut(0).unwrap().track_mut(1).unwrap().solo = true;
+    s.device_mut(dt2)
+        .unwrap()
+        .pattern_mut(0)
+        .unwrap()
+        .track_mut(1)
+        .unwrap()
+        .solo = true;
     let mut row = digi_core::SongRow::new(0);
     row.set_mute(dt2, 0, false);
 
     let pattern = s.device(dt2).unwrap().pattern(0).unwrap();
-    assert!(!digi_core::song::audible(row.mutes(dt2, 0), pattern.track(0).unwrap(), true));
-    assert!(digi_core::song::audible(row.mutes(dt2, 1), pattern.track(1).unwrap(), true));
+    assert!(!digi_core::song::audible(
+        row.mutes(dt2, 0),
+        pattern.track(0).unwrap(),
+        true
+    ));
+    assert!(digi_core::song::audible(
+        row.mutes(dt2, 1),
+        pattern.track(1).unwrap(),
+        true
+    ));
 }

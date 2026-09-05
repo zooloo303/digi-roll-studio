@@ -193,18 +193,18 @@ impl PLockLane {
         // `filter.cutoff`. See `params::plock_id_identifies_parameter` for the
         // corruption that would follow. The A4's import puts the answer in
         // `name`, which is admissible everywhere.
-        let by_id = self.param_id.filter(|_| params::plock_id_identifies_parameter(kind));
-        let mut desc = match params::curated_param(
-            params::param_table_for(kind),
-            self.name.as_deref(),
-            by_id,
-        ) {
-            Some(p) => p.describe(key),
-            // Not `describe_param`: that would try the id again. The raw
-            // descriptor still names the byte, so an unnamed A4 lane reads
-            // "A4 param 0x22" exactly as it did before curation existed.
-            None => params::raw_param_desc(self.param_id, key),
-        };
+        let by_id = self
+            .param_id
+            .filter(|_| params::plock_id_identifies_parameter(kind));
+        let mut desc =
+            match params::curated_param(params::param_table_for(kind), self.name.as_deref(), by_id)
+            {
+                Some(p) => p.describe(key),
+                // Not `describe_param`: that would try the id again. The raw
+                // descriptor still names the byte, so an unnamed A4 lane reads
+                // "A4 param 0x22" exactly as it did before curation existed.
+                None => params::raw_param_desc(self.param_id, key),
+            };
         // A measured name replaces the `param 0x22` stand-in and changes nothing
         // else. `curated` stays as `describe_param` left it, so a lane named
         // this way is still read-only — see [`PLockLane::label`].
@@ -502,6 +502,19 @@ impl Pattern {
         self.tracks.get_mut(index).map(Arc::make_mut)
     }
 
+    /// Whether this slot is untouched: never fetched (`source` is `None`) and
+    /// every track holds no notes and no p-lock lanes. The MIDI import's slot
+    /// allocator (MIDI_IMPORT_DESIGN.md §4.4) fills forward taking blank slots
+    /// only, so this is the definition of "free" it refuses to overwrite
+    /// without being told to.
+    pub fn is_blank(&self) -> bool {
+        self.source.is_none()
+            && self
+                .tracks
+                .iter()
+                .all(|t| t.notes.is_empty() && t.plocks.is_empty())
+    }
+
     /// Whether this pattern still matches the model it claims to belong to. A
     /// hand-edited project file is the case this exists for; `Project::load`
     /// checks every pattern.
@@ -528,7 +541,10 @@ impl std::fmt::Display for ModelError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::NamelessPLockLane => {
-                write!(f, "a p-lock lane needs either a parameter name or a paramId")
+                write!(
+                    f,
+                    "a p-lock lane needs either a parameter name or a paramId"
+                )
             }
             Self::TrackCountMismatch {
                 device,

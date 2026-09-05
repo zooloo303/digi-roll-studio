@@ -157,10 +157,11 @@ pub mod devices;
 pub mod edit;
 pub mod generate;
 pub mod harmony;
+pub mod midi_import;
 pub mod pianoroll;
 pub mod plocklane;
-pub mod presets;
 pub mod ports;
+pub mod presets;
 pub mod rail;
 pub mod recovery;
 pub mod restore;
@@ -168,10 +169,10 @@ pub mod scenes;
 pub mod session;
 pub mod setup;
 pub mod song;
+pub mod sync;
 pub mod tools;
 pub mod tracks;
 pub mod transfer;
-pub mod sync;
 pub mod transport;
 pub mod triglane;
 pub mod workspace;
@@ -340,15 +341,32 @@ pub fn panel_header(ui: &mut Ui, title: &str) -> bool {
 /// re-apply an answer this function can just apply itself.
 ///
 /// Returns whether the `×` was clicked, matching [`panel_header`]'s contract.
-pub fn panel_title_bar(ui: &mut Ui, title: &str, context: &str, reference_visible: &mut bool) -> bool {
+pub fn panel_title_bar(
+    ui: &mut Ui,
+    title: &str,
+    context: &str,
+    reference_visible: &mut bool,
+) -> bool {
     let mut close = false;
     ui.horizontal(|ui| {
         ui.spacing_mut().item_spacing.x = 8.0;
         ui.label(egui::RichText::new(title).strong());
-        ui.label(egui::RichText::new(context).monospace().size(10.0).color(TEXT_DIMMER));
+        ui.label(
+            egui::RichText::new(context)
+                .monospace()
+                .size(10.0)
+                .color(TEXT_DIMMER),
+        );
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            close = ui.small_button("×").on_hover_text("Close this panel").clicked();
-            let hover = if *reference_visible { "Hide this panel's reference notes" } else { "Show this panel's reference notes" };
+            close = ui
+                .small_button("×")
+                .on_hover_text("Close this panel")
+                .clicked();
+            let hover = if *reference_visible {
+                "Hide this panel's reference notes"
+            } else {
+                "Show this panel's reference notes"
+            };
             if ui.small_button("?").on_hover_text(hover).clicked() {
                 *reference_visible = !*reference_visible;
             }
@@ -381,7 +399,11 @@ pub fn paint_fold_arrow(painter: &egui::Painter, rect: egui::Rect, folded: bool,
             egui::pos2(c.x, c.y + r),
         ]
     };
-    painter.add(egui::Shape::convex_polygon(points, colour, egui::Stroke::NONE));
+    painter.add(egui::Shape::convex_polygon(
+        points,
+        colour,
+        egui::Stroke::NONE,
+    ));
 }
 
 /// The `←`/`→` direction glyph on the Setup panel's IN/OUT headers, drawn rather
@@ -406,17 +428,22 @@ pub fn paint_direction_arrow(
     } else {
         (c.x + half_w, c.x - half_w)
     };
-    painter.line_segment(
-        [egui::pos2(tail_x, c.y), egui::pos2(head_x, c.y)],
-        stroke,
-    );
-    let back = if pointing_right { head_x - half_w * 0.8 } else { head_x + half_w * 0.8 };
+    painter.line_segment([egui::pos2(tail_x, c.y), egui::pos2(head_x, c.y)], stroke);
+    let back = if pointing_right {
+        head_x - half_w * 0.8
+    } else {
+        head_x + half_w * 0.8
+    };
     let points = vec![
         egui::pos2(head_x, c.y),
         egui::pos2(back, c.y - half_h),
         egui::pos2(back, c.y + half_h),
     ];
-    painter.add(egui::Shape::convex_polygon(points, colour, egui::Stroke::NONE));
+    painter.add(egui::Shape::convex_polygon(
+        points,
+        colour,
+        egui::Stroke::NONE,
+    ));
 }
 
 /// The same arrow, pointing up or down — the SONG panel's row-order buttons.
@@ -444,13 +471,21 @@ pub fn paint_vertical_arrow(
         (c.y + half_h, c.y - half_h)
     };
     painter.line_segment([egui::pos2(c.x, tail_y), egui::pos2(c.x, head_y)], stroke);
-    let back = if pointing_down { head_y - half_h * 0.8 } else { head_y + half_h * 0.8 };
+    let back = if pointing_down {
+        head_y - half_h * 0.8
+    } else {
+        head_y + half_h * 0.8
+    };
     let points = vec![
         egui::pos2(c.x, head_y),
         egui::pos2(c.x - half_w, back),
         egui::pos2(c.x + half_w, back),
     ];
-    painter.add(egui::Shape::convex_polygon(points, colour, egui::Stroke::NONE));
+    painter.add(egui::Shape::convex_polygon(
+        points,
+        colour,
+        egui::Stroke::NONE,
+    ));
 }
 
 /// A button painted with an explicit fill, text colour and border per
@@ -533,12 +568,19 @@ pub fn section_header(ui: &mut Ui, eyebrow: &str, caption: Option<&str>) {
         // Only pay for the gap when there is a caption to put after it;
         // subtracting it unconditionally left the rule short of the right
         // margin on every header that has none, which is most of them.
-        let gap = if caption.is_some() { ui.spacing().item_spacing.x } else { 0.0 };
+        let gap = if caption.is_some() {
+            ui.spacing().item_spacing.x
+        } else {
+            0.0
+        };
         let rule_w = (ui.available_width() - caption_w - gap).max(0.0);
         if rule_w > 0.0 {
-            let (rect, _) =
-                ui.allocate_exact_size(egui::vec2(rule_w, 1.0), egui::Sense::hover());
-            ui.painter().hline(rect.x_range(), rect.center().y, egui::Stroke::new(1.0, PANEL_BORDER));
+            let (rect, _) = ui.allocate_exact_size(egui::vec2(rule_w, 1.0), egui::Sense::hover());
+            ui.painter().hline(
+                rect.x_range(),
+                rect.center().y,
+                egui::Stroke::new(1.0, PANEL_BORDER),
+            );
         }
 
         if let Some(caption) = caption {
@@ -558,28 +600,43 @@ pub fn section_header(ui: &mut Ui, eyebrow: &str, caption: Option<&str>) {
 /// look `CollapsingHeader` draws. The background is painted through a
 /// placeholder shape index — the same trick `egui`'s own `ComboBox` uses — so
 /// the fill can depend on this frame's hover state rather than last frame's.
-pub fn disclosure_row(ui: &mut Ui, open: &mut bool, title: &str, hint: &str, body: impl FnOnce(&mut Ui)) {
+pub fn disclosure_row(
+    ui: &mut Ui,
+    open: &mut bool,
+    title: &str,
+    hint: &str,
+    body: impl FnOnce(&mut Ui),
+) {
     let placeholder = ui.painter().add(egui::Shape::Noop);
     let response = ui
         .scope_builder(egui::UiBuilder::new().sense(egui::Sense::click()), |ui| {
             ui.set_width(ui.available_width());
-            egui::Frame::new().inner_margin(egui::Margin::symmetric(8, 6)).show(ui, |ui| {
-                ui.horizontal(|ui| {
-                    ui.spacing_mut().item_spacing.x = 7.0;
-                    let (icon, _) =
-                        ui.allocate_exact_size(egui::Vec2::splat(9.0), egui::Sense::hover());
-                    paint_fold_arrow(ui.painter(), icon, !*open, TEXT_DIMMER);
-                    ui.label(egui::RichText::new(title).size(10.0).color(TEXT_MUTED));
-                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        ui.label(egui::RichText::new(hint).size(10.0).color(TEXT_DIMMEST));
+            egui::Frame::new()
+                .inner_margin(egui::Margin::symmetric(8, 6))
+                .show(ui, |ui| {
+                    ui.horizontal(|ui| {
+                        ui.spacing_mut().item_spacing.x = 7.0;
+                        let (icon, _) =
+                            ui.allocate_exact_size(egui::Vec2::splat(9.0), egui::Sense::hover());
+                        paint_fold_arrow(ui.painter(), icon, !*open, TEXT_DIMMER);
+                        ui.label(egui::RichText::new(title).size(10.0).color(TEXT_MUTED));
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            ui.label(egui::RichText::new(hint).size(10.0).color(TEXT_DIMMEST));
+                        });
                     });
                 });
-            });
         })
         .response;
 
-    let fill = if response.hovered() { INSET_BG_HOVER } else { INSET_BG };
-    ui.painter().set(placeholder, egui::Shape::rect_filled(response.rect, 0.0, fill));
+    let fill = if response.hovered() {
+        INSET_BG_HOVER
+    } else {
+        INSET_BG
+    };
+    ui.painter().set(
+        placeholder,
+        egui::Shape::rect_filled(response.rect, 0.0, fill),
+    );
     ui.painter().rect_stroke(
         response.rect,
         0.0,
@@ -680,7 +737,10 @@ pub fn paint_info_icon(painter: &egui::Painter, rect: egui::Rect, colour: Color3
     painter.circle_stroke(c, r, egui::Stroke::new(w, colour));
     painter.circle_filled(egui::pos2(c.x, c.y - r * 0.42), w * 0.7, colour);
     painter.line_segment(
-        [egui::pos2(c.x, c.y - r * 0.08), egui::pos2(c.x, c.y + r * 0.48)],
+        [
+            egui::pos2(c.x, c.y - r * 0.08),
+            egui::pos2(c.x, c.y + r * 0.48),
+        ],
         egui::Stroke::new(w, colour),
     );
 }
@@ -693,7 +753,12 @@ pub fn paint_info_icon(painter: &egui::Painter, rect: egui::Rect, colour: Color3
 /// destructive one. New in this pass — nothing needed it before the side
 /// panels did.
 pub fn consequence_line(ui: &mut Ui, text: &str) {
-    ui.label(egui::RichText::new(text).size(10.5).line_height(Some(15.5)).color(TEXT_DIMMER));
+    ui.label(
+        egui::RichText::new(text)
+            .size(10.5)
+            .line_height(Some(15.5))
+            .color(TEXT_DIMMER),
+    );
 }
 
 /// The one global style change this app makes, and it is here because of a bug
@@ -819,7 +884,12 @@ pub fn working_popup<R>(
         });
 
     if let (false, Some(shown)) = (toggled, &inner) {
-        let click = ctx.input(|i| i.pointer.any_click().then_some(i.pointer.interact_pos()).flatten());
+        let click = ctx.input(|i| {
+            i.pointer
+                .any_click()
+                .then_some(i.pointer.interact_pos())
+                .flatten()
+        });
         if let Some(pos) = click {
             let inside = shown.response.interact_rect.contains(pos);
             let landed_on = ctx.layer_id_at(pos).map(|layer| layer.order);
@@ -918,8 +988,10 @@ pub fn slider_row(
         let fraction = slider_fraction(*value, &range);
         let painter = ui.painter_at(rect);
         let mid_y = rect.center().y;
-        let track_rect =
-            egui::Rect::from_min_size(egui::pos2(rect.left(), mid_y - 1.5), egui::vec2(rect.width(), 3.0));
+        let track_rect = egui::Rect::from_min_size(
+            egui::pos2(rect.left(), mid_y - 1.5),
+            egui::vec2(rect.width(), 3.0),
+        );
         painter.rect_filled(track_rect, 0.0, PANEL_BORDER);
         let fill_w = rect.width() * fraction;
         if fill_w > 0.0 {
@@ -946,16 +1018,20 @@ pub fn slider_row(
         // the rect and clipping a child `Ui` to it means the box is 38px
         // whatever the text says, so every value box down a panel shares one
         // left and one right edge.
-        let (value_rect, _) = ui.allocate_exact_size(egui::vec2(value_w, row_h), egui::Sense::hover());
-        let mut value_ui = ui.new_child(
-            egui::UiBuilder::new()
-                .max_rect(value_rect)
-                .layout(egui::Layout::centered_and_justified(egui::Direction::LeftToRight)),
-        );
+        let (value_rect, _) =
+            ui.allocate_exact_size(egui::vec2(value_w, row_h), egui::Sense::hover());
+        let mut value_ui = ui.new_child(egui::UiBuilder::new().max_rect(value_rect).layout(
+            egui::Layout::centered_and_justified(egui::Direction::LeftToRight),
+        ));
         value_ui.set_clip_rect(value_rect.intersect(ui.clip_rect()));
         value_ui.style_mut().drag_value_text_style = egui::TextStyle::Monospace;
         let widgets = &mut value_ui.style_mut().visuals.widgets;
-        for state in [&mut widgets.inactive, &mut widgets.hovered, &mut widgets.active, &mut widgets.open] {
+        for state in [
+            &mut widgets.inactive,
+            &mut widgets.hovered,
+            &mut widgets.active,
+            &mut widgets.open,
+        ] {
             state.weak_bg_fill = PANEL_BORDER;
             state.bg_fill = PANEL_BORDER;
             state.fg_stroke = egui::Stroke::new(1.0, TEXT_PRIMARY);
@@ -1041,7 +1117,10 @@ mod tests {
         for value in [20.0, 40.0, 160.0, 299.9, 300.0] {
             let fraction = slider_fraction(value, &range);
             let recovered = slider_value_at(fraction, &range);
-            assert!((recovered - value).abs() < 0.01, "{value} round-tripped to {recovered}");
+            assert!(
+                (recovered - value).abs() < 0.01,
+                "{value} round-tripped to {recovered}"
+            );
         }
     }
 
@@ -1056,8 +1135,14 @@ mod tests {
     fn a_click_inside_a_working_popup_never_dismisses_it() {
         // IgnoreClicks is the whole point: a click on a combo box, a text field
         // or a button inside the popup is an edit in progress, not a dismissal.
-        assert!(!click_dismisses_working_popup(true, Some(egui::Order::Foreground)));
-        assert!(!click_dismisses_working_popup(true, Some(egui::Order::Background)));
+        assert!(!click_dismisses_working_popup(
+            true,
+            Some(egui::Order::Foreground)
+        ));
+        assert!(!click_dismisses_working_popup(
+            true,
+            Some(egui::Order::Background)
+        ));
     }
 
     #[test]
@@ -1067,8 +1152,14 @@ mod tests {
         // pattern name is outside the popup's own rect and on a layer above it.
         // Dismissing there would close the scene box the moment the user picked
         // the pattern they opened it for.
-        assert!(!click_dismisses_working_popup(false, Some(egui::Order::Foreground)));
-        assert!(!click_dismisses_working_popup(false, Some(egui::Order::Tooltip)));
+        assert!(!click_dismisses_working_popup(
+            false,
+            Some(egui::Order::Foreground)
+        ));
+        assert!(!click_dismisses_working_popup(
+            false,
+            Some(egui::Order::Tooltip)
+        ));
     }
 
     #[test]
@@ -1076,8 +1167,14 @@ mod tests {
         // Panels and the workspace are below Foreground, so clicking the roll,
         // the transport or a side panel puts the popup away — which is what
         // makes it feel like a popup rather than a window.
-        assert!(click_dismisses_working_popup(false, Some(egui::Order::Background)));
-        assert!(click_dismisses_working_popup(false, Some(egui::Order::Middle)));
+        assert!(click_dismisses_working_popup(
+            false,
+            Some(egui::Order::Background)
+        ));
+        assert!(click_dismisses_working_popup(
+            false,
+            Some(egui::Order::Middle)
+        ));
         // No layer at all: the click hit nothing interactive, so treat it as
         // outside rather than leaving the popup open on a click into the void.
         assert!(click_dismisses_working_popup(false, None));
@@ -1088,7 +1185,10 @@ mod tests {
     /// both bugs it is aimed at here are *interaction* bugs, invisible to any
     /// test of a pure rule, and both were found by hand on a screen.
     fn frame(ctx: &egui::Context, events: Vec<egui::Event>, body: impl FnMut(&mut Ui)) {
-        let input = egui::RawInput { events, ..Default::default() };
+        let input = egui::RawInput {
+            events,
+            ..Default::default()
+        };
         let mut output = ctx.run_ui(input, body);
         // No renderer here to apply the font-atlas delta to, and epaint's debug
         // assert refuses to let it drop unhandled.
@@ -1107,7 +1207,11 @@ mod tests {
         events: Vec<egui::Event>,
         body: impl FnMut(&mut Ui),
     ) -> String {
-        let input = egui::RawInput { time: Some(time), events, ..Default::default() };
+        let input = egui::RawInput {
+            time: Some(time),
+            events,
+            ..Default::default()
+        };
         let mut output = ctx.run_ui(input, body);
         output.textures_delta.clear();
 
@@ -1151,8 +1255,14 @@ mod tests {
         };
 
         let cold = text_painted(&ctx, 0.0, vec![], &mut draw);
-        assert!(cold.contains(EYEBROW), "the eyebrow is the part that must not hide");
-        assert!(!cold.contains(BODY), "the body is the space this bought back");
+        assert!(
+            cold.contains(EYEBROW),
+            "the eyebrow is the part that must not hide"
+        );
+        assert!(
+            !cold.contains(BODY),
+            "the body is the space this bought back"
+        );
 
         // egui gates a tooltip on three things, and a headless frame satisfies
         // none of them by accident: the pointer has to be *over* the widget as
@@ -1162,7 +1272,12 @@ mod tests {
         // So the move is sent once and the frames after it carry no events at
         // all; re-sending `PointerMoved` every frame keeps resetting the very
         // timer being waited on, which is what the first draft of this test did.
-        text_painted(&ctx, 0.1, vec![egui::Event::PointerMoved(icon.get().center())], &mut draw);
+        text_painted(
+            &ctx,
+            0.1,
+            vec![egui::Event::PointerMoved(icon.get().center())],
+            &mut draw,
+        );
         let mut hovered = String::new();
         for tick in 0..12 {
             hovered = text_painted(&ctx, 0.2 + tick as f64 * 0.1, vec![], &mut draw);
@@ -1184,7 +1299,10 @@ mod tests {
             pressed,
             modifiers: egui::Modifiers::NONE,
         };
-        (vec![egui::Event::PointerMoved(pos), press(true)], vec![press(false)])
+        (
+            vec![egui::Event::PointerMoved(pos), press(true)],
+            vec![press(false)],
+        )
     }
 
     /// Draws a `scope_builder`-sensed row with a label in it — the shape every
@@ -1278,16 +1396,29 @@ mod tests {
         frame(&ctx, release, &mut draw);
         assert!(popup_shown.get(), "clicking the pill opens it");
         frame(&ctx, vec![], &mut draw);
-        assert!(popup_shown.get(), "and it survives the frame that opened it");
+        assert!(
+            popup_shown.get(),
+            "and it survives the frame that opened it"
+        );
 
         // The click that used to kill it: the combo box inside.
         let (press, release) = click_at(combo_rect.get().center());
         frame(&ctx, press, &mut draw);
         frame(&ctx, release, &mut draw);
-        assert!(popup_shown.get(), "clicking a picker inside must not dismiss the popup");
+        assert!(
+            popup_shown.get(),
+            "clicking a picker inside must not dismiss the popup"
+        );
         frame(&ctx, vec![], &mut draw);
-        assert!(popup_shown.get(), "and the popup is still there to pick from");
-        assert_ne!(item_rect.get(), egui::Rect::NOTHING, "the dropdown list opened");
+        assert!(
+            popup_shown.get(),
+            "and the popup is still there to pick from"
+        );
+        assert_ne!(
+            item_rect.get(),
+            egui::Rect::NOTHING,
+            "the dropdown list opened"
+        );
 
         // Picking a value: the dropdown is its own `Area` above the popup, so
         // this click is outside the popup's rect and must still not dismiss it.
@@ -1295,7 +1426,10 @@ mod tests {
         frame(&ctx, press, &mut draw);
         frame(&ctx, release, &mut draw);
         assert_eq!(chosen.get(), 1, "the value was picked");
-        assert!(popup_shown.get(), "picking a value leaves the popup open for the next box");
+        assert!(
+            popup_shown.get(),
+            "picking a value leaves the popup open for the next box"
+        );
 
         // A click on the app behind it does close it.
         let away = egui::Pos2 { x: 700.0, y: 500.0 };

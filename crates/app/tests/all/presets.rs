@@ -26,13 +26,19 @@ use digi_roll_studio::ui::presets::{
 use digi_roll_studio::ui::tracks::Selection;
 
 fn port(name: &str) -> PortRef {
-    PortRef { id: name.into(), name: name.into() }
+    PortRef {
+        id: name.into(),
+        name: name.into(),
+    }
 }
 
 fn wired(model: &'static digi_core::device::DeviceModel, name: &str) -> Device {
     let mut device = Device::new(name, model, 16);
-    device.io =
-        DeviceIo { input: Some(port("in")), output: Some(port("out")), ..DeviceIo::default() };
+    device.io = DeviceIo {
+        input: Some(port("in")),
+        output: Some(port("out")),
+        ..DeviceIo::default()
+    };
     device
 }
 
@@ -49,13 +55,23 @@ fn identity(slug: &str, name: &str) -> DeviceIdentity {
 }
 
 fn entry(name: &str, mask: u32, size: u32) -> IndexEntry {
-    IndexEntry { name: name.into(), tag_mask: mask, size, format: Some(SOUND_MAGIC_HEAD) }
+    IndexEntry {
+        name: name.into(),
+        tag_mask: mask,
+        size,
+        format: Some(SOUND_MAGIC_HEAD),
+    }
 }
 
 /// A preset in a format the box's own kit will not take — a Digitone mk1 file
 /// on a DN2, which is 388 of that box's 1,189.
 fn mk1_entry(name: &str, mask: u32) -> IndexEntry {
-    IndexEntry { name: name.into(), tag_mask: mask, size: 302, format: Some(DN1_SOUND_MAGIC_HEAD) }
+    IndexEntry {
+        name: name.into(),
+        tag_mask: mask,
+        size: 302,
+        format: Some(DN1_SOUND_MAGIC_HEAD),
+    }
 }
 
 fn path(bank: &str) -> String {
@@ -149,12 +165,29 @@ fn each_missing_port_is_named_rather_than_lumped_together() {
 /// presets under `digitone2-…` for every session after this one.
 #[test]
 fn a_box_that_answers_with_the_wrong_slug_is_refused_before_it_names_a_file() {
-    let refusal = mismatched_box(Some("digitone2"), "Digitone II", &identity("digitakt2", "Digitakt II"))
-        .expect("a DT2 on a DN2's ports must be refused");
-    assert!(refusal.contains("Digitakt II"), "the box that spoke is named: {refusal}");
-    assert!(refusal.contains("disk"), "and why a read is refused at all: {refusal}");
+    let refusal = mismatched_box(
+        Some("digitone2"),
+        "Digitone II",
+        &identity("digitakt2", "Digitakt II"),
+    )
+    .expect("a DT2 on a DN2's ports must be refused");
+    assert!(
+        refusal.contains("Digitakt II"),
+        "the box that spoke is named: {refusal}"
+    );
+    assert!(
+        refusal.contains("disk"),
+        "and why a read is refused at all: {refusal}"
+    );
 
-    assert_eq!(mismatched_box(Some("digitone2"), "Digitone II", &identity("digitone2", "Digitone II")), None);
+    assert_eq!(
+        mismatched_box(
+            Some("digitone2"),
+            "Digitone II",
+            &identity("digitone2", "Digitone II")
+        ),
+        None
+    );
 }
 
 /// A model with no slug has no filename to key an index by, so it is refused
@@ -168,7 +201,11 @@ fn a_model_with_no_slug_has_no_index_to_write() {
 
 #[test]
 fn the_bank_picker_comes_from_what_the_box_listed() {
-    let entries = vec![bank_dir("A", 256), bank_dir("B", 256), preset(1, "STRAY", 319)];
+    let entries = vec![
+        bank_dir("A", 256),
+        bank_dir("B", 256),
+        preset(1, "STRAY", 319),
+    ];
     assert_eq!(
         bank_paths(&entries),
         vec![path("A"), path("B")],
@@ -204,7 +241,10 @@ fn a_listing_offers_exactly_the_slots_a_scan_would_read() {
     let rows = listing_rows(&path("A"), &entries);
     assert_eq!(rows.iter().map(|r| r.slot).collect::<Vec<_>>(), vec![1, 6]);
     assert_eq!(rows[1].size, 359);
-    assert_eq!(rows[0].tags, None, "a listing carries no tags — that is the whole of §10.3");
+    assert_eq!(
+        rows[0].tags, None,
+        "a listing carries no tags — that is the whole of §10.3"
+    );
     assert_eq!(rows[0].bank, path("A"), "a row carries its own address");
 }
 
@@ -229,9 +269,24 @@ fn a_view_of_a_bank_this_box_does_not_have_is_empty() {
 #[test]
 fn a_search_crosses_every_bank_and_each_hit_says_where_it_lives() {
     let mut lib = library(&["A", "B", "C"]);
-    put(&mut lib, "A", Some(listing_rows(&path("A"), &[preset(1, "ACID BASS", 319)])), None);
-    put(&mut lib, "B", Some(listing_rows(&path("B"), &[preset(4, "PAD SOFT", 319)])), None);
-    put(&mut lib, "C", Some(listing_rows(&path("C"), &[preset(9, "SUB BASS", 359)])), None);
+    put(
+        &mut lib,
+        "A",
+        Some(listing_rows(&path("A"), &[preset(1, "ACID BASS", 319)])),
+        None,
+    );
+    put(
+        &mut lib,
+        "B",
+        Some(listing_rows(&path("B"), &[preset(4, "PAD SOFT", 319)])),
+        None,
+    );
+    put(
+        &mut lib,
+        "C",
+        Some(listing_rows(&path("C"), &[preset(9, "SUB BASS", 359)])),
+        None,
+    );
 
     let hits = lib.filtered(&all(&lib), 0, "bass");
     assert_eq!(hits.rows.len(), 2, "two banks answer one search");
@@ -259,10 +314,16 @@ fn the_tag_grid_counts_across_every_bank_in_view() {
     put(&mut lib, "A", None, Some(a));
     put(&mut lib, "B", None, Some(b));
 
-    assert_eq!(lib.tag_cells(&all(&lib)), vec![(10, "Bass", 2), (12, "Pad", 1)]);
+    assert_eq!(
+        lib.tag_cells(&all(&lib)),
+        vec![(10, "Bass", 2), (12, "Pad", 1)]
+    );
     assert_eq!(lib.filtered(&all(&lib), 1 << 10, "").rows.len(), 2);
     // The same bits, named for a row's tooltip and for the filter caption.
-    assert_eq!(tag_names((1 << 10) | (1 << 12), "digitone2"), vec!["Bass", "Pad"]);
+    assert_eq!(
+        tag_names((1 << 10) | (1 << 12), "digitone2"),
+        vec!["Bass", "Pad"]
+    );
 }
 
 /// The grid names bits through **the selected box's** table, and the same mask
@@ -278,18 +339,27 @@ fn the_tag_grid_names_bits_through_the_box_that_is_selected() {
     idx.insert(1, entry("101 BASS", 1 << 10, 366));
     idx.insert(2, entry("SINGLE CHORD", 1 << 12, 366));
 
-    let mut a4 = Library { slug: "analogfour".into(), ..library(&["A"]) };
+    let mut a4 = Library {
+        slug: "analogfour".into(),
+        ..library(&["A"])
+    };
     put(&mut a4, "A", None, Some(idx.clone()));
 
     // Bits 10 and 12 are Kick and Pad on a digi; on an A4 they are Kick and
     // Hi-Hat — one coincidence and one difference, from one pair of bits.
-    assert_eq!(a4.tag_cells(&all(&a4)), vec![(10, "Kick", 1), (12, "Hi-Hat", 1)]);
+    assert_eq!(
+        a4.tag_cells(&all(&a4)),
+        vec![(10, "Kick", 1), (12, "Hi-Hat", 1)]
+    );
     assert_eq!(tag_names(1 << 12, "analogfour"), vec!["Hi-Hat"]);
     assert_eq!(tag_names(1 << 12, "digitone2"), vec!["Pad"]);
 
     // And a box with no calibrated grid names nothing rather than borrowing a
     // digi's names — an empty grid, not a confident one.
-    let mut unknown = Library { slug: "digitakt".into(), ..library(&["A"]) };
+    let mut unknown = Library {
+        slug: "digitakt".into(),
+        ..library(&["A"])
+    };
     put(&mut unknown, "A", None, Some(idx));
     assert!(unknown.tag_cells(&all(&unknown)).is_empty());
     assert!(tag_names(1 << 12, "digitakt").is_empty());
@@ -307,18 +377,45 @@ fn one_scanned_bank_does_not_make_an_unread_library_complete() {
     a.insert(2, entry("TWO", 1, 319));
 
     let mut lib = library(&["A", "B", "C"]);
-    put(&mut lib, "A", Some(listing_rows(&path("A"),
-        &[preset(1, "ONE", 319), preset(2, "TWO", 319)])), Some(a));
+    put(
+        &mut lib,
+        "A",
+        Some(listing_rows(
+            &path("A"),
+            &[preset(1, "ONE", 319), preset(2, "TWO", 319)],
+        )),
+        Some(a),
+    );
 
     let tagging = lib.tagging(&all(&lib));
-    assert_eq!(tagging, Tagging::Partial { have: 2, want: 2, unread_banks: 2 });
-    assert!(tagging.offers_scan(), "seven unread banks must not hide the scan button");
-    assert!(tagging.caption().contains("unread"), "{}", tagging.caption());
+    assert_eq!(
+        tagging,
+        Tagging::Partial {
+            have: 2,
+            want: 2,
+            unread_banks: 2
+        }
+    );
+    assert!(
+        tagging.offers_scan(),
+        "seven unread banks must not hide the scan button"
+    );
+    assert!(
+        tagging.caption().contains("unread"),
+        "{}",
+        tagging.caption()
+    );
 
     // Looking at bank A alone, it *is* complete — the same data, a different
     // question.
     let just_a = View::One(path("A")).banks(&lib.banks);
-    assert_eq!(lib.tagging(&just_a), Tagging::Complete { count: 2, unread_formats: 0 });
+    assert_eq!(
+        lib.tagging(&just_a),
+        Tagging::Complete {
+            count: 2,
+            unread_formats: 0
+        }
+    );
     assert!(!lib.tagging(&just_a).offers_scan());
 }
 
@@ -329,13 +426,23 @@ fn one_scanned_bank_does_not_make_an_unread_library_complete() {
 #[test]
 fn a_bank_with_no_index_still_lists_every_preset() {
     let mut lib = library(&["A"]);
-    put(&mut lib, "A", Some(listing_rows(&path("A"),
-        &[preset(1, "HIDDEN TEARS", 319), preset(2, "MONOLOW", 319)])), None);
+    put(
+        &mut lib,
+        "A",
+        Some(listing_rows(
+            &path("A"),
+            &[preset(1, "HIDDEN TEARS", 319), preset(2, "MONOLOW", 319)],
+        )),
+        None,
+    );
 
     assert_eq!(lib.filtered(&all(&lib), 0, "").rows.len(), 2);
     assert_eq!(lib.tagging(&all(&lib)), Tagging::NotScanned);
     assert!(lib.tagging(&all(&lib)).offers_scan());
-    assert!(lib.tagging(&all(&lib)).shows_grid(), "a digi's grid is empty, not absent");
+    assert!(
+        lib.tagging(&all(&lib)).shows_grid(),
+        "a digi's grid is empty, not absent"
+    );
 }
 
 /// The other direction, and the thing that makes a second open instant: with no
@@ -350,10 +457,23 @@ fn an_index_off_disk_browses_with_no_box_attached() {
     put(&mut lib, "A", None, Some(index));
 
     let filtered = lib.filtered(&all(&lib), 0, "");
-    assert_eq!(filtered.rows.len(), 2, "the browser works with the box unplugged");
+    assert_eq!(
+        filtered.rows.len(),
+        2,
+        "the browser works with the box unplugged"
+    );
     assert_eq!(filtered.rows[0].name, "HIDDEN TEARS");
-    assert_eq!(lib.tagging(&all(&lib)), Tagging::Complete { count: 2, unread_formats: 0 });
-    assert!(!lib.tagging(&all(&lib)).offers_scan(), "nothing left to read");
+    assert_eq!(
+        lib.tagging(&all(&lib)),
+        Tagging::Complete {
+            count: 2,
+            unread_formats: 0
+        }
+    );
+    assert!(
+        !lib.tagging(&all(&lib)).offers_scan(),
+        "nothing left to read"
+    );
 }
 
 /// A row's name and its tags have to come out of the same read. `IndexEntry`'s
@@ -366,11 +486,19 @@ fn a_scanned_row_takes_its_name_from_the_file_the_tags_came_out_of() {
     index.insert(1, entry("BLÅ VIND", 0b0100, 359));
 
     let mut lib = library(&["A"]);
-    put(&mut lib, "A", Some(listing_rows(&path("A"), &[preset(1, "BL? VIND", 319)])), Some(index));
+    put(
+        &mut lib,
+        "A",
+        Some(listing_rows(&path("A"), &[preset(1, "BL? VIND", 319)])),
+        Some(index),
+    );
 
     let rows = lib.filtered(&all(&lib), 0, "").rows;
     assert_eq!(rows[0].name, "BLÅ VIND");
-    assert_eq!(rows[0].size, 359, "and its measured size, not the listing's allocation");
+    assert_eq!(
+        rows[0].size, 359,
+        "and its measured size, not the listing's allocation"
+    );
 }
 
 /// A cancelled scan leaves a partial index, and the panel has to say so rather
@@ -381,14 +509,29 @@ fn a_half_scanned_bank_reads_as_partial_and_still_offers_the_rest() {
     index.insert(1, entry("HIDDEN TEARS", 0b0001, 319));
 
     let mut lib = library(&["A"]);
-    put(&mut lib, "A", Some(listing_rows(&path("A"), &[
-        preset(1, "HIDDEN TEARS", 319),
-        preset(2, "MONOLOW", 319),
-        preset(6, "7THPAD", 359),
-    ])), Some(index));
+    put(
+        &mut lib,
+        "A",
+        Some(listing_rows(
+            &path("A"),
+            &[
+                preset(1, "HIDDEN TEARS", 319),
+                preset(2, "MONOLOW", 319),
+                preset(6, "7THPAD", 359),
+            ],
+        )),
+        Some(index),
+    );
 
     let tagging = lib.tagging(&all(&lib));
-    assert_eq!(tagging, Tagging::Partial { have: 1, want: 3, unread_banks: 0 });
+    assert_eq!(
+        tagging,
+        Tagging::Partial {
+            have: 1,
+            want: 3,
+            unread_banks: 0
+        }
+    );
     assert!(tagging.offers_scan());
     // The header caption states the count and nothing more — the explaining
     // belongs to the TAGS section, which is what the first screenshot of this
@@ -409,16 +552,31 @@ fn ticking_two_tags_shows_presets_carrying_either() {
     index.insert(3, entry("NEITHER", 0b1000, 319));
 
     let mut lib = library(&["A"]);
-    put(&mut lib, "A", Some(listing_rows(&path("A"), &[
-        preset(1, "KICKY", 319),
-        preset(2, "PADDY", 319),
-        preset(3, "NEITHER", 319),
-    ])), Some(index));
+    put(
+        &mut lib,
+        "A",
+        Some(listing_rows(
+            &path("A"),
+            &[
+                preset(1, "KICKY", 319),
+                preset(2, "PADDY", 319),
+                preset(3, "NEITHER", 319),
+            ],
+        )),
+        Some(index),
+    );
 
     let both = lib.filtered(&all(&lib), 0b0011, "");
-    assert_eq!(both.rows.iter().map(|r| r.slot).collect::<Vec<_>>(), vec![1, 2]);
+    assert_eq!(
+        both.rows.iter().map(|r| r.slot).collect::<Vec<_>>(),
+        vec![1, 2]
+    );
     assert_eq!(both.total, 3, "the caption says 2 of 3, not 2 of 2");
-    assert_eq!(lib.filtered(&all(&lib), 0, "").rows.len(), 3, "no filter shows everything");
+    assert_eq!(
+        lib.filtered(&all(&lib), 0, "").rows.len(),
+        3,
+        "no filter shows everything"
+    );
 }
 
 /// **An unscanned preset cannot be tested against a mask** — it has not been
@@ -430,15 +588,26 @@ fn a_tag_filter_counts_what_it_had_to_hide_for_want_of_a_scan() {
     index.insert(1, entry("KICKY", 0b0001, 319));
 
     let mut lib = library(&["A"]);
-    put(&mut lib, "A", Some(listing_rows(&path("A"), &[
-        preset(1, "KICKY", 319),
-        preset(2, "UNREAD", 319),
-        preset(6, "ALSO UNREAD", 359),
-    ])), Some(index));
+    put(
+        &mut lib,
+        "A",
+        Some(listing_rows(
+            &path("A"),
+            &[
+                preset(1, "KICKY", 319),
+                preset(2, "UNREAD", 319),
+                preset(6, "ALSO UNREAD", 359),
+            ],
+        )),
+        Some(index),
+    );
 
     let filtered = lib.filtered(&all(&lib), 0b0001, "");
     assert_eq!(filtered.rows.len(), 1);
-    assert_eq!(filtered.hidden_untagged, 2, "the panel has to be able to say so");
+    assert_eq!(
+        filtered.hidden_untagged, 2,
+        "the panel has to be able to say so"
+    );
 
     // And with no filter up, nothing is hidden — browsing does not depend on
     // tagging.
@@ -455,8 +624,15 @@ fn no_tags_and_not_yet_scanned_are_not_the_same_row() {
     index.insert(1, entry("PLAIN", 0, 319));
 
     let mut lib = library(&["A"]);
-    put(&mut lib, "A", Some(listing_rows(&path("A"),
-        &[preset(1, "PLAIN", 319), preset(2, "UNREAD", 319)])), Some(index));
+    put(
+        &mut lib,
+        "A",
+        Some(listing_rows(
+            &path("A"),
+            &[preset(1, "PLAIN", 319), preset(2, "UNREAD", 319)],
+        )),
+        Some(index),
+    );
 
     let rows = lib.filtered(&all(&lib), 0, "").rows;
     assert_eq!(rows[0].tags, Some(0), "read, and carries nothing");
@@ -473,15 +649,29 @@ fn no_tags_and_not_yet_scanned_are_not_the_same_row() {
 #[test]
 fn a_box_that_cannot_be_tagged_still_browses_and_is_never_offered_a_retry() {
     let mut lib = library(&["A"]);
-    put(&mut lib, "A", Some(listing_rows(&path("A"),
-        &[preset(1, "THE SAW", 366), preset(2, "SQUARE WAVE", 366)])), None);
+    put(
+        &mut lib,
+        "A",
+        Some(listing_rows(
+            &path("A"),
+            &[preset(1, "THE SAW", 366), preset(2, "SQUARE WAVE", 366)],
+        )),
+        None,
+    );
     lib.refused = Some("this box's presets cannot be tagged".into());
 
-    assert_eq!(lib.filtered(&all(&lib), 0, "").rows.len(), 2, "the bank still lists — §10.2");
+    assert_eq!(
+        lib.filtered(&all(&lib), 0, "").rows.len(),
+        2,
+        "the bank still lists — §10.2"
+    );
     let tagging = lib.tagging(&all(&lib));
     assert!(matches!(tagging, Tagging::Unavailable { .. }));
     assert!(!tagging.shows_grid(), "there is nothing to filter by");
-    assert!(!tagging.offers_scan(), "a retry here is a button that cannot succeed");
+    assert!(
+        !tagging.offers_scan(),
+        "a retry here is a button that cannot succeed"
+    );
 
     // And searching by name still works, which is the whole of what an A4 gets.
     assert_eq!(lib.filtered(&all(&lib), 0, "saw").rows.len(), 1);
@@ -495,7 +685,10 @@ fn picking_another_bank_does_not_make_an_unindexable_box_indexable() {
     let mut lib = library(&["A", "B"]);
     lib.refused = Some("no calibration".into());
     for view in [View::All, View::One(path("A")), View::One(path("B"))] {
-        assert!(!lib.tagging(&view.banks(&lib.banks)).shows_grid(), "{view:?}");
+        assert!(
+            !lib.tagging(&view.banks(&lib.banks)).shows_grid(),
+            "{view:?}"
+        );
     }
 }
 
@@ -514,7 +707,10 @@ fn the_progress_line_measures_the_run_rather_than_predicting_it() {
     // Ten presets in two seconds is five a second; 1,179 left is 236s.
     let line = rate_line(10, 1189, Duration::from_secs(2));
     assert!(line.starts_with("10 / 1189 · 5.0/s · "), "{line}");
-    assert!(line.ends_with("3m 56s left"), "minutes, not 236 seconds: {line}");
+    assert!(
+        line.ends_with("3m 56s left"),
+        "minutes, not 236 seconds: {line}"
+    );
 }
 
 /// A cancelled scan has to read as "stopped, and kept", never as a failure —
@@ -528,7 +724,10 @@ fn a_stopped_scan_reports_kept_work_rather_than_a_loss() {
     assert!(line.contains("1m 30s"), "{line}");
 
     let line = report_line(1189, 2, false, Duration::from_secs(540));
-    assert!(line.starts_with("Tagged 1189 preset(s), 2 skipped"), "{line}");
+    assert!(
+        line.starts_with("Tagged 1189 preset(s), 2 skipped"),
+        "{line}"
+    );
     assert!(line.contains("9m 00s"), "{line}");
 }
 
@@ -542,13 +741,28 @@ fn a_bank_that_grew_since_its_scan_offers_the_new_slot() {
     index.insert(2, entry("BAM BASS", 0x400, 1109));
 
     let mut lib = library(&["A"]);
-    put(&mut lib, "A", Some(listing_rows(&path("A"), &[
-        preset(1, "ACIDD", 1109),
-        preset(2, "BAM BASS", 1109),
-        preset(3, "BRAND NEW", 1109),
-    ])), Some(index));
+    put(
+        &mut lib,
+        "A",
+        Some(listing_rows(
+            &path("A"),
+            &[
+                preset(1, "ACIDD", 1109),
+                preset(2, "BAM BASS", 1109),
+                preset(3, "BRAND NEW", 1109),
+            ],
+        )),
+        Some(index),
+    );
 
-    assert_eq!(lib.tagging(&all(&lib)), Tagging::Partial { have: 2, want: 3, unread_banks: 0 });
+    assert_eq!(
+        lib.tagging(&all(&lib)),
+        Tagging::Partial {
+            have: 2,
+            want: 3,
+            unread_banks: 0
+        }
+    );
 }
 
 // --- the search box -----------------------------------------------------------------
@@ -556,8 +770,15 @@ fn a_bank_that_grew_since_its_scan_offers_the_new_slot() {
 #[test]
 fn the_name_search_is_case_insensitive_and_does_not_need_the_index() {
     let mut lib = library(&["A"]);
-    put(&mut lib, "A", Some(listing_rows(&path("A"),
-        &[preset(1, "HIDDEN TEARS", 319), preset(2, "MONOLOW", 319)])), None);
+    put(
+        &mut lib,
+        "A",
+        Some(listing_rows(
+            &path("A"),
+            &[preset(1, "HIDDEN TEARS", 319), preset(2, "MONOLOW", 319)],
+        )),
+        None,
+    );
 
     assert_eq!(lib.filtered(&all(&lib), 0, "mono").rows.len(), 1);
     assert_eq!(lib.filtered(&all(&lib), 0, "  TEARS ").rows.len(), 1);
@@ -589,7 +810,10 @@ fn a_panel_opens_a_previously_scanned_library_with_the_box_switched_off() {
 
     let dir = std::env::temp_dir().join(format!(
         "digi-presets-panel-test-{}",
-        std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
     ));
     let store = PresetIndex::at(&dir);
 
@@ -609,12 +833,18 @@ fn a_panel_opens_a_previously_scanned_library_with_the_box_switched_off() {
     // Two banks off disk, in one list, without a port.
     let rows = lib.filtered(&banks, 0, "").rows;
     assert_eq!(rows.len(), 3);
-    assert_eq!(rows.iter().map(|r| r.slot).collect::<Vec<_>>(), vec![1, 6, 3]);
+    assert_eq!(
+        rows.iter().map(|r| r.slot).collect::<Vec<_>>(),
+        vec![1, 6, 3]
+    );
     assert_eq!(rows[2].bank, path("C"), "and each says which bank it is in");
 
     // The tag grid spans them, and filtering crosses the bank boundary — the
     // whole of what 2026-08-29's hardware session asked for.
-    assert_eq!(lib.tag_cells(&banks).iter().find(|(_, n, _)| *n == "Pad"), Some(&(12, "Pad", 2)));
+    assert_eq!(
+        lib.tag_cells(&banks).iter().find(|(_, n, _)| *n == "Pad"),
+        Some(&(12, "Pad", 2))
+    );
     let pads = lib.filtered(&banks, 1 << 12, "");
     assert_eq!(pads.rows.len(), 2);
     assert_eq!(pads.rows[0].bank, path("A"));
@@ -623,7 +853,16 @@ fn a_panel_opens_a_previously_scanned_library_with_the_box_switched_off() {
     // Six banks were never scanned, so the library is not complete and READ TAGS
     // stays on offer.
     let tagging = lib.tagging(&banks);
-    assert!(matches!(tagging, Tagging::Partial { unread_banks: 6, .. }), "{tagging:?}");
+    assert!(
+        matches!(
+            tagging,
+            Tagging::Partial {
+                unread_banks: 6,
+                ..
+            }
+        ),
+        "{tagging:?}"
+    );
     assert!(tagging.offers_scan());
 
     let _ = std::fs::remove_dir_all(&dir);
@@ -691,6 +930,7 @@ fn a_box_with_no_load_route_is_still_refused_in_words() {
         slug: Some("digitone2"),
         num_tracks: 16,
         max_steps: 128,
+        notes_per_trig: 4,
         default_track_kind: TrackKind::Audio,
         sysex: None,
         pattern_route: PatternRoute::LiveOnly,
@@ -700,15 +940,48 @@ fn a_box_with_no_load_route_is_still_refused_in_words() {
 
     let why = load_blocker(&wired(&NO_LOAD, "TEST")).expect("no route means no load");
     assert!(why.contains("Test Box"), "the box is named: {why}");
-    assert!(why.contains("browse"), "and the rest of the panel still works: {why}");
+    assert!(
+        why.contains("browse"),
+        "and the rest of the panel still works: {why}"
+    );
 }
 
 #[test]
 fn the_selected_track_is_the_one_a_load_lands_on() {
     let digi = PresetLoad::KitTrackSound { slots: 16 };
-    assert_eq!(load_target(Selection { device: 0, track: 0 }, 0, digi), Ok(0));
-    assert_eq!(load_target(Selection { device: 1, track: 11 }, 1, digi), Ok(11));
-    assert_eq!(load_target(Selection { device: 0, track: 15 }, 0, digi), Ok(15));
+    assert_eq!(
+        load_target(
+            Selection {
+                device: 0,
+                track: 0
+            },
+            0,
+            digi
+        ),
+        Ok(0)
+    );
+    assert_eq!(
+        load_target(
+            Selection {
+                device: 1,
+                track: 11
+            },
+            1,
+            digi
+        ),
+        Ok(11)
+    );
+    assert_eq!(
+        load_target(
+            Selection {
+                device: 0,
+                track: 15
+            },
+            0,
+            digi
+        ),
+        Ok(15)
+    );
 }
 
 /// A kit holds sixteen tracks whatever the roll is showing, and the refusal
@@ -720,10 +993,29 @@ fn the_selected_track_is_the_one_a_load_lands_on() {
 #[test]
 fn a_track_outside_a_kit_is_refused_by_the_number_on_screen() {
     let digi = PresetLoad::KitTrackSound { slots: 16 };
-    let err = load_target(Selection { device: 0, track: 16 }, 0, digi).unwrap_err();
-    assert!(err.contains("track 17"), "the human number, not the index: {err}");
+    let err = load_target(
+        Selection {
+            device: 0,
+            track: 16,
+        },
+        0,
+        digi,
+    )
+    .unwrap_err();
+    assert!(
+        err.contains("track 17"),
+        "the human number, not the index: {err}"
+    );
 
-    assert!(load_target(Selection { device: 0, track: 300 }, 0, digi).is_err());
+    assert!(load_target(
+        Selection {
+            device: 0,
+            track: 300
+        },
+        0,
+        digi
+    )
+    .is_err());
 }
 
 /// **The A4's kit holds four sounds for six tracks, and the two extra are not a
@@ -737,12 +1029,18 @@ fn an_a4_has_four_sounds_for_six_tracks_and_says_so() {
     assert_eq!(a4.slots(), 4);
 
     for track in 0..4 {
-        assert_eq!(load_target(Selection { device: 0, track }, 0, a4), Ok(track as u8));
+        assert_eq!(
+            load_target(Selection { device: 0, track }, 0, a4),
+            Ok(track as u8)
+        );
     }
     for track in 4..6 {
         let err = load_target(Selection { device: 0, track }, 0, a4).unwrap_err();
         assert!(err.contains(&format!("track {}", track + 1)), "{err}");
-        assert!(err.contains("FX and CV"), "the refusal must say what they are: {err}");
+        assert!(
+            err.contains("FX and CV"),
+            "the refusal must say what they are: {err}"
+        );
     }
 }
 
@@ -751,10 +1049,15 @@ fn an_a4_has_four_sounds_for_six_tracks_and_says_so() {
 /// goes, which is why it is checked rather than assumed.
 #[test]
 fn a_selection_pointing_at_another_box_is_not_a_load_target() {
-    assert!(
-        load_target(Selection { device: 1, track: 3 }, 0, PresetLoad::KitTrackSound { slots: 16 })
-            .is_err()
-    );
+    assert!(load_target(
+        Selection {
+            device: 1,
+            track: 3
+        },
+        0,
+        PresetLoad::KitTrackSound { slots: 16 }
+    )
+    .is_err());
 }
 
 // --- the formats a box's own kit will not take ------------------------------
@@ -782,12 +1085,23 @@ fn a_native_preset_wears_no_mark() {
 /// two boxes on this desk.
 #[test]
 fn native_is_the_box_s_own_format_and_not_a_constant() {
-    assert_eq!(foreign_format(A4_KIT, A4_KIT), None, "an A4 preset on an A4");
-    assert_eq!(foreign_format(A4_KIT, DIGI), Some("A4"), "the same file on a DN2");
+    assert_eq!(
+        foreign_format(A4_KIT, A4_KIT),
+        None,
+        "an A4 preset on an A4"
+    );
+    assert_eq!(
+        foreign_format(A4_KIT, DIGI),
+        Some("A4"),
+        "the same file on a DN2"
+    );
     assert_eq!(foreign_format(DIGI, A4_KIT), Some("digi"), "and the mirror");
 
     let why = foreign_format_reason(DIGI, A4_KIT).expect("a reason");
-    assert!(why.contains("Digitakt or Digitone"), "named, not called unsupported: {why}");
+    assert!(
+        why.contains("Digitakt or Digitone"),
+        "named, not called unsupported: {why}"
+    );
     let why = foreign_format_reason(A4_KIT, DIGI).expect("a reason");
     assert!(why.contains("Analog Four"), "{why}");
     assert!(
@@ -800,11 +1114,20 @@ fn native_is_the_box_s_own_format_and_not_a_constant() {
 /// container this app knows of that nothing on this desk can load.
 #[test]
 fn an_mk1_preset_is_marked_and_says_why() {
-    assert_eq!(foreign_format(Some(DN1_SOUND_MAGIC_HEAD), DIGI), Some("mk1"));
-    assert_eq!(foreign_format(Some(DN1_SOUND_MAGIC_HEAD), A4_KIT), Some("mk1"));
+    assert_eq!(
+        foreign_format(Some(DN1_SOUND_MAGIC_HEAD), DIGI),
+        Some("mk1")
+    );
+    assert_eq!(
+        foreign_format(Some(DN1_SOUND_MAGIC_HEAD), A4_KIT),
+        Some("mk1")
+    );
 
     let why = foreign_format_reason(Some(DN1_SOUND_MAGIC_HEAD), DIGI).expect("a reason");
-    assert!(why.contains("Digitone mk1"), "named, not called unsupported: {why}");
+    assert!(
+        why.contains("Digitone mk1"),
+        "named, not called unsupported: {why}"
+    );
     assert!(
         why.contains("browses") || why.contains("browse"),
         "and the rest of the panel still works on it: {why}"
@@ -842,8 +1165,14 @@ fn a_scanned_row_carries_its_container_format() {
     put(&mut lib, "C", None, Some(index));
 
     let rows = lib.filtered(&all(&lib), 0, "").rows;
-    let organic = rows.iter().find(|r| r.name == "ORGANIC").expect("the mk1 one");
-    let deep = rows.iter().find(|r| r.name == "DEEP SPACE").expect("the native one");
+    let organic = rows
+        .iter()
+        .find(|r| r.name == "ORGANIC")
+        .expect("the mk1 one");
+    let deep = rows
+        .iter()
+        .find(|r| r.name == "DEEP SPACE")
+        .expect("the native one");
 
     assert_eq!(foreign_format(organic.format, DIGI), Some("mk1"));
     assert_eq!(foreign_format(deep.format, DIGI), None);
@@ -863,14 +1192,40 @@ fn a_listed_row_has_no_format_because_nothing_read_the_file() {
 fn a_tagged_library_with_no_formats_still_offers_a_scan() {
     let mut lib = library(&["A"]);
     let mut index = BankIndex::new("digitone2", &path("A"), "0050", 2);
-    index.insert(1, IndexEntry { name: "OLD".into(), tag_mask: 4, size: 319, format: None });
-    index.insert(2, IndexEntry { name: "ALSO OLD".into(), tag_mask: 8, size: 319, format: None });
+    index.insert(
+        1,
+        IndexEntry {
+            name: "OLD".into(),
+            tag_mask: 4,
+            size: 319,
+            format: None,
+        },
+    );
+    index.insert(
+        2,
+        IndexEntry {
+            name: "ALSO OLD".into(),
+            tag_mask: 8,
+            size: 319,
+            format: None,
+        },
+    );
     put(&mut lib, "A", None, Some(index));
 
     let tagging = lib.tagging(&all(&lib));
-    assert_eq!(tagging, Tagging::Complete { count: 2, unread_formats: 2 });
+    assert_eq!(
+        tagging,
+        Tagging::Complete {
+            count: 2,
+            unread_formats: 2
+        }
+    );
     assert!(tagging.offers_scan(), "there is still something to read");
-    assert!(tagging.caption().contains("2 unread"), "and it says so: {}", tagging.caption());
+    assert!(
+        tagging.caption().contains("2 unread"),
+        "and it says so: {}",
+        tagging.caption()
+    );
 }
 
 /// Once the formats are in, the same library is done and stops offering.
@@ -883,7 +1238,13 @@ fn a_library_with_its_formats_read_is_finished() {
     put(&mut lib, "A", None, Some(index));
 
     let tagging = lib.tagging(&all(&lib));
-    assert_eq!(tagging, Tagging::Complete { count: 2, unread_formats: 0 });
+    assert_eq!(
+        tagging,
+        Tagging::Complete {
+            count: 2,
+            unread_formats: 0
+        }
+    );
     assert!(!tagging.offers_scan());
     assert_eq!(tagging.caption(), "2 tagged");
 }

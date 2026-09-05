@@ -59,11 +59,13 @@
 // typed, for the reason that list exists: `▾` and `▼` were both tofu, and a shape
 // has no font behind it. Nothing here introduces a mark that has not been seen.
 
+use digi_core::history::History;
 use digi_core::song::{clamp_row_length, EndAction, SongRow, LABELS, MAX_ROWS};
 use digi_core::{DeviceId, Session};
 use eframe::egui::{self, Ui};
 
 use crate::engine::EngineLink;
+use crate::ui::midi_import::MidiImportPanel;
 
 /// What one frame of this panel did.
 #[derive(Debug, Clone, Copy, Default)]
@@ -82,10 +84,33 @@ pub struct SongPanel {
     /// is the tallest thing in the panel, and two boxes' worth would push the row
     /// list off the bottom.
     mutes_open: Option<DeviceId>,
+    /// The "Import MIDI file — as a song" dialog's state (MIDI_IMPORT_DESIGN.md
+    /// §5.2). Held here because this panel is §5.1's primary entry point for the
+    /// gesture, and shared with the SCENES popup through [`Self::import_mut`] —
+    /// two doors into the one dialog, never two dialogs.
+    import: MidiImportPanel,
 }
 
 impl SongPanel {
-    pub fn ui(&mut self, ui: &mut Ui, session: &mut Session, engine: &mut EngineLink) -> Outcome {
+    /// The song-import dialog's state, shared with the SCENES popup's entry
+    /// point — `main` hands this to `transport::ui` so both doors open the one
+    /// dialog.
+    pub fn import_mut(&mut self) -> &mut MidiImportPanel {
+        &mut self.import
+    }
+
+    /// Read-only, for the shell and the integration tests.
+    pub fn import(&self) -> &MidiImportPanel {
+        &self.import
+    }
+
+    pub fn ui(
+        &mut self,
+        ui: &mut Ui,
+        session: &mut Session,
+        engine: &mut EngineLink,
+        history: &mut History,
+    ) -> Outcome {
         let mut out = Outcome::default();
 
         let rows = session.song().map(|s| s.len()).unwrap_or(0);
@@ -105,11 +130,45 @@ impl SongPanel {
         ui.add_space(6.0);
         out.edited |= self.row_editor(ui, session, engine);
 
+        // The import dialog is a modal over the whole window: drawn last, on
+        // top, and it owns its history step (`MidiImportPanel::apply` has the
+        // why), so its landing is not folded into `out.edited`.
+        ui.add_space(6.0);
+        self.import_section(ui, session);
+        self.import.dialog_ui(ui, session, history, engine);
+
         out
     }
 
+    /// MIDI IMPORT — §5.1's "As a song" entry point. The button asks for the
+    /// file; everything after that is the dialog's. A parse failure is shown
+    /// here because a file that would not score never reaches the dialog.
+    fn import_section(&mut self, ui: &mut Ui, session: &Session) {
+        super::section_header(ui, "MIDI IMPORT", None);
+        ui.horizontal(|ui| {
+            if ui
+                .button("IMPORT MIDI FILE…")
+                .on_hover_text(
+                    "Bring a MIDI file in as scenes and song rows — pick where \
+                     each part goes, and the plan shows before anything is written",
+                )
+                .clicked()
+            {
+                self.import.begin_import(session);
+            }
+            if let Some(failure) = self.import.failure() {
+                ui.colored_label(super::CAUTION, failure);
+            }
+        });
+    }
+
     /// SONG/PATTERN, the song's name, and the END row.
-    fn transport_row(&mut self, ui: &mut Ui, session: &mut Session, engine: &mut EngineLink) -> bool {
+    fn transport_row(
+        &mut self,
+        ui: &mut Ui,
+        session: &mut Session,
+        engine: &mut EngineLink,
+    ) -> bool {
         let mut edited = false;
         let playing = engine.song_position();
 
@@ -183,7 +242,12 @@ impl SongPanel {
     }
 
     /// The row list, and the buttons that add to and reorder it.
-    fn rows_section(&mut self, ui: &mut Ui, session: &mut Session, engine: &mut EngineLink) -> bool {
+    fn rows_section(
+        &mut self,
+        ui: &mut Ui,
+        session: &mut Session,
+        engine: &mut EngineLink,
+    ) -> bool {
         let mut edited = false;
         let rows = session.song().map(|s| s.len()).unwrap_or(0);
         let selected = engine.selected_row().min(rows.saturating_sub(1));
@@ -239,7 +303,10 @@ impl SongPanel {
                         } else {
                             super::TEXT_SECONDARY
                         };
-                        let label = egui::RichText::new(line).monospace().size(10.5).color(colour);
+                        let label = egui::RichText::new(line)
+                            .monospace()
+                            .size(10.5)
+                            .color(colour);
                         let response = ui.selectable_label(selected == index, label);
                         let response = if is_broken {
                             response.on_hover_text(
@@ -296,17 +363,23 @@ impl SongPanel {
                 .clicked()
                 && session.song_mut().remove(selected).is_some()
             {
-                engine.select_row(selected.min(session.song().map(|s| s.len()).unwrap_or(1).saturating_sub(1)));
+                engine.select_row(
+                    selected.min(
+                        session
+                            .song()
+                            .map(|s| s.len())
+                            .unwrap_or(1)
+                            .saturating_sub(1),
+                    ),
+                );
                 edited = true;
             }
 
             ui.separator();
 
             for (down, hint) in [(false, "Move this row up"), (true, "Move this row down")] {
-                let (rect, response) = ui.allocate_exact_size(
-                    egui::vec2(18.0, 16.0),
-                    egui::Sense::click(),
-                );
+                let (rect, response) =
+                    ui.allocate_exact_size(egui::vec2(18.0, 16.0), egui::Sense::click());
                 let enabled = rows > 1;
                 let colour = if enabled && response.hovered() {
                     super::TEXT_BRIGHT
@@ -347,7 +420,11 @@ impl SongPanel {
         // LABEL — free text, because the box lets a row be named after its
         // pattern as well as after a section.
         ui.horizontal(|ui| {
-            ui.label(egui::RichText::new("LABEL").size(9.0).color(super::TEXT_DIMMER));
+            ui.label(
+                egui::RichText::new("LABEL")
+                    .size(9.0)
+                    .color(super::TEXT_DIMMER),
+            );
             let mut label = row.label.clone();
             if ui
                 .add(
@@ -382,7 +459,11 @@ impl SongPanel {
 
         // PTN — a scene, and the panel's one substitution from the box.
         ui.horizontal(|ui| {
-            ui.label(egui::RichText::new("SCENE").size(9.0).color(super::TEXT_DIMMER));
+            ui.label(
+                egui::RichText::new("SCENE")
+                    .size(9.0)
+                    .color(super::TEXT_DIMMER),
+            );
             let names: Vec<String> = session.scenes.iter().map(|s| s.name.clone()).collect();
             let current = names
                 .get(row.scene)
@@ -405,7 +486,11 @@ impl SongPanel {
 
         // ROW PLAY COUNT and ROW LENGTH.
         ui.horizontal(|ui| {
-            ui.label(egui::RichText::new("PLAYS").size(9.0).color(super::TEXT_DIMMER));
+            ui.label(
+                egui::RichText::new("PLAYS")
+                    .size(9.0)
+                    .color(super::TEXT_DIMMER),
+            );
             let mut plays = row.plays();
             if ui
                 .add(egui::DragValue::new(&mut plays).range(1..=99).speed(0.1))
@@ -420,7 +505,11 @@ impl SongPanel {
 
             ui.separator();
 
-            ui.label(egui::RichText::new("LEN").size(9.0).color(super::TEXT_DIMMER));
+            ui.label(
+                egui::RichText::new("LEN")
+                    .size(9.0)
+                    .color(super::TEXT_DIMMER),
+            );
             let mut own_length = row.length_steps.is_some();
             if ui
                 .checkbox(&mut own_length, "")
@@ -475,7 +564,11 @@ impl SongPanel {
         // piecewise, and a column that pretended otherwise would be a lie with a
         // number in it.
         ui.horizontal(|ui| {
-            ui.label(egui::RichText::new("BPM").size(9.0).color(super::TEXT_DIMMER));
+            ui.label(
+                egui::RichText::new("BPM")
+                    .size(9.0)
+                    .color(super::TEXT_DIMMER),
+            );
             ui.label(
                 egui::RichText::new(format!("{:.1}", session.tempo_bpm))
                     .monospace()
@@ -529,12 +622,21 @@ impl SongPanel {
                         // A count, not a mark: "how many" is the thing a glance
                         // wants, and it distinguishes an all-unmuted override from
                         // inheriting, which no icon can.
-                        format!("{} muted", (0..num_tracks).filter(|t| row.mutes(id, *t) == Some(true)).count())
+                        format!(
+                            "{} muted",
+                            (0..num_tracks)
+                                .filter(|t| row.mutes(id, *t) == Some(true))
+                                .count()
+                        )
                     } else {
                         String::from("follows the pattern")
                     })
                     .size(9.5)
-                    .color(if overrides { super::TEXT_SECONDARY } else { super::TEXT_DIM }),
+                    .color(if overrides {
+                        super::TEXT_SECONDARY
+                    } else {
+                        super::TEXT_DIM
+                    }),
                 );
                 if overrides
                     && ui
@@ -568,12 +670,14 @@ impl SongPanel {
                     let text = egui::RichText::new(format!("{:02}", track + 1))
                         .monospace()
                         .size(9.5);
-                    let response = ui.selectable_label(muted, text).on_hover_text(match by_row {
-                        Some(true) => "Muted by this row",
-                        Some(false) => "Sounded by this row",
-                        None if inherited => "Muted by the pattern — this row says nothing",
-                        None => "Sounding — this row says nothing",
-                    });
+                    let response = ui
+                        .selectable_label(muted, text)
+                        .on_hover_text(match by_row {
+                            Some(true) => "Muted by this row",
+                            Some(false) => "Sounded by this row",
+                            None if inherited => "Muted by the pattern — this row says nothing",
+                            None => "Sounding — this row says nothing",
+                        });
                     if response.clicked() {
                         if let Some(r) = session.song_mut().row_mut(index) {
                             r.set_mute(id, track, !muted);
@@ -751,7 +855,10 @@ mod tests {
         // inherits rather than overriding.
         let ctx = egui::Context::default();
         let mut engine = EngineLink::with_sinks(Box::new(|_| {
-            (Box::new(NullSink) as Box<dyn digi_engine::transport::PortSink>, Vec::new())
+            (
+                Box::new(NullSink) as Box<dyn digi_engine::transport::PortSink>,
+                Vec::new(),
+            )
         }));
         let mut session = session();
         let dt2 = session.devices[0].id;
@@ -759,7 +866,11 @@ mod tests {
         session.add_song_row(1).unwrap();
         session.song_mut().row_mut(0).unwrap().label = "INTRO".into();
         session.song_mut().row_mut(0).unwrap().length_steps = Some(8);
-        session.song_mut().row_mut(1).unwrap().set_mute(dt2, 3, true);
+        session
+            .song_mut()
+            .row_mut(1)
+            .unwrap()
+            .set_mute(dt2, 3, true);
         // A row naming a scene that is gone, which the list marks in amber.
         session.song_mut().push(SongRow::new(9)).unwrap();
 
@@ -768,6 +879,7 @@ mod tests {
         let mut panel = SongPanel {
             reference_visible: true,
             mutes_open: Some(dt2),
+            import: MidiImportPanel::default(),
         };
 
         // `engine` is passed through rather than captured: a closure holding it
@@ -779,8 +891,9 @@ mod tests {
             session: &mut Session,
             engine: &mut EngineLink,
         ) {
+            let mut history = History::default();
             let mut output = ctx.run_ui(egui::RawInput::default(), |ui| {
-                panel.ui(ui, session, engine);
+                panel.ui(ui, session, engine, &mut history);
             });
             output.textures_delta.clear();
         }

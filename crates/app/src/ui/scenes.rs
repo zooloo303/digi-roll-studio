@@ -42,11 +42,22 @@ use digi_core::{PatternRef, Session};
 use eframe::egui::{self, Ui};
 
 use crate::engine::EngineLink;
+use crate::ui::midi_import::MidiImportPanel;
 
 /// Draw the full scene controls. Returns whether the session changed.
 ///
 /// Called from `transport.rs`'s zone 5, inside the popup its scene pill opens.
-pub fn ui(ui: &mut Ui, session: &mut Session, engine: &mut EngineLink) -> bool {
+/// `import` is the shell's song-import dialog state: the IMPORT MIDI FILE…
+/// button below is one of §5.1's two entry points for the "as a song"
+/// gesture, and the dialog itself is drawn by the shell, modally, because a
+/// question inside a popup that can close is a question nobody is asked —
+/// the close-guard argument `main.rs` makes for the write workers.
+pub fn ui(
+    ui: &mut Ui,
+    session: &mut Session,
+    engine: &mut EngineLink,
+    import: &mut MidiImportPanel,
+) -> bool {
     let mut changed = false;
     // A project file is the only way to get here with no scenes — nothing in the
     // app can remove the last one — and the rest of this indexes freely.
@@ -74,7 +85,9 @@ pub fn ui(ui: &mut Ui, session: &mut Session, engine: &mut EngineLink) -> bool {
         }
         if ui
             .add_enabled(session.scenes.len() > 1, egui::Button::new("−").small())
-            .on_hover_text("Remove this scene. The last one cannot go: every box plays through a scene")
+            .on_hover_text(
+                "Remove this scene. The last one cannot go: every box plays through a scene",
+            )
             .clicked()
             && session.remove_scene(editing)
         {
@@ -100,7 +113,11 @@ pub fn ui(ui: &mut Ui, session: &mut Session, engine: &mut EngineLink) -> bool {
         }
 
         if let Some(q) = queued.filter(|q| *q != playing) {
-            let name = session.scenes.get(q).map(|s| s.name.as_str()).unwrap_or("?");
+            let name = session
+                .scenes
+                .get(q)
+                .map(|s| s.name.as_str())
+                .unwrap_or("?");
             ui.colored_label(super::ACCENT, format!("» {name} queued"));
         }
     });
@@ -166,6 +183,22 @@ pub fn ui(ui: &mut Ui, session: &mut Session, engine: &mut EngineLink) -> bool {
             }
         }
     });
+
+    // §5.1's second entry point for the "as a song" gesture (the SONG panel
+    // has the other). The button only asks for the file; the dialog opens
+    // from the shell, above every panel, because a modal inside a popup is a
+    // modal that can lose its window.
+    ui.add_space(4.0);
+    if ui
+        .small_button("IMPORT MIDI FILE…")
+        .on_hover_text(
+            "Bring a MIDI file in as scenes and song rows — pick where each \
+             part goes, and the plan shows before anything is written",
+        )
+        .clicked()
+    {
+        import.begin_import(session);
+    }
 
     changed
 }

@@ -181,6 +181,14 @@ pub struct DeviceModel {
     pub slug: Option<&'static str>,
     pub num_tracks: usize,
     pub max_steps: u16,
+    /// How many notes one trig stores. The digis' `spec.trig.max_notes` is 4;
+    /// the A4's chord path is a root plus NO2–NO4 (hardware-verified
+    /// 2026-09-02), which is the same four. The MIDI import's polyphony pass
+    /// (MIDI_IMPORT_DESIGN.md §4.6) reads the cap from here, never as a
+    /// literal — per the model's own rule, new per-box facts are fields, not
+    /// `match` arms. `notes_per_trig_matches_the_spec` pins the digi entries
+    /// against their specs so the two tables cannot drift.
+    pub notes_per_trig: u8,
     pub default_track_kind: TrackKind,
     pub sysex: Option<SpecFn>,
     /// How a whole pattern gets on and off this box.
@@ -259,6 +267,7 @@ pub static DT2: DeviceModel = DeviceModel {
     slug: Some("digitakt2"),
     num_tracks: 16,
     max_steps: 128,
+    notes_per_trig: 4,
     default_track_kind: TrackKind::Audio,
     sysex: Some(dt2_spec),
     pattern_route: PatternRoute::Request,
@@ -272,6 +281,7 @@ pub static DN2: DeviceModel = DeviceModel {
     slug: Some("digitone2"),
     num_tracks: 16,
     max_steps: 128,
+    notes_per_trig: 4,
     default_track_kind: TrackKind::Audio,
     sysex: Some(dn2_spec),
     pattern_route: PatternRoute::Request,
@@ -308,6 +318,7 @@ pub static A4: DeviceModel = DeviceModel {
     slug: Some("analogfour"),
     num_tracks: 6,
     max_steps: 64,
+    notes_per_trig: 4,
     default_track_kind: TrackKind::Audio,
     sysex: None,
     pattern_route: PatternRoute::RequestGen1,
@@ -574,7 +585,11 @@ impl Device {
     /// patterns alone. Returns whether both ends are bound.
     pub fn rebind_ports(&mut self, available_in: &[PortRef], available_out: &[PortRef]) -> bool {
         self.io.input = self.io.input.take().and_then(|p| rematch(&p, available_in));
-        self.io.output = self.io.output.take().and_then(|p| rematch(&p, available_out));
+        self.io.output = self
+            .io
+            .output
+            .take()
+            .and_then(|p| rematch(&p, available_out));
         self.io.input.is_some() && self.io.output.is_some()
     }
 }
@@ -614,14 +629,35 @@ mod model_key {
         s.serialize_str(m.key)
     }
 
-    pub fn deserialize<'de, D: Deserializer<'de>>(
-        d: D,
-    ) -> Result<&'static DeviceModel, D::Error> {
+    pub fn deserialize<'de, D: Deserializer<'de>>(d: D) -> Result<&'static DeviceModel, D::Error> {
         let key = String::deserialize(d)?;
         model_for_key(&key).ok_or_else(|| {
             serde::de::Error::custom(format!(
                 "unknown device model {key:?} — this project was made with a build that had it"
             ))
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // MIDI_IMPORT_DESIGN.md §6: the field and the spec are two tables that
+    // must never drift — the import's polyphony cap reads `notes_per_trig`,
+    // the wire encoder reads `spec.trig.max_notes`, and a trig that disagrees
+    // with itself drops notes on write.
+    #[test]
+    fn notes_per_trig_matches_the_spec() {
+        for model in [&DT2, &DN2] {
+            let spec = model.spec().expect("a digi has a spec");
+            assert_eq!(
+                model.notes_per_trig as usize, spec.trig.max_notes,
+                "{}'s notes_per_trig disagrees with its spec",
+                model.key
+            );
+        }
+        // The A4 has no spec; its cap is the chord path, root plus NO2–NO4.
+        assert_eq!(A4.notes_per_trig, 4);
     }
 }

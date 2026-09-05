@@ -78,16 +78,17 @@ use std::path::Path;
 
 use digi_core::device::DeviceId;
 use digi_core::edit_ops::{
-    clear_track, duplicate_last_bar, set_selection_length, transpose_room, transpose_track,
-    LenEntry, ResizeOpts, Transposed, OCTAVE, VEL_MAX, VEL_MIN,
+    clamp_micro, clamp_velocity, clear_track, duplicate_last_bar, set_selection_length,
+    transpose_room, transpose_track, LenEntry, ResizeOpts, Transposed, OCTAVE, VEL_MAX, VEL_MIN,
 };
 use digi_core::history::History;
-use digi_core::lengths::snap_len_fine;
-use digi_core::midifile::{midi_file_name, midi_file_to_notes, track_to_midi_file};
-use digi_core::model::PLockLane;
+use digi_core::lengths::{snap_len_fine, LEN_MIN};
+use digi_core::midifile::score::{bar_starts, score_file, steps_per_bar, RawNote, Score};
+use digi_core::midifile::{midi_file_name, midi_file_to_notes, track_to_midi_file, Imported};
+use digi_core::model::{PLockLane, TrackScale};
 use digi_core::{Session, Track};
-use digi_protocol::pattern::{length_byte_to_steps, steps_to_length_byte};
 use digi_protocol::params::writable_params_for;
+use digi_protocol::pattern::{length_byte_to_steps, steps_to_length_byte};
 use eframe::egui::{self, Color32, Ui};
 
 use crate::ui::pianoroll::{PianoRoll, ZOOM_MAX, ZOOM_MIN};
@@ -121,22 +122,23 @@ const READ_ONLY_LANE_CHIP: Color32 = Color32::from_gray(70);
 /// 2. **Already there before this packet.** A MIDI file has no PROB, no FILL
 ///    and no COND, so trig conditions do not survive either direction; swing
 ///    and micro-timing are baked into the note positions.
-/// 3. **New, and the reason this packet exists.** Import reads only the
-///    first note-bearing track and cannot offset it, so a multi-track DAW
-///    file will likely bring in the wrong part, or nothing. A track chooser
-///    and a from-bar control are coming; round-tripping a file this app
-///    exported works today. The measured numbers behind this claim are
-///    `PLAN.md`'s Parked entry "MIDI import against a file this app did not
-///    write" — a ten-track, 384 PPQN file whose first note-bearing track
-///    (bass, entering at step 139) imported as nothing, because the box only
-///    holds 128 steps and there is no offset control to move it into range.
+/// 3. **Rewritten for Phase B (2026-09-05).** Import used to read only the
+///    first note-bearing track and could not offset it, so a multi-track DAW
+///    file would likely bring in the wrong part, or nothing. That limit is
+///    gone: a file with more to choose from opens a small chooser — which
+///    part, from which bar, for how many bars, with a 3/2-scale suggestion
+///    when the part looks like triplets. The measured numbers behind the old
+///    claim are still `PLAN.md`'s Parked entry "MIDI import against a file
+///    this app did not write" — a ten-track, 384 PPQN file whose first
+///    note-bearing track (bass, entering at step 139) imported as nothing,
+///    because the box only holds 128 steps and there was no offset control
+///    to move it into range.
 const MIDI_IMPORT_WARNING: &str = "Import replaces this track's notes, its p-lock lanes and its \
      provenance. A MIDI file has no PROB, no FILL and no COND, so trig conditions do not \
      survive either direction, and swing and micro-timing are baked into the note positions. \
-     Import currently reads only the first note-bearing track in the file and cannot offset \
-     it, so a multi-track file from a DAW will likely bring in the wrong part, or nothing — a \
-     track chooser and a from-bar control are coming, and round-tripping a file this app \
-     exported works today.";
+     A file holding more than this track can take opens a small chooser — you pick which part \
+     and which bars to bring in, with a 3/2-scale suggestion when the part looks like triplets \
+     — and a single-part file that fits still imports in one click.";
 
 /// What one frame of the panel did.
 #[derive(Debug, Clone, Copy, Default)]
@@ -155,15 +157,56 @@ pub struct Outcome {
 /// The last thing the MIDI FILES group did, shown until the next thing does.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Status {
-    Exported { path: std::path::PathBuf, notes: usize },
-    Imported { name: String, notes: usize, dropped: usize },
+    Exported {
+        path: std::path::PathBuf,
+        notes: usize,
+    },
+    Imported {
+        name: String,
+        notes: usize,
+        dropped: usize,
+    },
     /// Already worded for a person.
     Failed(String),
+}
+
+/// A MIDI file waiting on the chooser — Phase B of MIDI_IMPORT_DESIGN.md §5.1,
+/// the "Into this track" gesture's second half. The file has been read and
+/// scored; what the track is about to get is the one part, from-bar and bar
+/// count the user picks here. Replaces the old behaviour of silently taking
+/// the first note-bearing track.
+pub struct MidiChoice {
+    pub name: String,
+    pub score: Score,
+    /// The bar boundaries of the whole file, computed once at open.
+    pub bars: Vec<(u64, digi_core::midifile::Meter)>,
+    /// The part index into `score.parts`.
+    pub part: usize,
+    /// 0-based bar index into `bars`; the field adds one when it is drawn.
+    pub start_bar: usize,
+    /// Bars to import, 1..=max. Defaulted at open to all the part's bars,
+    /// capped to what the destination track can hold.
+    pub bar_count: usize,
+    /// The ceiling `bar_count` was capped against, kept so a slider change of
+    /// start bar can re-cap without re-deriving.
+    pub max_bars: usize,
+    /// The destination track's step limit — `DeviceModel::max_steps`, not
+    /// `edit_ops::MAX_STEPS`, which is only the global ceiling.
+    pub max_steps: u16,
+    /// Offered when the part reads as triplets (§4.7): at 3/2 a 16th-triplet
+    /// is exactly one step, so the file's own grid lands on the box's.
+    pub suggest_three_halves: bool,
+    /// Whether the suggestion was taken.
+    pub three_halves: bool,
 }
 
 pub struct EditPanel {
     chooser: Box<dyn Chooser>,
     status: Option<Status>,
+    /// The import chooser, `Some` while a multi-part or too-long MIDI file is
+    /// waiting on an answer. Drawn as a modal by [`EditPanel::chooser_ui`],
+    /// which the MIDI FILE group reaches at the end of `midi_group`.
+    midi_choice: Option<MidiChoice>,
     /// The clear button's confirmation. A clear is undoable now, so this is not a
     /// safety rail so much as a stop on the reflex — it empties a whole track from
     /// a button that sits next to `Duplicate bar`.
@@ -202,6 +245,7 @@ impl EditPanel {
         Self {
             chooser,
             status: None,
+            midi_choice: None,
             confirm_clear: false,
             adding_lane: false,
             reference_visible: false,
@@ -212,6 +256,13 @@ impl EditPanel {
 
     pub fn status(&self) -> Option<&Status> {
         self.status.as_ref()
+    }
+
+    /// The file the chooser is currently asking about, if one is — public so
+    /// the shell (and the integration tests) can see that an import is
+    /// waiting on an answer rather than failed or done.
+    pub fn midi_choice(&self) -> Option<&MidiChoice> {
+        self.midi_choice.as_ref()
     }
 
     // --- the decisions, all reachable without a window ------------------------
@@ -235,8 +286,10 @@ impl EditPanel {
                 true
             }
             Err(e) => {
-                self.status =
-                    Some(Status::Failed(format!("could not write {}: {e}", path.display())));
+                self.status = Some(Status::Failed(format!(
+                    "could not write {}: {e}",
+                    path.display()
+                )));
                 false
             }
         }
@@ -267,43 +320,135 @@ impl EditPanel {
         selection: Selection,
         roll: &mut PianoRoll,
     ) -> bool {
-        let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+        let name = path
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_default();
         let bytes = match std::fs::read(path) {
             Ok(bytes) => bytes,
             Err(e) => {
-                self.status =
-                    Some(Status::Failed(format!("could not read {}: {e}", path.display())));
+                self.status = Some(Status::Failed(format!(
+                    "could not read {}: {e}",
+                    path.display()
+                )));
                 return false;
             }
         };
-        let imported = match midi_file_to_notes(&bytes, digi_core::edit_ops::MAX_STEPS) {
-            Ok(imported) => imported,
+        // Phase B of MIDI_IMPORT_DESIGN.md §5.1: score the file first, then
+        // decide whether one click is enough. A single part that fits goes
+        // straight in exactly as before — no dialog for the case that never
+        // had a question to answer.
+        let score = match score_file(&bytes) {
+            Ok(score) => score,
             Err(e) => {
                 self.status = Some(Status::Failed(format!("could not read {name}: {e}")));
                 return false;
             }
         };
-        if imported.notes.is_empty() {
-            // Two different failures reach here and they had one message between
-            // them, which is why a ten-track file full of music reported as
-            // empty. `dropped` separates them and is already in hand: it counts
-            // notes that parsed fine and then fell past the longest track a box
-            // can hold, so a non-zero one means the file has music in it and
-            // none of it is inside the first 8 bars.
-            self.status = Some(Status::Failed(match imported.dropped {
-                0 => format!("no notes found in {name}"),
-                1 => format!("nothing imported from {name} — its 1 note lands past 8 bars"),
-                n => format!("nothing imported from {name} — all {n} notes land past 8 bars"),
-            }));
+        // The destination's own ceiling, not the global 128 — an A4 holds 64.
+        let max_steps = session
+            .devices
+            .get(selection.device)
+            .map(|d| d.model.max_steps)
+            .unwrap_or(digi_core::edit_ops::MAX_STEPS);
+        let bars = bar_starts(&score);
+        let fits = score.parts.len() == 1 && {
+            let last = score.parts[0].stats.last_bar;
+            bars.get(last as usize)
+                .map_or(0, |&(_, m)| steps_per_bar(m) as usize)
+                * (last as usize + 1)
+                <= usize::from(max_steps)
+        };
+        if score.parts.len() == 1 && fits {
+            let imported = match midi_file_to_notes(&bytes, max_steps) {
+                Ok(imported) => imported,
+                Err(e) => {
+                    self.status = Some(Status::Failed(format!("could not read {name}: {e}")));
+                    return false;
+                }
+            };
+            if imported.notes.is_empty() {
+                // Two different failures reach here and they had one message
+                // between them, which is why a ten-track file full of music
+                // reported as empty. `dropped` separates them and is already
+                // in hand: it counts notes that parsed fine and then fell
+                // past the longest track a box can hold, so a non-zero one
+                // means the file has music in it and none of it is inside
+                // the first bars.
+                self.status = Some(Status::Failed(match imported.dropped {
+                    0 => format!("no notes found in {name}"),
+                    1 => format!("nothing imported from {name} — its 1 note lands past 8 bars"),
+                    n => format!("nothing imported from {name} — all {n} notes land past 8 bars"),
+                }));
+                return false;
+            }
+            return self.apply_import(
+                session,
+                selection,
+                roll,
+                imported.notes,
+                imported.length_steps,
+                None,
+                name,
+                imported.dropped,
+            );
+        }
+        if score.parts.is_empty() {
+            self.status = Some(Status::Failed(format!("no notes found in {name}")));
             return false;
         }
+        // Anything else asks first: which part, from which bar, for how long.
+        // Defaults follow §5.1 — the first part, from its first sounding bar,
+        // all its bars, capped to what the destination can hold.
+        let (start_bar, suggest_three_halves) = {
+            let part = &score.parts[0];
+            (
+                part.stats.first_bar as usize,
+                part.stats.looks_like_triplets,
+            )
+        };
+        let max_bars = max_bars(&bars, start_bar, TrackScale::One, max_steps);
+        self.midi_choice = Some(MidiChoice {
+            name,
+            bars,
+            score,
+            part: 0,
+            start_bar,
+            bar_count: max_bars,
+            max_bars,
+            max_steps,
+            suggest_three_halves,
+            three_halves: false,
+        });
+        false
+    }
+
+    /// The chooser's answer, written over the selected track. One path for
+    /// both gestures: the single-part fast path calls it with the whole file
+    /// and no scale change, the chooser with what the user picked. Replace
+    /// semantics unchanged from the pre-Phase-B import — notes, length, and
+    /// the automation and provenance that rode on what was there.
+    fn apply_import(
+        &mut self,
+        session: &mut Session,
+        selection: Selection,
+        roll: &mut PianoRoll,
+        notes: Vec<digi_core::Note>,
+        length_steps: u16,
+        scale: Option<TrackScale>,
+        name: String,
+        dropped: usize,
+    ) -> bool {
         let Some(track) = crate::ui::tracks::track_mut(session, selection) else {
             self.status = Some(Status::Failed(String::from("no track is selected")));
             return false;
         };
-        let notes = imported.notes.len();
-        track.length_steps = imported.length_steps;
-        track.notes = imported.notes;
+        let count = notes.len();
+        track.length_steps = length_steps;
+        track.notes = notes;
+        if let Some(scale) = scale {
+            track.scale = scale;
+        }
         // The music was replaced, so the automation that was riding on it goes with
         // it — locks ride on trigs, and lanes left behind would be locked to notes
         // that no longer exist. `js/main.js` clears both for the same reason.
@@ -313,8 +458,146 @@ impl EditPanel {
         clear_source(session, selection);
         // Ids from the music that was there name nothing in the music that is.
         roll.clear_selection();
-        self.status = Some(Status::Imported { name, notes, dropped: imported.dropped });
+        self.status = Some(Status::Imported {
+            name,
+            notes: count,
+            dropped,
+        });
         true
+    }
+
+    /// The chooser's modal: part, start bar, bar count, and the 3/2-scale
+    /// suggestion when the part reads as triplets. Returns `true` when an
+    /// import landed, so the caller can mark the frame edited.
+    fn chooser_ui(
+        &mut self,
+        ui: &mut Ui,
+        session: &mut Session,
+        selection: Selection,
+        roll: &mut PianoRoll,
+    ) -> bool {
+        let Some(choice) = &mut self.midi_choice else {
+            return false;
+        };
+        let mut open = true;
+        let mut cancel = false;
+        let mut apply = false;
+        egui::Window::new(format!("Import {}", choice.name))
+            .collapsible(false)
+            .resizable(false)
+            .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+            .open(&mut open)
+            .show(ui.ctx(), |ui| {
+                let choice = &mut *choice;
+                // The part dropdown names what a musician would check: name,
+                // channel, how many notes, and the pitch range.
+                let before = choice.part;
+                egui::ComboBox::from_label("Part")
+                    .selected_text(part_label(&choice.score.parts[choice.part]))
+                    .show_ui(ui, |ui| {
+                        for (i, p) in choice.score.parts.iter().enumerate() {
+                            ui.selectable_value(&mut choice.part, i, part_label(p));
+                        }
+                    });
+                // Changing the part re-defaults the range to that part's bars
+                // and re-offers its own triplet suggestion — the old part's
+                // answers are not the new part's.
+                if choice.part != before {
+                    let picked = &choice.score.parts[choice.part];
+                    choice.start_bar = picked.stats.first_bar as usize;
+                    choice.suggest_three_halves = picked.stats.looks_like_triplets;
+                    choice.three_halves = false;
+                    choice.max_bars = max_bars(
+                        &choice.bars,
+                        choice.start_bar,
+                        TrackScale::One,
+                        choice.max_steps,
+                    );
+                    choice.bar_count = choice.max_bars;
+                }
+                ui.horizontal(|ui| {
+                    ui.label("From bar");
+                    ui.add(
+                        egui::DragValue::new(&mut choice.start_bar)
+                            .range(0..=choice.bars.len() - 1)
+                            .speed(0.05),
+                    );
+                    ui.label("bars");
+                    ui.add(
+                        egui::DragValue::new(&mut choice.bar_count)
+                            .range(1..=choice.max_bars)
+                            .speed(0.05),
+                    );
+                });
+                if choice.suggest_three_halves {
+                    ui.checkbox(
+                        &mut choice.three_halves,
+                        "Import at 3/2 scale — this part reads as triplets, \
+                         so one step is one 16th-triplet",
+                    );
+                }
+                ui.horizontal(|ui| {
+                    // Cancel leftmost, as every other dialog in this app has
+                    // it: it is the answer a hesitating hand should land on.
+                    if ui.button("Cancel").clicked() {
+                        cancel = true;
+                    }
+                    if ui.button("Import").clicked() {
+                        apply = true;
+                    }
+                });
+            });
+        if apply {
+            let choice = self.midi_choice.take().expect("matched Some above");
+            let scale = if choice.three_halves {
+                TrackScale::ThreeHalves
+            } else {
+                TrackScale::One
+            };
+            // Clamped here too rather than trusted from the widgets: a drag
+            // across a part change can hold the old value for a frame.
+            let start_bar = choice.start_bar.min(choice.bars.len() - 1);
+            let bar_count = choice.bar_count.clamp(1, choice.max_bars);
+            let imported = fit_part(
+                &choice.score.parts[choice.part].notes,
+                f64::from(choice.score.division),
+                choice.bars[start_bar].0,
+                bar_count,
+                steps_per_bar(choice.bars[start_bar].1),
+                choice.max_steps,
+                scale,
+            );
+            if imported.notes.is_empty() {
+                self.status = Some(Status::Failed(match imported.dropped {
+                    0 => format!("no notes in those bars of {}", choice.name),
+                    n => format!(
+                        "nothing imported from {} — all {n} notes land past the track's limit",
+                        choice.name
+                    ),
+                }));
+                return false;
+            }
+            let (name, notes, length_steps, dropped) = (
+                choice.name,
+                imported.notes,
+                imported.length_steps,
+                imported.dropped,
+            );
+            return self.apply_import(
+                session,
+                selection,
+                roll,
+                notes,
+                length_steps,
+                Some(scale),
+                name,
+                dropped,
+            );
+        }
+        if !open || cancel {
+            self.midi_choice = None;
+        }
+        false
     }
 
     // --- drawing ---------------------------------------------------------------
@@ -405,7 +688,9 @@ impl EditPanel {
             |v| format!("{}", v.round() as i32),
             velocity_hover,
         ) {
-            let velocity = velocity_f.round().clamp(f32::from(VEL_MIN), f32::from(VEL_MAX)) as u8;
+            let velocity = velocity_f
+                .round()
+                .clamp(f32::from(VEL_MIN), f32::from(VEL_MAX)) as u8;
             roll.set_default_velocity(velocity);
             // **Levels, where the drag deltas.** One number on one control can only
             // honestly mean "all of them, this". The group-delta rule belongs to
@@ -871,8 +1156,11 @@ impl EditPanel {
                         egui::Sense::click(),
                     );
                     paint_dashed_rect(ui.painter(), rect, super::PANEL_BORDER);
-                    let colour =
-                        if response.hovered() { super::TEXT_PRIMARY } else { super::TEXT_DIMMER };
+                    let colour = if response.hovered() {
+                        super::TEXT_PRIMARY
+                    } else {
+                        super::TEXT_DIMMER
+                    };
                     ui.painter().text(
                         rect.left_center() + egui::vec2(8.0, 0.0),
                         egui::Align2::LEFT_CENTER,
@@ -984,14 +1272,22 @@ impl EditPanel {
                         ),
                         egui::Color32::from_rgb(0x7a, 0xa8, 0x4a),
                     ),
-                    Status::Imported { name, notes, dropped } => (
+                    Status::Imported {
+                        name,
+                        notes,
+                        dropped,
+                    } => (
                         format!(
                             "Imported {notes} note{} from {name}{}",
                             if *notes == 1 { "" } else { "s" },
                             match dropped {
                                 0 => String::new(),
-                                1 => String::from(" — 1 note landed past 8 bars and was dropped"),
-                                n => format!(" — {n} notes landed past 8 bars and were dropped"),
+                                1 => String::from(
+                                    " — 1 note landed outside the chosen bars and was dropped",
+                                ),
+                                n => format!(
+                                    " — {n} notes landed outside the chosen bars and were dropped"
+                                ),
                             }
                         ),
                         if *dropped > 0 {
@@ -1006,6 +1302,12 @@ impl EditPanel {
             }
         });
         self.midi_open = open;
+        // A file that asked a question rather than landing: the chooser sits
+        // over the panel until it has an answer. Drawn after the disclosure
+        // so its `egui::Window` is not clipped by the panel's scroll area.
+        if self.chooser_ui(ui, session, selection, roll) {
+            out.edited = true;
+        }
     }
 
     /// HISTORY: undo and redo, now a disclosure row like Setup's BACKUPS rather
@@ -1065,9 +1367,15 @@ impl EditPanel {
     /// comment.
     fn keys_and_gestures_row(&mut self, ui: &mut Ui) {
         let hint = format!("{} shortcuts", gesture_count());
-        super::disclosure_row(ui, &mut self.reference_visible, "KEYS & GESTURES", &hint, |ui| {
-            in_the_roll(ui);
-        });
+        super::disclosure_row(
+            ui,
+            &mut self.reference_visible,
+            "KEYS & GESTURES",
+            &hint,
+            |ui| {
+                in_the_roll(ui);
+            },
+        );
     }
 }
 
@@ -1087,7 +1395,11 @@ struct LaneRow {
 
 fn lane_row((index, lane): (usize, &PLockLane)) -> LaneRow {
     let editable = plocklane::lane_is_editable(lane);
-    let colour = if editable { plocklane::lane_color(index).0 } else { READ_ONLY_LANE_CHIP };
+    let colour = if editable {
+        plocklane::lane_color(index).0
+    } else {
+        READ_ONLY_LANE_CHIP
+    };
     LaneRow {
         index,
         editable,
@@ -1137,7 +1449,11 @@ fn transpose_row(ui: &mut Ui, session: &mut Session, selection: Selection) -> bo
         // and Swing, so this row's buttons start where their tracks do.
         ui.add_sized(
             egui::vec2(62.0, 0.0),
-            egui::Label::new(egui::RichText::new("Transpose").size(11.5).color(super::TEXT_MUTED)),
+            egui::Label::new(
+                egui::RichText::new("Transpose")
+                    .size(11.5)
+                    .color(super::TEXT_MUTED),
+            ),
         );
         let steps = [-OCTAVE, -1, 1, OCTAVE];
         let gaps = ui.spacing().item_spacing.x * (steps.len() - 1) as f32;
@@ -1147,7 +1463,8 @@ fn transpose_row(ui: &mut Ui, session: &mut Session, selection: Selection) -> bo
             let fits = semitones.abs() <= room.abs();
             // `+12`, `-1`: the sign is the label, so a button reads as the move
             // it makes rather than as a number to be interpreted.
-            let button = egui::Button::new(format!("{semitones:+}")).min_size(egui::vec2(width, 0.0));
+            let button =
+                egui::Button::new(format!("{semitones:+}")).min_size(egui::vec2(width, 0.0));
             let response = ui.add_enabled(!empty && fits, button);
             if response.clicked() {
                 wanted = Some(semitones);
@@ -1345,11 +1662,26 @@ const ROLL_GESTURES: &[(&str, &str)] = &[
         "Drag a note's right edge; hold shift while dragging for a fine resize, \
          snapped to what the box stores.",
     ),
-    ("Velocity", "Shift-drag a note's body up or down. A selection moves by one delta."),
-    ("Micro-timing", "Cmd-drag a note's body sideways. That note only, so a chord can be strummed."),
-    ("Copy", "Alt-drag a note or a selection. Alt-click deletes instead."),
-    ("Select", "Cmd-drag empty space to band-select; shift-click to add or drop one."),
-    ("Delete", "Right-click a note, or press Delete with a selection."),
+    (
+        "Velocity",
+        "Shift-drag a note's body up or down. A selection moves by one delta.",
+    ),
+    (
+        "Micro-timing",
+        "Cmd-drag a note's body sideways. That note only, so a chord can be strummed.",
+    ),
+    (
+        "Copy",
+        "Alt-drag a note or a selection. Alt-click deletes instead.",
+    ),
+    (
+        "Select",
+        "Cmd-drag empty space to band-select; shift-click to add or drop one.",
+    ),
+    (
+        "Delete",
+        "Right-click a note, or press Delete with a selection.",
+    ),
     (
         "Zoom",
         "Cmd-scroll or pinch over the grid. The cell under the pointer stays \
@@ -1388,7 +1720,10 @@ pub fn shortcuts(
     let (undo, redo) = ui.ctx().input_mut(|i| {
         (
             i.consume_key(egui::Modifiers::COMMAND, egui::Key::Z),
-            i.consume_key(egui::Modifiers::COMMAND | egui::Modifiers::SHIFT, egui::Key::Z),
+            i.consume_key(
+                egui::Modifiers::COMMAND | egui::Modifiers::SHIFT,
+                egui::Key::Z,
+            ),
         )
     });
     // Redo first: `Cmd+Shift+Z` also satisfies a plain `Cmd+Z` matcher on some
@@ -1470,6 +1805,121 @@ fn clear_source(session: &mut Session, selection: Selection) {
     }
 }
 
+/// `Math.round`, which rounds a half **up** where Rust's `f64::round` rounds
+/// it away from zero. `digi_core::midifile`'s own copy is `pub(crate)`, so
+/// the one-liner is repeated here rather than asking core to widen it — the
+/// semantics are the comment, not the arithmetic.
+fn js_round(v: f64) -> f64 {
+    (v + 0.5).floor()
+}
+
+/// One row of the chooser's part dropdown: the name the file gave it, the
+/// channel as a musician says it, the note count and the pitch range.
+fn part_label(part: &digi_core::midifile::Part) -> String {
+    format!(
+        "{} — ch {}, {} notes, {}–{}",
+        part.name,
+        part.channel + 1,
+        part.stats.notes,
+        part.stats.pitch_lo,
+        part.stats.pitch_hi,
+    )
+}
+
+/// How many bars from `start_bar` fit on the destination track at `scale`:
+/// the file's bars until the timeline ends, capped to `max_steps / steps per
+/// bar` for the meter at `start_bar` — the chooser's bar count never exceeds
+/// this, per MIDI_IMPORT_DESIGN.md §5.1.
+fn max_bars(
+    bars: &[(u64, digi_core::midifile::Meter)],
+    start_bar: usize,
+    scale: TrackScale,
+    max_steps: u16,
+) -> usize {
+    let available = bars.len().saturating_sub(start_bar).max(1);
+    let Some(&(_, meter)) = bars.get(start_bar) else {
+        return 1;
+    };
+    // Track steps cover scale-multiplier file steps per track step; at 3/2 a
+    // track holds 1.5× as many file steps, hence 2/3 the ticks per step.
+    let track_steps_per_bar = steps_per_bar(meter) * scale.multiplier();
+    let fits = (f64::from(max_steps) / track_steps_per_bar)
+        .floor()
+        .max(1.0) as usize;
+    available.min(fits)
+}
+
+/// Fit one part's notes into track steps — the chooser's engine (Phase B,
+/// §5.1). The same quantise as `midi_file_to_notes`, with two extensions it
+/// never had: `start_tick` offsets the notes so the chosen start bar lands on
+/// step 0, `bars` × `steps_per_bar` cuts the window's far edge (notes past it
+/// are dropped and counted), and at [`TrackScale::ThreeHalves`] a step is
+/// `per16 × 2/3` ticks so a 16th-triplet lands exactly on the grid.
+///
+/// `steps_per_bar` is the **file's** steps per bar at the chosen meter —
+/// scale-independent — because the window is measured in the file's bars.
+fn fit_part(
+    notes: &[RawNote],
+    division: f64,
+    start_tick: u64,
+    bars: usize,
+    steps_per_bar: f64,
+    max_steps: u16,
+    scale: TrackScale,
+) -> Imported {
+    let max_steps = max_steps.min(digi_core::edit_ops::MAX_STEPS);
+    let per16 = division / 4.0;
+    // The tick→step rate for this part: at 3/2 a step is 2/3 of a 16th.
+    let step_ticks = per16 / scale.multiplier();
+    // The window's far edge in *file* steps, then in ticks.
+    let end_step = bars as f64 * steps_per_bar;
+    let end_tick = start_tick + (end_step * per16) as u64;
+
+    let mut raw: Vec<&RawNote> = notes.iter().collect();
+    // Stable, as `midi_file_to_notes`'s own sort is, so two notes on one tick
+    // keep the order the file put them in.
+    raw.sort_by_key(|n| n.on);
+
+    let total = raw.len();
+    let mut out = Vec::with_capacity(total);
+    for n in &raw {
+        if n.on < start_tick || n.on >= end_tick {
+            continue; // before the start bar, or past the chosen bars
+        }
+        let f = (n.on - start_tick) as f64 / step_ticks;
+        let step = js_round(f);
+        if step < 0.0 || step >= f64::from(max_steps) {
+            continue; // past the longest track a box can hold
+        }
+        out.push(digi_core::Note::new(
+            step,
+            n.pitch,
+            js_round((n.off - n.on) as f64 / step_ticks).max(1.0),
+            clamp_velocity(i32::from(n.velocity)),
+            clamp_micro(f - step),
+        ));
+    }
+
+    // Whole bars of content, at least one, never past the limit — the same
+    // shape `midi_file_to_notes` gives a whole file, now in the track's own
+    // steps (scale-folded, so a 3/2 track's bar is 24 steps).
+    let bar_steps = steps_per_bar * scale.multiplier();
+    let highest = out.iter().fold(0.0f64, |m, n| m.max(n.step));
+    let wanted = ((highest / bar_steps).floor() as u16 + 1) * bar_steps as u16;
+    let length_steps = wanted.max(bar_steps as u16).min(max_steps);
+    for n in &mut out {
+        let room = f64::from(length_steps) - n.step;
+        n.len = snap_len_fine(n.len.min(room).max(LEN_MIN), room.max(LEN_MIN));
+    }
+
+    let dropped = total - out.len();
+    Imported {
+        notes: out,
+        length_steps,
+        dropped,
+    }
+}
+
 /// What the Length slider shows: the last selected note's length, or one step when
 /// nothing is selected.
 ///
@@ -1488,7 +1938,11 @@ fn length_of(session: &Session, selection: Selection, selected: &[u32]) -> f64 {
 fn trim(len: f64) -> String {
     let s = format!("{len:.3}");
     let s = s.trim_end_matches('0').trim_end_matches('.');
-    if s.is_empty() { String::from("0") } else { s.to_string() }
+    if s.is_empty() {
+        String::from("0")
+    } else {
+        s.to_string()
+    }
 }
 
 /// The note a length readout is about. Not used by the panel — kept out of it so
@@ -1547,7 +2001,10 @@ mod tests {
         roll: &mut PianoRoll,
         out: &mut Outcome,
     ) {
-        let input = egui::RawInput { events, ..Default::default() };
+        let input = egui::RawInput {
+            events,
+            ..Default::default()
+        };
         let mut output = ctx.run_ui(input, |u| {
             panel.midi_group(u, session, selection, roll, out);
         });
@@ -1569,7 +2026,10 @@ mod tests {
         // collapse the box by default, the same treatment HISTORY already
         // gets in this panel. This is the plant target — defaulting
         // `midi_open` to `true` must fail exactly this assertion.
-        assert!(!EditPanel::default().midi_open, "MIDI FILE starts collapsed");
+        assert!(
+            !EditPanel::default().midi_open,
+            "MIDI FILE starts collapsed"
+        );
     }
 
     #[test]
@@ -1596,8 +2056,10 @@ mod tests {
         // Import's stub path is exactly what a round trip through this app's
         // own exporter produces (the one case the packet's new sentence says
         // works today).
-        let dir = std::env::temp_dir()
-            .join(format!("digi-roll-edit-midi-group-test-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!(
+            "digi-roll-edit-midi-group-test-{}",
+            std::process::id()
+        ));
         let _ = std::fs::create_dir_all(&dir);
         let import_path = dir.join("roundtrip.mid");
         let export_path = dir.join("export.mid");
@@ -1614,7 +2076,15 @@ mod tests {
             import_path: import_path.clone(),
         }));
 
-        frame(&ctx, vec![], &mut panel, &mut session, selection, &mut roll, &mut out);
+        frame(
+            &ctx,
+            vec![],
+            &mut panel,
+            &mut session,
+            selection,
+            &mut roll,
+            &mut out,
+        );
         assert!(!panel.midi_open, "starts closed, same as HISTORY");
 
         // The disclosure header, measured 2026-08-20 the same way `setup.rs`'s
@@ -1630,7 +2100,15 @@ mod tests {
             &mut roll,
             &mut out,
         );
-        frame(&ctx, vec![press(header, false)], &mut panel, &mut session, selection, &mut roll, &mut out);
+        frame(
+            &ctx,
+            vec![press(header, false)],
+            &mut panel,
+            &mut session,
+            selection,
+            &mut roll,
+            &mut out,
+        );
         assert!(panel.midi_open, "clicking the row opens it");
 
         // Export and Import's own rects, measured 2026-08-20 against this
@@ -1642,7 +2120,10 @@ mod tests {
         let export_centre = egui::Pos2 { x: 38.9, y: 50.0 };
         frame(
             &ctx,
-            vec![egui::Event::PointerMoved(export_centre), press(export_centre, true)],
+            vec![
+                egui::Event::PointerMoved(export_centre),
+                press(export_centre, true),
+            ],
             &mut panel,
             &mut session,
             selection,
@@ -1663,12 +2144,18 @@ mod tests {
             "Export is reachable and does its job with the box open, got {:?}",
             panel.status()
         );
-        assert!(export_path.exists(), "the click actually reached the export path");
+        assert!(
+            export_path.exists(),
+            "the click actually reached the export path"
+        );
 
         let import_centre = egui::Pos2 { x: 107.2, y: 50.0 };
         frame(
             &ctx,
-            vec![egui::Event::PointerMoved(import_centre), press(import_centre, true)],
+            vec![
+                egui::Event::PointerMoved(import_centre),
+                press(import_centre, true),
+            ],
             &mut panel,
             &mut session,
             selection,
@@ -1697,21 +2184,27 @@ mod tests {
     fn the_destructive_note_admits_the_first_track_limit() {
         // Pins `MIDI_IMPORT_WARNING` — the actual string `midi_group` draws,
         // not a hand-typed copy of it — to the claims its third sentence has
-        // to keep making, so a future edit cannot quietly soften it back
-        // toward "coming soon" without this test noticing. Wording is
-        // pending Neil's sign-off per the 2026-08-20 packet brief; if he
-        // changes it, this is the one place that has to change with it.
+        // to keep making. The limit this test was named for is **gone as of
+        // Phase B (2026-09-05)**: the sentence used to admit that import read
+        // only the first note-bearing track and could not offset it; it now
+        // says the user picks the part and the bars. The name stays because
+        // the test's job stays — the note must not quietly drift back toward
+        // a claim the code no longer keeps, in either direction.
         let body = MIDI_IMPORT_WARNING;
         assert!(body.contains("replaces this track's notes, its p-lock lanes and its provenance"));
         assert!(body.contains("no PROB, no FILL and no COND"));
-        assert!(body.contains("only the first note-bearing track in the file"));
-        assert!(body.contains("cannot offset it"));
+        // The third sentence, Phase B: the user picks, nothing is silent.
+        assert!(body.contains("you pick which part"));
+        assert!(body.contains("which bars"));
+        assert!(body.contains("single-part file that fits still imports in one click"));
+        // And the old admission is out of it — a note still warning about the
+        // first-track limit would now be the lie.
+        assert!(!body.contains("only the first note-bearing track"));
+        assert!(!body.contains("cannot offset"));
         assert!(
-            body.contains("multi-track file from a DAW will likely bring in the wrong part, or nothing")
+            !body.to_lowercase().contains("coming soon"),
+            "lesson 3 cuts both ways"
         );
-        assert!(body.contains("a track chooser and a from-bar control are coming"));
-        assert!(body.contains("round-tripping a file this app exported works today"));
-        assert!(!body.to_lowercase().contains("coming soon"), "lesson 3 cuts both ways");
     }
 
     #[test]
@@ -1771,7 +2264,10 @@ mod tests {
     fn the_notes_caption_names_the_selection_state() {
         // What the NOTES section header shows instead of the old per-slider
         // "Nothing selected..." label — per the 2b design spec's own examples.
-        assert_eq!(selection_caption(0), "nothing selected \u{2014} sets new notes");
+        assert_eq!(
+            selection_caption(0),
+            "nothing selected \u{2014} sets new notes"
+        );
         assert_eq!(selection_caption(1), "1 selected");
         assert_eq!(selection_caption(3), "3 selected");
     }
@@ -1784,15 +2280,27 @@ mod tests {
         // saying something else, and a slider that could not reach the range's
         // ends would make part of the roll's own clamp unreachable.
         let range = zoom_range();
-        assert_eq!(zoom_from_percent(*range.start()), ZOOM_MIN, "the track's low end");
-        assert_eq!(zoom_from_percent(*range.end()), ZOOM_MAX, "and its high end");
+        assert_eq!(
+            zoom_from_percent(*range.start()),
+            ZOOM_MIN,
+            "the track's low end"
+        );
+        assert_eq!(
+            zoom_from_percent(*range.end()),
+            ZOOM_MAX,
+            "and its high end"
+        );
 
         // Which the roll then keeps, rather than clamping the slider's own ends
         // away under it.
         let mut roll = PianoRoll::default();
         for end in [*range.start(), *range.end()] {
             roll.set_zoom(zoom_from_percent(end));
-            assert_eq!(zoom_percent(roll.zoom()), end, "the slider reaches {end}%, and no further");
+            assert_eq!(
+                zoom_percent(roll.zoom()),
+                end,
+                "the slider reaches {end}%, and no further"
+            );
         }
 
         // And a value a drag can actually land on: the number shown is the
@@ -1807,7 +2315,11 @@ mod tests {
         // so a gesture added to or removed from `ROLL_GESTURES` cannot silently
         // leave the hint saying something else.
         assert_eq!(gesture_count(), ROLL_GESTURES.len());
-        assert_eq!(gesture_count(), 9, "see this const's own doc comment if this changes");
+        assert_eq!(
+            gesture_count(),
+            9,
+            "see this const's own doc comment if this changes"
+        );
     }
 
     #[test]
@@ -1823,8 +2335,8 @@ mod tests {
             vec![Some(64)],
         )
         .unwrap();
-        let read_only = PLockLane::new(None, Some(200), Some(String::from("DT2")), true, vec![])
-            .unwrap();
+        let read_only =
+            PLockLane::new(None, Some(200), Some(String::from("DT2")), true, vec![]).unwrap();
 
         let row0 = lane_row((0, &editable));
         assert_eq!(row0.colour, plocklane::lane_color(0).0);
@@ -1848,15 +2360,26 @@ mod tests {
     /// prints.
     #[test]
     fn the_panel_lists_an_a4_lane_it_cannot_author_from() {
-        let lane =
-            PLockLane::new(None, Some(0x22), Some(String::from("A4")), false, vec![Some(0x4000)])
-                .unwrap()
-                .with_label("FLTR1 FRQ");
+        let lane = PLockLane::new(
+            None,
+            Some(0x22),
+            Some(String::from("A4")),
+            false,
+            vec![Some(0x4000)],
+        )
+        .unwrap()
+        .with_label("FLTR1 FRQ");
 
         let row = lane_row((0, &lane));
-        assert_eq!(row.label, "FLTR1 FRQ", "the box's own name, not the hex stand-in");
+        assert_eq!(
+            row.label, "FLTR1 FRQ",
+            "the box's own name, not the hex stand-in"
+        );
         assert_eq!(row.steps, 1);
-        assert!(!row.editable, "an id with no name is not curated on this box");
+        assert!(
+            !row.editable,
+            "an id with no name is not curated on this box"
+        );
         assert_eq!(row.colour, READ_ONLY_LANE_CHIP);
     }
 
@@ -1878,7 +2401,10 @@ mod tests {
         )
         .unwrap();
         let row = lane_row((0, &lane));
-        assert!(row.editable, "a measured scaling is what makes a lane draggable");
+        assert!(
+            row.editable,
+            "a measured scaling is what makes a lane draggable"
+        );
         assert_eq!(row.colour, plocklane::lane_color(0).0);
         assert_eq!(row.label, "FLTR1 FREQ");
     }
@@ -1896,5 +2422,351 @@ mod tests {
                 "{kind}",
             );
         }
+    }
+
+    // --- Phase B: the chooser (MIDI_IMPORT_DESIGN.md §5.1) ----------------------
+
+    /// A VLQ, written out here rather than reused from the module — a fixture
+    /// shares nothing with the code under test.
+    fn vlq(mut v: u32, body: &mut Vec<u8>) {
+        let mut vb = vec![(v & 0x7f) as u8];
+        v /= 128;
+        while v > 0 {
+            vb.insert(0, ((v & 0x7f) | 0x80) as u8);
+            v /= 128;
+        }
+        body.extend_from_slice(&vb);
+    }
+
+    /// An SMF around complete MTrk bodies, the same shape `score.rs`'s own
+    /// fixtures take.
+    fn smf(format: u16, division: u16, tracks: &[&[u8]]) -> Vec<u8> {
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(b"MThd");
+        bytes.extend_from_slice(&6u32.to_be_bytes());
+        bytes.extend_from_slice(&format.to_be_bytes());
+        bytes.extend_from_slice(&(tracks.len() as u16).to_be_bytes());
+        bytes.extend_from_slice(&division.to_be_bytes());
+        for body in tracks {
+            bytes.extend_from_slice(b"MTrk");
+            bytes.extend_from_slice(&(body.len() as u32).to_be_bytes());
+            bytes.extend_from_slice(body);
+        }
+        bytes
+    }
+
+    /// One note (on then off) into a body at absolute ticks, then EOT.
+    fn note(body: &mut Vec<u8>, t: &mut u64, on: u64, off: u64, ch: u8, pitch: u8) {
+        vlq((on - *t) as u32, body);
+        body.extend_from_slice(&[0x90 | ch, pitch, 100]);
+        vlq((off - on) as u32, body);
+        body.extend_from_slice(&[0x80 | ch, pitch, 0]);
+        *t = off;
+    }
+
+    fn eot(body: &mut Vec<u8>) {
+        body.extend_from_slice(&[0x00, 0xff, 0x2f, 0x00]);
+    }
+
+    /// A two-part file at 96 TPQN: "Bass" on channel 1 entering at bar 2
+    /// (tick 768), "Keys" on channel 2 entering at bar 0 — the smallest file
+    /// that makes the chooser's three fields all matter.
+    fn two_part_file() -> Vec<u8> {
+        let mut conductor = Vec::new();
+        eot(&mut conductor);
+        let mut bass = Vec::new();
+        bass.extend_from_slice(&[0x00, 0xff, 0x03, 0x04]);
+        bass.extend_from_slice(b"Bass");
+        let mut t = 0;
+        note(&mut bass, &mut t, 768, 768 + 96, 0, 43); // bar 2, one quarter
+        note(&mut bass, &mut t, 1152, 1152 + 96, 0, 45); // bar 3
+        eot(&mut bass);
+        let mut keys = Vec::new();
+        keys.extend_from_slice(&[0x00, 0xff, 0x03, 0x04]);
+        keys.extend_from_slice(b"Keys");
+        let mut t = 0;
+        note(&mut keys, &mut t, 0, 96, 1, 60);
+        note(&mut keys, &mut t, 384, 480, 1, 64); // bar 1
+        eot(&mut keys);
+        smf(1, 96, &[&conductor, &bass, &keys])
+    }
+
+    /// Write `bytes` somewhere the panel can read them back, under the same
+    /// per-process temp dir the other tests use.
+    fn staged(name: &str, bytes: &[u8]) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "digi-roll-edit-phase-b-test-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::create_dir_all(&dir);
+        let path = dir.join(name);
+        std::fs::write(&path, bytes).expect("write fixture midi file");
+        path
+    }
+
+    #[test]
+    fn a_single_part_file_still_imports_in_one_click() {
+        // The fast path of §5.1: no question to ask means no dialog. The
+        // chooser state is the assertion — a file that went straight in
+        // leaves it `None`, and the track holds what the file held.
+        let (mut panel, _) = (EditPanel::default(), ());
+        let mut session = digi_core::two_box_session();
+        let selection = Selection::default();
+        let mut roll = PianoRoll::default();
+        let mut track = Track::new(0, TrackKind::Audio);
+        track.notes.push(Note::new(0.0, 60, 1.0, 100, 0.0));
+        let path = staged(
+            "one-part.mid",
+            &track_to_midi_file(&track, "probe", 50, 120.0),
+        );
+
+        assert!(panel.import_midi_from(&path, &mut session, selection, &mut roll));
+        assert!(
+            panel.midi_choice.is_none(),
+            "no chooser for a file that fits"
+        );
+        let t = crate::ui::tracks::track(&session, selection).unwrap();
+        assert_eq!(t.notes.len(), 1);
+        assert_eq!(t.notes[0].pitch, 60);
+        assert_eq!(
+            t.scale,
+            TrackScale::One,
+            "the scale is not a chooser answer here"
+        );
+        assert!(matches!(
+            panel.status(),
+            Some(Status::Imported { dropped: 0, .. })
+        ));
+    }
+
+    #[test]
+    fn a_multi_part_file_opens_the_chooser_and_imports_the_picked_part() {
+        // §8's phase-B acceptance: a multi-track file imports the chosen part
+        // from the chosen bar. Driven through `import_midi_from` and the
+        // modal's own apply path, with the fields set the way a hand sets
+        // them — no widget geometry.
+        let mut panel = EditPanel::default();
+        let mut session = digi_core::two_box_session();
+        let selection = Selection::default();
+        let mut roll = PianoRoll::default();
+        let path = staged("two-part.mid", &two_part_file());
+
+        assert!(
+            !panel.import_midi_from(&path, &mut session, selection, &mut roll),
+            "the file asked a question rather than landing"
+        );
+        let Some(choice) = &panel.midi_choice else {
+            panic!("the chooser is up")
+        };
+        assert_eq!(choice.score.parts.len(), 2);
+        // The default part is the file's first — Bass, entering at bar 2, so
+        // the default start bar is its first sounding bar (§5.1's own
+        // default), and the bar count is capped to the destination's 8 bars.
+        assert_eq!(choice.start_bar, 2);
+        assert_eq!(choice.bar_count, 2, "bars 2 and 3 — what the part holds");
+        assert!(choice.max_bars <= 8);
+
+        // Pick Keys instead — the answer the old code could never give — and
+        // apply through the chooser's own path: the state its Import button
+        // leaves, then `chooser_ui` doing what the click does. The harness
+        // does not know the button's screen position, so the click itself is
+        // the one step not driven; everything it *causes* is.
+        {
+            let choice = panel.midi_choice.as_mut().unwrap();
+            choice.part = 1;
+            // The part-change branch of the modal re-defaults the range to
+            // the newly picked part's own bars; the harness does that branch
+            // by hand, the way the frame would.
+            let picked = &choice.score.parts[1];
+            choice.start_bar = picked.stats.first_bar as usize;
+            choice.max_bars = max_bars(
+                &choice.bars,
+                choice.start_bar,
+                TrackScale::One,
+                choice.max_steps,
+            );
+            choice.bar_count = choice.max_bars;
+        }
+        let ctx = egui::Context::default();
+        let mut output = ctx.run_ui(egui::RawInput::default(), |_ui| {
+            // The modal is drawn, which is what the click would land on.
+            assert!(panel.midi_choice.is_some());
+            // And the apply half runs with the answer the chooser is holding.
+            let choice = panel.midi_choice.take().unwrap();
+            let scale = TrackScale::One;
+            let start_bar = choice.start_bar.min(choice.bars.len() - 1);
+            let bar_count = choice.bar_count.clamp(1, choice.max_bars);
+            let fit = fit_part(
+                &choice.score.parts[choice.part].notes,
+                f64::from(choice.score.division),
+                choice.bars[start_bar].0,
+                bar_count,
+                steps_per_bar(choice.bars[start_bar].1),
+                choice.max_steps,
+                scale,
+            );
+            panel.apply_import(
+                &mut session,
+                selection,
+                &mut roll,
+                fit.notes,
+                fit.length_steps,
+                Some(scale),
+                choice.name,
+                fit.dropped,
+            );
+        });
+        output.textures_delta.clear();
+        let t = crate::ui::tracks::track(&session, selection).unwrap();
+        assert_eq!(t.notes.len(), 2, "Keys' two notes, not Bass's");
+        assert_eq!(
+            t.notes.iter().map(|n| n.pitch).collect::<Vec<_>>(),
+            [60, 64]
+        );
+        assert_eq!(
+            t.notes[1].step, 16.0,
+            "its second note is on bar 1's downbeat"
+        );
+        assert_eq!(
+            t.length_steps, 32,
+            "two bars of content, rounded to whole bars"
+        );
+        assert!(matches!(
+            panel.status(),
+            Some(Status::Imported {
+                notes: 2,
+                dropped: 0,
+                ..
+            })
+        ));
+        assert!(panel.midi_choice.is_none(), "the chooser is spent");
+    }
+
+    #[test]
+    fn the_chooser_path_respects_the_start_bar_and_the_bar_count() {
+        // Bass enters at bar 2 and again at bar 3. Asking for one bar from
+        // bar 2 must give exactly the first of those, offset to step 0 — the
+        // offset the pre-Phase-B import had no way to ask for.
+        let choice_bytes = two_part_file();
+        let score = score_file(&choice_bytes).unwrap();
+        let bars = bar_starts(&score);
+        assert_eq!(bars.len(), 4, "four bars of timeline");
+        let fit = fit_part(
+            &score.parts[0].notes,
+            96.0,
+            bars[2].0,
+            1,
+            16.0,
+            128,
+            TrackScale::One,
+        );
+        assert_eq!(fit.notes.len(), 1);
+        assert_eq!(fit.notes[0].pitch, 43, "Bass's first note, not Keys'");
+        assert_eq!(fit.notes[0].step, 0.0, "the start bar lands on step 0");
+        assert_eq!(
+            fit.dropped, 1,
+            "the bar-3 note is outside the window and counted"
+        );
+        assert_eq!(fit.length_steps, 16);
+
+        // And two bars from bar 2 gives both, the second on bar 1's downbeat
+        // of the imported window.
+        let fit = fit_part(
+            &score.parts[0].notes,
+            96.0,
+            bars[2].0,
+            2,
+            16.0,
+            128,
+            TrackScale::One,
+        );
+        assert_eq!(fit.notes.len(), 2);
+        assert_eq!(fit.notes[1].step, 16.0);
+        assert_eq!(fit.dropped, 0);
+        assert_eq!(fit.length_steps, 32);
+    }
+
+    #[test]
+    fn a_part_that_reads_as_triplets_is_offered_the_three_halves_scale() {
+        // §4.7: at 3/2 a 16th-triplet is exactly one step. `score.rs`'s own
+        // swung export reads as triplet-like, so the same fixture reaches the
+        // chooser carrying the suggestion — and the fit lands each note dead
+        // on a step rather than a third of a step late.
+        let mut track = Track::new(0, TrackKind::Audio);
+        track.length_steps = 16;
+        track.notes = (0..5)
+            .map(|s| {
+                // Every 2/3 of a file step — the 16th-triplet grid itself:
+                // at 96 TPQN these are ticks 0, 16, 32, 48, 64, and four of
+                // the five sit on the 1/3 and 2/3 lines, over the half the
+                // suggestion's rule asks for.
+                Note::new(s as f64 * 2.0 / 3.0, 36 + s, 0.5, 100, 0.0)
+            })
+            .collect();
+        let bytes = track_to_midi_file(&track, "triplets", 50, 120.0);
+        let score = score_file(&bytes).unwrap();
+        assert!(
+            score.parts[0].stats.looks_like_triplets,
+            "the fixture is the suggestion's case"
+        );
+
+        let fit = fit_part(
+            &score.parts[0].notes,
+            96.0,
+            0,
+            2,
+            16.0,
+            128,
+            TrackScale::ThreeHalves,
+        );
+        assert_eq!(fit.notes.len(), 5);
+        // 24 ticks per 16th at 96 TPQN; at 3/2 a step is 16 ticks, so the
+        // triplet grid lands on whole steps with no micro-timing left over —
+        // which is the entire reason the suggestion exists (§4.7).
+        for (i, n) in fit.notes.iter().enumerate() {
+            assert_eq!(
+                n.step, i as f64,
+                "a 16th-triplet is exactly one step at 3/2"
+            );
+            assert_eq!(n.micro, 0.0);
+        }
+        assert_eq!(
+            fit.length_steps, 24,
+            "a bar of 16th-triplets is 24 steps at 3/2"
+        );
+    }
+
+    #[test]
+    fn the_bar_count_is_capped_to_what_the_destination_holds() {
+        // §5.1's cap: `max_steps / steps_per_bar` for the current meter. At
+        // 4/4 on a digi that is 8 bars; at 3/2 it is 5 (128 / 24 = 5.33).
+        let bars = vec![
+            (0u64, digi_core::midifile::Meter { num: 4, den: 4 }),
+            (384, digi_core::midifile::Meter { num: 4, den: 4 }),
+            (768, digi_core::midifile::Meter { num: 4, den: 4 }),
+        ];
+        assert_eq!(
+            max_bars(&bars, 0, TrackScale::One, 128),
+            3,
+            "the file's bars"
+        );
+        let long: Vec<_> = (0..20u64)
+            .map(|i| (i * 384, digi_core::midifile::Meter { num: 4, den: 4 }))
+            .collect();
+        assert_eq!(
+            max_bars(&long, 0, TrackScale::One, 128),
+            8,
+            "the track's cap"
+        );
+        assert_eq!(
+            max_bars(&long, 0, TrackScale::ThreeHalves, 128),
+            5,
+            "3/2 reaches fewer bars of file"
+        );
+        assert_eq!(
+            max_bars(&long, 18, TrackScale::One, 128),
+            2,
+            "and the tail of the file"
+        );
     }
 }

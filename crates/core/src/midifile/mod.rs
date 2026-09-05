@@ -6,6 +6,12 @@
 // nothing in it is device-specific, and `protocol` is for bytes that only mean
 // something to a DT2 or a DN2.
 //
+// Two parsers now live here, and the difference between them is the whole of
+// MIDI_IMPORT_DESIGN.md §0: [`score`] *analyses* a file into parts, tempo,
+// meter and markers without deciding anything, while [`midi_file_to_notes`] is
+// the old single-track import, kept as a thin wrapper over `score` so every
+// byte-level behaviour it had stays exactly as it was.
+//
 // ## What a MIDI file cannot carry, and why the panel has to say so
 //
 // **Trig conditions do not survive.** A MIDI file has no notion of PROB, FILL,
@@ -36,6 +42,10 @@ use crate::edit_ops::{clamp_micro, clamp_velocity, BAR_STEPS, MAX_STEPS};
 use crate::lengths::LEN_MIN;
 use crate::model::{Note, Track};
 
+pub mod score;
+
+pub use score::{bar_starts, steps_per_bar, Meter, Part, PartStats, RawNote, Score};
+
 /// Ticks per quarter note in the files this writes. 96 makes a 16th step exactly
 /// [`TICKS_PER_STEP`] ticks, which is what keeps a micro-timing offset a whole
 /// number of ticks at the resolutions that matter.
@@ -60,7 +70,7 @@ pub const TICKS_PER_STEP: f64 = TPQN as f64 / 4.0;
 ///
 /// So this is the faithful port rather than a difference anything observes, and it
 /// stays because the next thing to reach for it may well hand it a negative.
-fn js_round(v: f64) -> f64 {
+pub(crate) fn js_round(v: f64) -> f64 {
     (v + 0.5).floor()
 }
 
@@ -102,10 +112,22 @@ pub fn track_to_midi_file(track: &Track, name: &str, swing: u8, bpm: f64) -> Vec
     // that never released.
     let mut events: Vec<(i64, u8, [u8; 3])> = Vec::with_capacity(track.notes.len() * 2);
     for n in &track.notes {
-        let swung = if n.step % 2.0 != 0.0 { swing_ticks } else { 0.0 };
+        let swung = if n.step % 2.0 != 0.0 {
+            swing_ticks
+        } else {
+            0.0
+        };
         let start = js_round((n.step + n.micro) * TICKS_PER_STEP + swung).max(0.0) as i64;
         let end = start + (js_round(n.len * TICKS_PER_STEP) as i64).max(1);
-        events.push((start, 1, [0x90 | ch, n.pitch & 0x7f, clamp_velocity(i32::from(n.velocity))]));
+        events.push((
+            start,
+            1,
+            [
+                0x90 | ch,
+                n.pitch & 0x7f,
+                clamp_velocity(i32::from(n.velocity)),
+            ],
+        ));
         events.push((end, 0, [0x80 | ch, n.pitch & 0x7f, 0]));
     }
     events.sort_by_key(|(tick, order, _)| (*tick, *order));
@@ -172,6 +194,10 @@ pub enum MidiFileError {
     /// `NaN`, which here would be an index panic. So the port is stricter, and
     /// deliberately — a truncated file is a thing that happens.
     Truncated,
+    /// A type-2 file: independent sequences sharing no timeline. Importing one
+    /// means picking a timeline at random, so it is refused rather than
+    /// guessed — MIDI_IMPORT_DESIGN.md §3.2.
+    IndependentSequences,
 }
 
 impl std::fmt::Display for MidiFileError {
@@ -182,6 +208,12 @@ impl std::fmt::Display for MidiFileError {
                 write!(f, "SMPTE-timecode MIDI files are not supported")
             }
             Self::Truncated => write!(f, "the file ends part-way through a MIDI track"),
+            Self::IndependentSequences => {
+                write!(
+                    f,
+                    "type-2 MIDI files hold independent sequences with no shared timeline"
+                )
+            }
         }
     }
 }
@@ -202,7 +234,10 @@ impl<'a> Reader<'a> {
     }
 
     fn peek(&self) -> Result<u8, MidiFileError> {
-        self.bytes.get(self.i).copied().ok_or(MidiFileError::Truncated)
+        self.bytes
+            .get(self.i)
+            .copied()
+            .ok_or(MidiFileError::Truncated)
     }
 
     fn u16(&mut self) -> Result<u16, MidiFileError> {
@@ -240,14 +275,18 @@ impl<'a> Reader<'a> {
         }
         Ok(())
     }
-}
 
-/// One note as the file held it, before it is mapped onto steps.
-struct RawNote {
-    on: f64,
-    off: f64,
-    pitch: u8,
-    velocity: u8,
+    /// Take a length-prefixed payload rather than skipping it.
+    fn take(&mut self) -> Result<&'a [u8], MidiFileError> {
+        let n = self.vlen()? as usize;
+        let end = self.i.checked_add(n).ok_or(MidiFileError::Truncated)?;
+        if end > self.bytes.len() {
+            return Err(MidiFileError::Truncated);
+        }
+        let out = &self.bytes[self.i..end];
+        self.i = end;
+        Ok(out)
+    }
 }
 
 /// Parse a type 0 or type 1 SMF and take **the first track that has notes**.
@@ -258,6 +297,13 @@ struct RawNote {
 /// dropped too — the destination track's channel is the desk's business, not the
 /// file's.
 ///
+/// Now a thin wrapper over [`score::score_file`] — the design doc's Stage 1,
+/// MIDI_IMPORT_DESIGN.md §3: the score does the parsing, and this fits the first
+/// note-bearing MTrk's notes (all channels merged, as the pre-split code read
+/// them) as one segment of `max_steps`. **The fitting below is byte-identical
+/// to the standalone implementation it replaced** — same sort, same quantise,
+/// same drops — because every existing test asserts on it.
+///
 /// Anything that does not land on a step becomes **micro-timing**, which is how a
 /// file written at any resolution arrives playable rather than quantised flat.
 ///
@@ -267,107 +313,35 @@ struct RawNote {
 /// well draw — and `core::import` already made that call for notes arriving off a
 /// box.
 pub fn midi_file_to_notes(bytes: &[u8], max_steps: u16) -> Result<Imported, MidiFileError> {
-    let mut r = Reader { bytes, i: 0 };
-    if bytes.len() < 14 || r.tag()? != *b"MThd" {
-        return Err(MidiFileError::NotAMidiFile);
-    }
-    let header_len = r.u32()?;
-    let _format = r.u16()?; // 0 and 1 are handled the same way here
-    let ntrks = r.u16()?;
-    let division = r.u16()?;
-    // Header chunks longer than six bytes are legal and carry nothing this reads.
-    r.i = r
-        .i
-        .checked_add(header_len.saturating_sub(6) as usize)
-        .ok_or(MidiFileError::Truncated)?;
-    if division & 0x8000 != 0 {
-        return Err(MidiFileError::SmpteTimecode);
-    }
-    if division == 0 {
-        return Err(MidiFileError::NotAMidiFile);
-    }
-    let per16 = f64::from(division) / 4.0;
+    let score = score::score_file(bytes)?;
+    let per16 = f64::from(score.division) / 4.0;
 
-    let mut found: Option<Vec<RawNote>> = None;
-    for _ in 0..ntrks {
-        if found.is_some() || r.i >= bytes.len() {
-            break;
-        }
-        let id = r.tag()?;
-        let track_len = r.u32()? as usize;
-        let end = r.i.checked_add(track_len).ok_or(MidiFileError::Truncated)?;
-        if end > bytes.len() {
-            return Err(MidiFileError::Truncated);
-        }
-        if id != *b"MTrk" {
-            r.i = end;
-            continue;
-        }
-        let mut notes: Vec<RawNote> = Vec::new();
-        // `open` is `js/midi.js`'s `Map` keyed by pitch, and the in-place replace
-        // is what keeps it one: a second note-on for a pitch already sounding
-        // overwrites the first and keeps its position in the list, which is what
-        // `Map.set` on an existing key does. That position decides the order of
-        // the never-released notes appended below.
-        let mut open: Vec<(u8, f64, u8)> = Vec::new();
-        let mut tick = 0f64;
-        let mut status = 0u8;
-        while r.i < end {
-            tick += f64::from(r.vlen()?);
-            let mut s = r.peek()?;
-            if s & 0x80 != 0 {
-                status = s;
-                r.i += 1;
-            } else {
-                s = status;
-            }
-            if s == 0xff {
-                r.u8()?; // the meta type
-                r.skip()?;
-                status = 0;
-            } else if s == 0xf0 || s == 0xf7 {
-                r.skip()?;
-                status = 0;
-            } else {
-                let hi = s & 0xf0;
-                let d1 = r.u8()?;
-                let d2 = if hi == 0xc0 || hi == 0xd0 { 0 } else { r.u8()? };
-                if hi == 0x90 && d2 > 0 {
-                    match open.iter_mut().find(|(p, _, _)| *p == d1) {
-                        Some(slot) => *slot = (d1, tick, d2),
-                        None => open.push((d1, tick, d2)),
-                    }
-                } else if hi == 0x80 || (hi == 0x90 && d2 == 0) {
-                    if let Some(at) = open.iter().position(|(p, _, _)| *p == d1) {
-                        let (pitch, on, velocity) = open.remove(at);
-                        notes.push(RawNote { on, off: tick, pitch, velocity });
-                    }
-                }
-            }
-        }
-        r.i = end;
-        // Never released: given one step of length, so a file that forgot its
-        // note-offs still arrives as music.
-        for (pitch, on, velocity) in open {
-            notes.push(RawNote { on, off: on + per16, pitch, velocity });
-        }
-        if !notes.is_empty() {
-            found = Some(notes);
-        }
-    }
-
-    let Some(mut raw) = found else {
-        return Ok(Imported { notes: Vec::new(), length_steps: BAR_STEPS, dropped: 0 });
+    // The lowest MTrk with notes, all its channels merged — exactly what the
+    // old loop's `found` held, before parts were split by channel.
+    let Some(mtrk) = score.parts.iter().map(|p| p.mtrk).min() else {
+        return Ok(Imported {
+            notes: Vec::new(),
+            length_steps: BAR_STEPS,
+            dropped: 0,
+        });
     };
+    let mut raw: Vec<&RawNote> = score
+        .parts
+        .iter()
+        .filter(|p| p.mtrk == mtrk)
+        .flat_map(|p| p.notes.iter())
+        .collect();
+
     // Stable, so two notes starting on the same tick keep the order the file put
     // them in — which is the order `Array.prototype.sort` keeps too.
-    raw.sort_by(|a, b| a.on.total_cmp(&b.on));
+    raw.sort_by_key(|n| n.on);
 
     let max_steps = max_steps.min(MAX_STEPS);
     let total = raw.len();
     let mut notes = Vec::with_capacity(total);
     for n in &raw {
-        let f = n.on / per16;
+        let on = n.on as f64;
+        let f = on / per16;
         let step = js_round(f);
         if step < 0.0 || step >= f64::from(max_steps) {
             continue; // past the longest track a box can hold
@@ -375,7 +349,7 @@ pub fn midi_file_to_notes(bytes: &[u8], max_steps: u16) -> Result<Imported, Midi
         notes.push(Note::new(
             step,
             n.pitch,
-            js_round((n.off - n.on) / per16).max(1.0),
+            js_round((n.off - n.on) as f64 / per16).max(1.0),
             clamp_velocity(i32::from(n.velocity)),
             clamp_micro(f - step),
         ));
@@ -392,7 +366,11 @@ pub fn midi_file_to_notes(bytes: &[u8], max_steps: u16) -> Result<Imported, Midi
     }
 
     let dropped = total - notes.len();
-    Ok(Imported { notes, length_steps, dropped })
+    Ok(Imported {
+        notes,
+        length_steps,
+        dropped,
+    })
 }
 
 /// A filename for an exported pattern, from the pattern's own name.
@@ -409,5 +387,12 @@ pub fn midi_file_name(pattern_name: &str) -> String {
         .filter(|c| c.is_alphanumeric() || *c == '_' || *c == ' ' || *c == '-')
         .collect();
     let cleaned = cleaned.trim();
-    format!("{}.mid", if cleaned.is_empty() { "pattern" } else { cleaned })
+    format!(
+        "{}.mid",
+        if cleaned.is_empty() {
+            "pattern"
+        } else {
+            cleaned
+        }
+    )
 }

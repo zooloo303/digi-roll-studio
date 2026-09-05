@@ -108,8 +108,12 @@ screen reading beside almost every offset.
   project file, so the fallback if the offer modal never appears is `Open…` on
   it. What is knowingly left out is a *ring* of copies and any guard against two
   instances sharing the one shelf — both argued in the module header.
-- **MIDI import reads only the first note-bearing track**, and cannot offset it.
-  The reporting half is fixed; "first track wins" needs a track chooser.
+- ~~**MIDI import reads only the first note-bearing track**, and cannot offset it.
+  The reporting half is fixed; "first track wins" needs a track chooser.~~
+  **Closed 2026-09-05** (MIDI_IMPORT_DESIGN.md Phase B): the Edit panel scores
+  the file first; a single part that fits still imports in one click, and
+  anything else opens a small chooser — which part, from which bar, for how
+  many bars, with a 3/2-scale suggestion when the part reads as triplets.
 - **Paste has no caller.** `edit_ops::place_clipboard` is complete and reachable
   from nothing, because pasted notes land at the playhead and the playhead cannot
   be moved. The playhead is the prerequisite, and its own open question is what a

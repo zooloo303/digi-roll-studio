@@ -136,7 +136,7 @@ pub fn ui(
             }
         }
         Tool::Song => {
-            let out = song_panel.ui(ui, session, engine);
+            let out = song_panel.ui(ui, session, engine, history);
             Outcome {
                 close: out.close,
                 reloaded: false,
@@ -162,7 +162,13 @@ pub fn ui(
         // distinction between the two was worth this much.
         Tool::Presets => {
             let out = presets_panel.ui(ui, session, selection, transfers_busy);
-            Outcome { close: out.close, reloaded: false, edited: false, stepped: false, settings: false }
+            Outcome {
+                close: out.close,
+                reloaded: false,
+                edited: false,
+                stepped: false,
+                settings: false,
+            }
         }
     }
 }
