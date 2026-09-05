@@ -782,7 +782,7 @@ checksum = "f27ae1dd37df86211c42e150270f82743308803d90a6f6e6651cd730d5e1732f"
 
 [[package]]
 name = "digi_core"
-version = "0.3.6"
+version = "0.4.0"
 dependencies = [
  "digi_protocol",
  "serde",
@@ -791,7 +791,7 @@ dependencies = [
 
 [[package]]
 name = "digi_engine"
-version = "0.3.6"
+version = "0.4.0"
 dependencies = [
  "digi_core",
  "digi_midi",
@@ -799,7 +799,7 @@ dependencies = [
 
 [[package]]
 name = "digi_generator"
-version = "0.3.6"
+version = "0.4.0"
 dependencies = [
  "digi_core",
  "digi_protocol",
@@ -808,7 +808,7 @@ dependencies = [
 
 [[package]]
 name = "digi_midi"
-version = "0.3.6"
+version = "0.4.0"
 dependencies = [
  "digi_protocol",
  "midir",
@@ -817,7 +817,7 @@ dependencies = [
 
 [[package]]
 name = "digi_protocol"
-version = "0.3.6"
+version = "0.4.0"
 dependencies = [
  "serde",
  "serde_json",
@@ -825,7 +825,7 @@ dependencies = [
 
 [[package]]
 name = "digi_roll_studio"
-version = "0.3.6"
+version = "0.4.0"
 dependencies = [
  "digi_core",
  "digi_engine",

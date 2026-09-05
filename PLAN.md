@@ -93,10 +93,10 @@ screen reading beside almost every offset.
 - **The track headers are short of §5's own words**: no level meter, no port
   shown, no device colour inherited by the tracks.
 - ~~**Song mode does not exist.**~~ Built 2026-08-22: `core::song`, the walker in
-  `Scheduler`, and the rail's fifth panel. **Nothing in it has met a box or a
-  screen** — see §9, which is where that gap is the whole point. What is knowingly
-  left out is ROW TEMPO (§2's argument) and syncing a song back to a box's own
-  song slots, which is the next session's work.
+  `Scheduler`, and the rail's fifth panel. ~~Nothing in it has met a box or a
+  screen~~ **Run on hardware 2026-09-04, no issues** — the §9 ledger entry is
+  closed. What is knowingly left out is ROW TEMPO (§2's argument) and syncing a
+  song back to a box's own song slots, which is the next session's work.
 - ~~**Crash-safety.** Saving is manual; there is no autosave, so a crash takes
   the session.~~ Built 2026-09-03: `app::ui::recovery`. Unsaved work is copied
   aside to the per-user application-data directory two seconds after the last
@@ -1284,10 +1284,13 @@ Backups list's `Export…`** are all closed. The hedge is kept on purpose: a swe
 is weaker evidence than an itemised check, and it is the right strength of claim
 for what happened.
 
-**Song mode is the whole of what 2026-08-22 added and none of it has been seen or
-heard.** It ships with 27 new tests across `core`, `engine` and the link, and that
-is exactly the evidence this section exists to discount. Owed, and itemised so it
-cannot be closed by a sweep:
+~~**Song mode is the whole of what 2026-08-22 added and none of it has been seen or
+heard.**~~ **Closed 2026-09-04: run on hardware, no issues** — Neil's words, and
+the itemised list below is what that run covered. It shipped with 27 new tests
+across `core`, `engine` and the link, which was exactly the evidence this section
+existed to discount; the box run is the evidence that counts. The list is kept
+struck-through rather than deleted because it is the record of what a song-mode
+verification has to cover:
 
 - **The SONG panel drawn at all**, at the tool panel's pinned 330px: the row
   list's monospace columns lining up, `▶` in the playhead column (it renders in
