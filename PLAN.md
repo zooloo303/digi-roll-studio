@@ -4503,12 +4503,13 @@ Recorded now so v2 starts from evidence:
      **A guard is only as honest as its parser**, and this one was found by the
      first test that put a real v0 sound on a fake box's track rather than by
      anything on a desk.
-7. Exercise paging on a 256-entry bank.
+7. ~~Exercise paging on a 256-entry bank.~~ **Done 2026-09-04** — run on
+   hardware and proven, which closes the list.
 
-Steps 1–3 are hardware work and cannot be done from a desk without a box, and
-all three are now done. Steps 4–6 are built; step 7 is not. All four can be
-built against fixtures and only need a box to be believed — which is §9's
-standard, and the one this project keeps.
+Steps 1–3 were hardware work and could not be done from a desk without a box;
+steps 4–6 were built against fixtures and only needed a box to be believed —
+which is §9's standard, and the one this project keeps. All seven are now done
+and hardware-proven.
 
 **And what the browser owes for the refusal, added the same day after Neil met
 it:** a preset the box will not take now says so on its own row — a dim `mk1`,
