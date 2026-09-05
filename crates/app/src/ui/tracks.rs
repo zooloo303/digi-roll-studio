@@ -69,12 +69,15 @@
 // the whole point of a per-track overlay instead of one bar for the pane.
 
 use digi_core::model::{PatchSound, TrackScale};
+use digi_core::session::PatternRef;
 use digi_core::track_clip::{paste_track, TrackClip};
 use digi_core::{Device, DeviceId, Pattern, Session, Source, Track, TrackKind};
+use digi_generator::context::Destination;
 use eframe::egui::{self, Align, Align2, FontId, Layout, Pos2, Rect, Sense, Stroke, Ui, Vec2};
 
 use crate::engine::EngineLink;
 use crate::ui::console;
+use crate::ui::generate;
 
 /// Which track the roll is editing: a device by position in the session, and a
 /// track within whatever pattern that device plays in the current scene.
@@ -1160,6 +1163,15 @@ fn paint_cell(
     }
 }
 
+/// Where a dragged Generate part, if one is being carried, would aim: the
+/// box, the slot it plays right now, and which role the chip says it is.
+/// Built by [`ui`] so [`paint_device_row`] needs no `Session`.
+struct DropAim {
+    part: generate::DragPart,
+    device: DeviceId,
+    slot: PatternRef,
+}
+
 /// One device's row: the box-id gutter and its 16-cell grid. Returns whether a
 /// cell was clicked and changed the selection — folded into the caller's
 /// `changed`-style bookkeeping is deliberately *not* done here, since picking a
@@ -1172,7 +1184,9 @@ fn paint_device_row(
     selection: &mut Selection,
     copied_selection: Option<Selection>,
     position_steps: f64,
-) {
+    drop_aim: Option<&DropAim>,
+) -> Option<(generate::DragPart, Destination, String)> {
+    let mut landed: Option<(generate::DragPart, Destination, String)> = None;
     let width = ui.available_width();
     let (row_rect, _) = ui.allocate_exact_size(Vec2::new(width, CELL_H), Sense::hover());
     let gutter = Rect::from_min_size(row_rect.min, Vec2::new(GUTTER_W, CELL_H));
@@ -1203,9 +1217,22 @@ fn paint_device_row(
     let n = pattern.tracks().len();
     for (t, track) in pattern.tracks().iter().enumerate() {
         let cell = cell_rect(grid, n, t, CELL_GAP);
+        // During a part-drag the hover text changes its mind: rather than
+        // the track's own description it says which role would land here and
+        // where it would aim, so the gesture can be rehearsed before letting
+        // go.
+        let aim_text = drop_aim.map(|aim| {
+            format!(
+                "Drop {} here — it will write to {} {} T{}",
+                aim.part.role.label(),
+                device.name,
+                aim.slot.label(),
+                t + 1
+            )
+        });
         let response = ui
             .interact(cell, cell_id(device.id, t), Sense::click())
-            .on_hover_text(track_tooltip_text(t + 1, track, pattern.source.as_ref()));
+            .on_hover_text(aim_text.unwrap_or_else(|| track_tooltip_text(t + 1, track, pattern.source.as_ref())));
         if response.clicked() {
             // **The click takes keyboard focus as well as the selection**, which
             // is what arms Delete — see `handle_clear_shortcut` for why that key
@@ -1225,7 +1252,25 @@ fn paint_device_row(
         let selected = *selection == this_cell;
         let copied = copied_selection == Some(this_cell);
         paint_cell(&painter, cell, t + 1, track, selected, response.has_focus(), copied, position_steps);
+
+        // A part-drag hover paints over the base cell — wash plus a heavier
+        // border, the same vocabulary the selected cell uses but doubled, so
+        // the cell the drop would land on is unmistakable.
+        if let Some(aim) = drop_aim {
+            if response.hovered() {
+                painter.rect_filled(cell, 0.0, super::CYAN_WASH);
+                painter.rect_stroke(cell, 0.0, Stroke::new(2.0, super::CYAN), egui::StrokeKind::Inside);
+                let label = format!("{} {} T{}", device.name, aim.slot.label(), t + 1);
+                let destination = Destination {
+                    device: Some(aim.device),
+                    slot: aim.slot,
+                    track: t,
+                };
+                landed = Some((aim.part, destination, label));
+            }
+        }
     }
+    landed
 }
 
 /// The height `workspace` hands this pane: one device row per box in the
@@ -1341,11 +1386,22 @@ pub fn ui(ui: &mut Ui, session: &mut Session, selection: &mut Selection, engine:
                         .id_salt("digi-roll-track-grid")
                         .auto_shrink([false, false])
                         .show(ui, |ui| {
+                            // A Generate chip being dragged: the aim is this
+                            // box at the slot it plays right now. Checked per
+                            // device row because each row can report its own
+                            // slot, and only one cell is hovered at a time.
+                            let aim = generate::dragging_part(ui.ctx());
                             for (index, device) in session.devices.iter().enumerate() {
                                 let Some(pattern) = session.current_pattern(device.id) else {
                                     continue;
                                 };
-                                paint_device_row(
+                                let drop_aim = aim.map(|part| {
+                                    let slot = session
+                                        .slot_in_scene(session.current_scene, device.id)
+                                        .unwrap_or(PatternRef::new(0, 0));
+                                    DropAim { part, device: device.id, slot }
+                                });
+                                let landed = paint_device_row(
                                     ui,
                                     device,
                                     pattern,
@@ -1353,8 +1409,18 @@ pub fn ui(ui: &mut Ui, session: &mut Session, selection: &mut Selection, engine:
                                     selection,
                                     state.copied,
                                     position_steps,
+                                    drop_aim.as_ref(),
                                 );
+                                if let Some((drag, destination, label)) = landed {
+                                    generate::leave_drop(ui.ctx(), drag.part, destination, label);
+                                }
                                 ui.add_space(ROW_GAP);
+                            }
+                            // The pointer came up over nothing: end the drag so
+                            // the ghost chip stops floating and hover text goes
+                            // back to describing tracks rather than destinations.
+                            if aim.is_some() && !ui.ctx().input(|i| i.pointer.any_down()) {
+                                generate::end_drag(ui.ctx());
                             }
                         });
                 });

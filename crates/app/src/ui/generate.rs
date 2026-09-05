@@ -120,6 +120,7 @@ use digi_generator::progressions::{default_progression_for, next_progression_for
 use digi_generator::theory::DEFAULT_SCALE;
 use eframe::egui::{self, Color32, Ui};
 
+use crate::ui::console;
 use crate::ui::transfer::slot_choices;
 use crate::ui::{
     colored_button, consequence_line, panel_title_bar, section_header, slider_row, CYAN, CYAN_FILL, CYAN_INK,
@@ -528,6 +529,75 @@ enum Status {
     Failed(String),
 }
 
+/// A part row being carried from its destination chip to the TRACKS grid —
+/// see [`destination_chip`] for the source end and `ui::tracks` for the drop
+/// end. `Copy` so the grid can read the payload on every frame without
+/// taking it.
+#[derive(Clone, Copy)]
+pub struct DragPart {
+    pub part: PartId,
+    pub role: Role,
+}
+
+/// Two keys, not one, giving the frame a direction. The chip writes the
+/// "in flight" payload the grid hover-checks against; on a landed drop the
+/// grid writes the "delivered" record the panel consumes, and ends the
+/// in-flight one. The tool panel is drawn before the workspace (see
+/// `main`), so a same-frame handoff from one to the other is safe the other
+/// way around: the grid has to defer its message by a frame at most.
+fn dragging_id() -> egui::Id {
+    egui::Id::new("digi-roll-studio::generate::dragging")
+}
+fn dropped_id() -> egui::Id {
+    egui::Id::new("digi-roll-studio::generate::dropped")
+}
+
+/// Source end (the chip): the grid reads this as its hover cue.
+pub fn begin_drag(ctx: &egui::Context, part: DragPart) {
+    ctx.data_mut(|d| d.insert_temp(dragging_id(), part));
+}
+/// Read without taking: the grid's hover check needs the payload on every
+/// frame the drag lasts.
+pub fn dragging_part(ctx: &egui::Context) -> Option<DragPart> {
+    ctx.data(|d| d.get_temp::<DragPart>(dragging_id()))
+}
+/// The pointer came up over nothing: end the drag.
+pub fn end_drag(ctx: &egui::Context) {
+    ctx.data_mut(|d| d.remove::<DragPart>(dragging_id()));
+}
+/// Drop end (the grid): stash the resolved destination for the panel.
+pub fn leave_drop(ctx: &egui::Context, part: PartId, destination: Destination, label: String) {
+    end_drag(ctx);
+    ctx.data_mut(|d| d.insert_temp(dropped_id(), (part, destination, label)));
+}
+/// Panel end: take and apply the drop. Got-and-removed, because egui offers
+/// `get_temp` and `remove` but no `take_temp`.
+pub fn take_drop(ctx: &egui::Context) -> Option<(PartId, Destination, String)> {
+    let found = ctx.data(|d| d.get_temp::<(PartId, Destination, String)>(dropped_id()));
+    if found.is_some() {
+        ctx.data_mut(|d| d.remove::<(PartId, Destination, String)>(dropped_id()));
+    }
+    found
+}
+
+/// The tag that follows the pointer while a chip is carried: a little
+/// cyan-bordered pill naming the role, so the gesture reads as "carrying
+/// Snare", never just a floating cursor. Painted on the debug layer so the
+/// tool panel scrollarea's clip rect cannot crop it.
+fn paint_drag_ghost(ctx: &egui::Context, text: &str) {
+    let Some(pos) = ctx.pointer_latest_pos() else { return };
+    let painter = ctx.debug_painter();
+    let font = egui::FontId::monospace(10.0);
+    let galley = painter.layout_no_wrap(text.to_string(), font, CYAN_TEXT);
+    let size = egui::vec2(galley.size().x + 10.0, 18.0);
+    // Carried a touch right and below the pointer, the way a dragged chip
+    // would trail its cursor.
+    let rect = egui::Rect::from_min_size(pos + egui::vec2(12.0, 10.0), size);
+    painter.rect_filled(rect, 2.0, CYAN_FILL);
+    painter.rect_stroke(rect, 2.0, egui::Stroke::new(1.0, CYAN), egui::StrokeKind::Inside);
+    painter.galley(rect.min + egui::vec2(5.0, (18.0 - galley.size().y) / 2.0), galley, CYAN_TEXT);
+}
+
 #[derive(Default)]
 pub struct GeneratePanel {
     ctx: GenContext,
@@ -850,6 +920,19 @@ impl GeneratePanel {
         section_header(ui, "PARTS", Some("call and response, top down"));
         ui.add_space(4.0);
 
+        let mut edited = false;
+        // A drag from a destination chip that came to rest on a track cell —
+        // the grid posted it last frame (see the note at `dragging_id`), so
+        // take it once here, before the conflict pass draws its conclusions
+        // from the new destination.
+        if let Some((part_id, destination, label)) = take_drop(ui.ctx()) {
+            if let Some(index) = self.ctx.parts.iter().position(|p| p.id == part_id) {
+                let role = self.ctx.parts[index].role;
+                self.ctx.parts[index].destination = destination;
+                console::post(ui.ctx(), format!("{} now writes to {label}", role.label()));
+                edited = true;
+            }
+        }
         let conflicts = part_conflicts(&self.ctx.parts, session);
 
         let mut remove: Option<PartId> = None;
@@ -976,9 +1059,8 @@ impl GeneratePanel {
             ui.add_space(5.0);
         }
 
-        let mut edited = false;
         if let Some(id) = reroll {
-            edited = self.reroll_now(id, session);
+            edited |= self.reroll_now(id, session);
         }
         if let Some(id) = remove {
             self.ctx.parts.retain(|p| p.id != id);
@@ -1383,14 +1465,32 @@ fn destination_chip(ui: &mut Ui, id: PartId, part: &mut Part, session: &Session,
     let label = destination_chip_label(session, &part.destination);
     let (bg, text_colour) = if conflicted { (WARN_AMBER_FILL, WARN_AMBER_TEXT) } else { (PANEL_BG_RAISED, TEXT_DIM) };
 
+    // **Click opens the picker; a drag aims the row at a track cell.** The two
+    // gestures split on `Sense::click_and_drag`: past the drag threshold
+    // `clicked` stays false and `working_popup` never sees it, while a plain
+    // press-and-release still toggles the popup as it always did.
     let response = ui
-        .scope_builder(egui::UiBuilder::new().id_salt(("gen-dest-chip", id.0)).sense(egui::Sense::click()), |ui| {
+        .scope_builder(egui::UiBuilder::new().id_salt(("gen-dest-chip", id.0)).sense(egui::Sense::click_and_drag()), |ui| {
             egui::Frame::new().fill(bg).inner_margin(egui::Margin::symmetric(6, 2)).show(ui, |ui| {
                 ui.label(egui::RichText::new(label).monospace().size(10.0).color(text_colour));
             });
         })
         .response
-        .on_hover_text("Click to change the box, slot or track this part writes to.");
+        .on_hover_text(
+            "Click to change the box, slot or track this part writes to —\
+             or drag onto a track cell in the TRACKS grid to aim it at that cell.",
+        );
+
+    if response.drag_started() {
+        begin_drag(ui.ctx(), DragPart { part: id, role: part.role });
+    }
+    // The chip that owns the payload paints the ghost; the other cards'
+    // chips see somebody else's id and do nothing.
+    if let Some(drag) = dragging_part(ui.ctx()) {
+        if drag.part == id {
+            paint_drag_ghost(ui.ctx(), drag.role.label());
+        }
+    }
 
     super::working_popup(&response, 200.0, |ui| destination_picker(ui, id, part, session));
 }
@@ -2520,5 +2620,48 @@ mod tests {
         let after = generate_arrangement(&ctx, None).unwrap();
         assert_eq!(notes_of(&after, bass_id), bass_before, "the bass reads no busy map and should not have moved");
         assert_ne!(notes_of(&after, lead_id), lead_before, "a lead with nothing above it has nothing to work around");
+    }
+
+    #[test]
+    fn a_part_drag_payload_vanishes_when_the_pointer_comes_up() {
+        let ctx = egui::Context::default();
+        begin_drag(&ctx, DragPart { part: PartId::next(), role: Role::Bass });
+        assert!(dragging_part(&ctx).is_some(), "the chip left a payload");
+        end_drag(&ctx);
+        assert!(dragging_part(&ctx).is_none(), "a pointer-up over nothing ends it");
+    }
+
+    /// The drop end: the grid stashes `(part, destination, label)`, and the
+    /// next frame's `parts_group` rewrites that row before the conflict pass
+    /// runs, reports the move, and flags the settings as changed — the same
+    /// flag a move through the chip popup would set.
+    #[test]
+    fn a_landed_drop_rewrites_the_rows_destination_and_posts_to_the_console() {
+        let ctx = egui::Context::default();
+        let mut session = session_with_two_boxes();
+        let mut panel = GeneratePanel::default();
+        let device = session.devices[1].id;
+        let part = panel.ctx.parts[0].id;
+        let destination = Destination { device: Some(device), slot: PatternRef::new(0, 0), track: 4 };
+        leave_drop(&ctx, part, destination, "DN2 A01 T5".to_string());
+
+        let mut draw = |ui: &mut Ui| {
+            let out = panel.ui(ui, &mut session);
+            assert!(out.edited, "the drop reads as an edit");
+            assert!(out.settings, "and as a settings move — same promise the popup makes");
+        };
+        let mut output = ctx.run_ui(egui::RawInput::default(), &mut draw);
+        output.textures_delta.clear();
+
+        assert_eq!(panel.ctx.parts[0].destination.device, Some(device));
+        assert_eq!(panel.ctx.parts[0].destination.slot.slot(), 0);
+        assert_eq!(panel.ctx.parts[0].destination.track, 4);
+
+        let mut console = console::Console::default();
+        console.collect(&ctx);
+        match console.latest() {
+            Some(entry) => assert!(entry.text.contains("now writes to DN2 A01 T5"), "the console should carry the move, got: {}", entry.text),
+            None => panic!("the drop post never reached the console"),
+        }
     }
 }
