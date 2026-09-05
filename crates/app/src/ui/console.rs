@@ -33,10 +33,16 @@
 //
 // ## What is not here
 //
-// The other panels' `consequence_line`s — Presets' scan reports, Session's
-// "Saved to…" — stay where they are. Those sit *inside* the panel that owns the
-// work, in space that panel is free to reflow, and none of them is drawn over a
-// fixed-height grid. This is the log for the pane that could not afford one.
+// The panels keep their own consequence lines — the fetch row's summary, a
+// write's verdict, Presets' scan reports — because those belong beside the
+// controls that produced them, in space the owning panel is free to reflow.
+// What *also* lands here is one line per thing done: the TRACKS grid's copies
+// and clears, the Setup panel's adds, port moves, clock toggles, fetches and
+// sends, Session's "Saved to…". The inline line is replaced by the next
+// attempt; this log is where the previous ones survive. Lines worded for a
+// row — which sit under a heading that already names the box — are prefixed
+// with the box's name at the `post` call site, because an inch above a console
+// line there is no such heading.
 
 use std::collections::VecDeque;
 use std::time::{Duration, Instant};
@@ -64,8 +70,8 @@ const RIGHT_W: f32 = 150.0;
 /// What the strip says before anything has happened. Names the pane whose
 /// messages land here, so an empty console reads as a place rather than as a
 /// panel that failed to load.
-const EMPTY: &str = "What the TRACKS grid does \u{2014} copies, pastes, clears, transposes \u{2014} \
-                     reports here.";
+const EMPTY: &str = "What the app does \u{2014} copies, pastes, clears, transposes, fetches, \
+                     sends \u{2014} reports here.";
 
 /// One thing the app has said.
 #[derive(Debug, Clone)]

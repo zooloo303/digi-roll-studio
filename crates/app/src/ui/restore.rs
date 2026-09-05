@@ -82,6 +82,7 @@ use digi_protocol::safe_write::{
 };
 use eframe::egui::{self, Ui};
 
+use crate::ui::console;
 use crate::ui::session::{export_backup, Chooser, NativeChooser};
 use crate::ui::transfer::binding;
 use crate::ui::write::{blocker, wrong_box, PortsPresent};
@@ -343,6 +344,9 @@ struct Lists {
 /// A restore in flight.
 struct Pending {
     device: DeviceId,
+    /// The box's row name, captured at the press, for the console's copy of the
+    /// report — the report's own wording is written for the row it lands under.
+    name: String,
     rx: Receiver<Event>,
     status: String,
 }
@@ -445,7 +449,7 @@ impl RestorePanel {
     /// living beside the rows would leave a worker blocked forever on a question
     /// nobody could be shown the moment Setup was closed.
     pub fn tick(&mut self, ui: &mut Ui) {
-        self.poll();
+        self.poll(ui.ctx());
         if self.pending.is_some() {
             ui.ctx().request_repaint_after(std::time::Duration::from_millis(100));
         }
@@ -798,15 +802,17 @@ impl RestorePanel {
         };
 
         self.rows.entry(id).or_default().outcome = None;
+        let name = session.device(id).map(|d| d.name.clone()).unwrap_or_default();
         let (tx, rx) = channel();
         std::thread::spawn(move || worker(job, tx));
-        self.pending = Some(Pending { device: id, rx, status: "Opening the box…".into() });
+        self.pending = Some(Pending { device: id, name, rx, status: "Opening the box…".into() });
     }
 
     /// Drain whatever the worker has said since the last frame.
-    fn poll(&mut self) {
+    fn poll(&mut self, ctx: &egui::Context) {
         let Some(pending) = &mut self.pending else { return };
         let device = pending.device;
+        let name = pending.name.clone();
         loop {
             let Ok(event) = pending.rx.try_recv() else { return };
             match event {
@@ -819,6 +825,7 @@ impl RestorePanel {
                 Event::Done(outcome) => {
                     let outcome = match outcome {
                         Ok(report) => {
+                            console::post(ctx, format!("{name}: {}", report.message.text));
                             // A verify mismatch on a *restore* is the worst news
                             // this app can deliver — the recovery itself did not
                             // land — so it goes in front of the person who asked.
@@ -828,7 +835,10 @@ impl RestorePanel {
                             }
                             Outcome::Done(report)
                         }
-                        Err(e) => Outcome::Failed(e),
+                        Err(e) => {
+                            console::post(ctx, format!("{name}: {e}"));
+                            Outcome::Failed(e)
+                        }
                     };
                     self.rows.entry(device).or_default().outcome = Some(outcome);
                     self.pending = None;

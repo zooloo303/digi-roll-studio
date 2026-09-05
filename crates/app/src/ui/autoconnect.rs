@@ -82,6 +82,7 @@ use digi_midi::{ElektronDevice, PortBinding, PortInfo};
 use digi_protocol::device::DeviceIdentity;
 use eframe::egui::{self, Ui};
 
+use crate::ui::console;
 use crate::ui::ports::PortsPanel;
 
 /// How often the ports are re-enumerated while nothing else is going on.
@@ -333,7 +334,7 @@ impl AutoConnect {
         if let Some(rx) = &self.pending {
             if let Ok(reply) = rx.try_recv() {
                 self.pending = None;
-                return self.land(session, reply);
+                return self.land(session, reply, ctx);
             }
             // Nothing wakes the UI thread when the worker moves.
             ctx.request_repaint_after(Duration::from_millis(100));
@@ -411,7 +412,11 @@ impl AutoConnect {
 
     /// Bind a reply, or say why it was not bound. Returns whether the session
     /// changed.
-    fn land(&mut self, session: &mut Session, reply: Reply) -> bool {
+    ///
+    /// Whatever it says goes to the console as well as to the line under the
+    /// checkbox: that line is overwritten by the next landing, and "Added A4"
+    /// is exactly the sort of thing a person goes looking for a minute later.
+    fn land(&mut self, session: &mut Session, reply: Reply, ctx: &egui::Context) -> bool {
         let Ok(identity) = reply.identity else {
             // Silent: a port that does not answer is the normal state of an IAC
             // bus, not news. But it is also the state of a box whose ports have
@@ -435,6 +440,7 @@ impl AutoConnect {
                 (session.add_device(Device::new(name, model, 16)), true)
             }
             Placement::Disagrees(why) => {
+                console::post(ctx, &why);
                 self.said = Some(why);
                 return false;
             }
@@ -442,10 +448,12 @@ impl AutoConnect {
         match session.bind_identity_to(device, &identity, reply.candidate.input, reply.candidate.output) {
             Ok(()) => {
                 let name = session.device(device).map(|d| d.name.clone()).unwrap_or_default();
-                self.said = Some(match added {
+                let said = match added {
                     true => format!("Added {name} — {}", identity.name),
                     false => format!("Connected {name} — {}", identity.name),
-                });
+                };
+                console::post(ctx, &said);
+                self.said = Some(said);
                 true
             }
             Err(e) => {
@@ -455,7 +463,9 @@ impl AutoConnect {
                 if added {
                     session.remove_device(device);
                 }
-                self.said = Some(format!("Could not place {}: {e}", identity.name));
+                let said = format!("Could not place {}: {e}", identity.name);
+                console::post(ctx, &said);
+                self.said = Some(said);
                 false
             }
         }
@@ -486,12 +496,19 @@ impl AutoConnect {
     /// The checkbox and the one line about what it last did.
     pub fn ui(&mut self, ui: &mut Ui) {
         ui.horizontal(|ui| {
-            ui.checkbox(&mut self.enabled, "Auto-connect")
+            let toggle = ui
+                .checkbox(&mut self.enabled, "Auto-connect")
                 .on_hover_text(
                     "Ask any unclaimed Elektron port who it is, and give it to a box in this \
                      session that has no ports. It never moves a port you picked, and never \
                      touches whether a box takes clock.",
                 );
+            if toggle.changed() {
+                console::post(
+                    ui.ctx(),
+                    if self.enabled { "Auto-connect on" } else { "Auto-connect off" },
+                );
+            }
             if self.pending.is_some() {
                 ui.spinner();
             }
@@ -793,7 +810,11 @@ mod tests {
             input: port("in-1", "Digitakt II"),
             output: port("out-1", "Digitakt II"),
         };
-        let changed = ac.land(&mut session, Reply { candidate, identity: Ok(identity(42)) });
+        let changed = ac.land(
+            &mut session,
+            Reply { candidate, identity: Ok(identity(42)) },
+            &egui::Context::default(),
+        );
 
         assert!(changed, "a grown desk is a session change the engine has to hear about");
         assert_eq!(session.devices.len(), 1);
@@ -828,7 +849,11 @@ mod tests {
             input: port("in-1", "Digitakt II"),
             output: port("out-1", "Digitakt II"),
         };
-        let changed = ac.land(&mut session, Reply { candidate, identity: Ok(identity(42)) });
+        let changed = ac.land(
+            &mut session,
+            Reply { candidate, identity: Ok(identity(42)) },
+            &egui::Context::default(),
+        );
 
         assert!(changed);
         let names: Vec<&str> = session.devices.iter().map(|d| d.name.as_str()).collect();

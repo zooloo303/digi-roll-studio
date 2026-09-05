@@ -108,6 +108,7 @@ use digi_protocol::safe_write::{
 };
 use eframe::egui::{self, Ui};
 
+use crate::ui::console;
 use crate::ui::transfer::{binding, slot_choices, wire_slots};
 use crate::ui::write::{aim, blocker, is_home, track_kind_label, wrong_box, PortsPresent};
 
@@ -1096,7 +1097,7 @@ impl SyncPanel {
     /// reason: the Setup panel collapses, a collapsed panel's body does not run,
     /// and a worker blocked on a question nobody can be shown never comes back.
     pub fn tick(&mut self, ui: &mut Ui) {
-        self.poll();
+        self.poll(ui.ctx());
         if self.pending.is_some() {
             ui.ctx().request_repaint_after(std::time::Duration::from_millis(100));
         }
@@ -1315,7 +1316,7 @@ impl SyncPanel {
         self.pending = Some(Pending { device, rx, status: "Opening the box…".into() });
     }
 
-    fn poll(&mut self) {
+    fn poll(&mut self, ctx: &egui::Context) {
         let Some(pending) = &mut self.pending else { return };
         loop {
             let Ok(event) = pending.rx.try_recv() else { return };
@@ -1327,6 +1328,13 @@ impl SyncPanel {
                     return;
                 }
                 Event::Done(report) => {
+                    // Each box's line goes to the console too: the row keeps
+                    // only its own box's last answer, and the log is where the
+                    // previous run's survives. `BoxOutcome` already carries the
+                    // name — its text is worded for a row that has no heading.
+                    for b in &report.boxes {
+                        console::post(ctx, format!("{}: {}", b.name, b.text));
+                    }
                     // Anything that did not go as asked is put in front of the
                     // person who pressed, per `ui::write` decision 7 — and at
                     // this scale a failure buried under a green row is worse.

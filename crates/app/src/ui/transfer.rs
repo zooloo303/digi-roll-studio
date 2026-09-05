@@ -87,6 +87,7 @@ use digi_protocol::pattern::{decode_pattern_kit, PatternKit, Spec};
 use eframe::egui::{self, Ui};
 
 use crate::engine::EngineLink;
+use crate::ui::console;
 
 /// One fetched dump, owned, as the worker hands it back — in whichever format
 /// the box that *answered* speaks, which is the point (see the header): the
@@ -166,7 +167,7 @@ impl TransferPanel {
         engine: &mut EngineLink,
         blocked: bool,
     ) -> bool {
-        let mut edited = self.poll(session);
+        let mut edited = self.poll(session, ui.ctx());
         if self.pending.is_some() {
             // Nothing wakes the UI thread when a worker finishes, so keep asking
             // while one is out. Same bargain as the ports panel's handshake.
@@ -381,6 +382,10 @@ impl TransferPanel {
                         {
                             session.tempo_bpm = bpm;
                             engine.set_tempo(bpm);
+                            console::post(
+                                ui.ctx(),
+                                format!("Tempo set to {bpm:.1} bpm — from the fetched pattern"),
+                            );
                             edited = true;
                         }
                     });
@@ -502,7 +507,12 @@ impl TransferPanel {
 
     /// Take a landed dump and import it. Returns whether the session changed —
     /// which is what gets the new pattern down the channel to the engine.
-    fn poll(&mut self, session: &mut Session) -> bool {
+    ///
+    /// The outcome also goes to the console, prefixed with the box's name: the
+    /// row's own line is worded for the row, where the heading above it says
+    /// whose it is, and it is replaced by the next fetch — the log is where the
+    /// previous one survives.
+    fn poll(&mut self, session: &mut Session, ctx: &egui::Context) -> bool {
         let Some(pending) = &self.pending else { return false };
         let Ok(result) = pending.rx.try_recv() else { return false };
         let (id, into) = (pending.device, pending.into);
@@ -536,6 +546,18 @@ impl TransferPanel {
             }
             Err(e) => Outcome::Failed(e),
         };
+        let name = session.device(id).map(|d| d.name.clone()).unwrap_or_default();
+        match &outcome {
+            Outcome::Imported { into, report } => {
+                console::post(ctx, format!("{name}: {}", summary(*into, report)));
+            }
+            Outcome::ImportedA4 { into, report } => {
+                console::post(ctx, format!("{name}: {}", a4_summary(*into, report)));
+            }
+            Outcome::Failed(e) => {
+                console::post(ctx, format!("{name}: fetch failed — {e}"));
+            }
+        }
         if let Some(row) = self.rows.get_mut(&id) {
             row.outcome = Some(outcome);
         }

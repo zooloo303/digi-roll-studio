@@ -25,6 +25,8 @@ use digi_midi::{list_inputs, list_outputs, ElektronDevice, PortBinding, PortInfo
 use digi_protocol::device::DeviceIdentity;
 use eframe::egui::{self, Ui};
 
+use crate::ui::console;
+
 pub struct PortsPanel {
     inputs: Vec<PortInfo>,
     outputs: Vec<PortInfo>,
@@ -124,21 +126,33 @@ impl PortsPanel {
     /// binding gives a device its ports, and the device strip above this section
     /// has already been drawn for the frame, so the caller owes the window one
     /// more repaint before the two agree.
-    fn poll(&mut self, session: &mut Session) -> bool {
+    fn poll(&mut self, session: &mut Session, ctx: &egui::Context) -> bool {
         let Some(rx) = &self.pending else { return false };
         let Ok(result) = rx.try_recv() else { return false };
         self.pending = None;
         // A reply is only half the job: the session has to know which of its
         // boxes just spoke. Phase 3's third exit criterion.
         if let (Ok(identity), Some((input, output))) = (&result, self.asked_on.clone()) {
-            self.bind = Some(session.bind_identity(identity, input, output));
+            let bind = session.bind_identity(identity, input, output);
+            // A bind is a routing change, so it is said in the console as well
+            // as here — the same thing auto-connect says when it binds one
+            // itself. A refusal stays inline: it is the answer to a diagnostic
+            // query, and it keeps until the next identify overwrites it.
+            if let Ok(id) = &bind {
+                let name = session
+                    .device(*id)
+                    .map(|d| format!("{} ({})", d.name, d.model.display))
+                    .unwrap_or_else(|| "a device that has since gone".into());
+                console::post(ctx, format!("Bound to {name}"));
+            }
+            self.bind = Some(bind);
         }
         self.identity = Some(result);
         true
     }
 
     pub fn ui(&mut self, ui: &mut Ui, session: &mut Session) {
-        if self.poll(session) {
+        if self.poll(session, ui.ctx()) {
             ui.ctx().request_repaint();
         }
 
@@ -246,11 +260,13 @@ impl PortsPanel {
                         if let (Some(identity), Some((input, output))) =
                             (&identity, self.asked_on.clone())
                         {
-                            self.bind = Some(
-                                session
-                                    .bind_identity_to(id, identity, input, output)
-                                    .map(|()| id),
-                            );
+                            let bind = session
+                                .bind_identity_to(id, identity, input, output)
+                                .map(|()| id);
+                            if bind.is_ok() {
+                                console::post(ui.ctx(), format!("Bound to {label}"));
+                            }
+                            self.bind = Some(bind);
                         }
                     }
                 }

@@ -100,6 +100,7 @@ use digi_protocol::safe_write::{
 };
 use eframe::egui::{self, Ui};
 
+use crate::ui::console;
 use crate::ui::tracks::Selection;
 use crate::ui::transfer::{binding, slot_choices, wire_slots};
 
@@ -610,6 +611,10 @@ enum Outcome {
 /// `ui::transfer`'s is.
 struct Pending {
     device: DeviceId,
+    /// The box's row name, captured at the press: the report's own wording is
+    /// written for the row it lands under, so the console's copy of it — where
+    /// no heading says whose it is — is prefixed from here.
+    name: String,
     rx: Receiver<Event>,
     status: String,
 }
@@ -643,7 +648,7 @@ impl WritePanel {
     /// be shown. A modal belongs to the window in any case: it is not a thing
     /// inside a panel, it is the thing in front of everything.
     pub fn tick(&mut self, ui: &mut Ui) {
-        self.poll();
+        self.poll(ui.ctx());
         if self.pending.is_some() {
             // Nothing wakes the UI thread when a worker moves, and this one has a
             // dialog to put up in the middle. Same bargain as the fetch panel.
@@ -987,15 +992,17 @@ impl WritePanel {
         };
 
         self.rows.entry(id).or_default().outcome = None;
+        let name = session.device(id).map(|d| d.name.clone()).unwrap_or_default();
         let (tx, rx) = channel();
         std::thread::spawn(move || worker(job, tx));
-        self.pending = Some(Pending { device: id, rx, status: "Opening the box…".into() });
+        self.pending = Some(Pending { device: id, name, rx, status: "Opening the box…".into() });
     }
 
     /// Drain whatever the worker has said since the last frame.
-    fn poll(&mut self) {
+    fn poll(&mut self, ctx: &egui::Context) {
         let Some(pending) = &mut self.pending else { return };
         let device = pending.device;
+        let name = pending.name.clone();
         loop {
             let Ok(event) = pending.rx.try_recv() else { return };
             match event {
@@ -1011,6 +1018,7 @@ impl WritePanel {
                 Event::Done(outcome) => {
                     let outcome = match outcome {
                         Ok(report) => {
+                            console::post(ctx, format!("{name}: {}", report.message.text));
                             // Decision 7: a verify mismatch, or a lane that did
                             // not fit, is put in front of the person who asked.
                             if report.message.is_error {
@@ -1019,7 +1027,10 @@ impl WritePanel {
                             }
                             Outcome::Done(report)
                         }
-                        Err(e) => Outcome::Failed(e),
+                        Err(e) => {
+                            console::post(ctx, format!("{name}: {e}"));
+                            Outcome::Failed(e)
+                        }
                     };
                     self.rows.entry(device).or_default().outcome = Some(outcome);
                     self.pending = None;

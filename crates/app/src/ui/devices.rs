@@ -41,6 +41,7 @@ use digi_protocol::safe_write::PatternIo;
 use eframe::egui::{self, Ui};
 
 use crate::engine::EngineLink;
+use crate::ui::console;
 use crate::ui::sync::{patch_read_blocker, patch_read_job, read_patch_kit, PatchJob, PatchKit};
 use crate::ui::write::PortsPresent;
 
@@ -140,6 +141,7 @@ pub fn ui(
         });
         if remove {
             session.remove_device(id);
+            console::post(ui.ctx(), format!("Removed {name} from this session"));
             *changed = true;
             if let Some(pair) = ports_pair {
                 outcome.declined.push(pair);
@@ -205,6 +207,14 @@ pub fn ui(
             if let Some(d) = session.device_mut(id) {
                 d.io.takes_clock = takes_clock;
                 *changed = true;
+                console::post(
+                    ui.ctx(),
+                    if takes_clock {
+                        format!("{} takes our clock", d.name)
+                    } else {
+                        format!("{} no longer takes our clock", d.name)
+                    },
+                );
             }
         }
 
@@ -297,7 +307,8 @@ pub fn add_box_row(ui: &mut Ui, session: &mut Session) -> bool {
     let Some(model) = pick else { return false };
     // One bank of slots, same as `two_box_session` gives its fixtures.
     let name = session.suggested_name(model);
-    session.add_device(Device::new(name, model, 16));
+    session.add_device(Device::new(name.clone(), model, 16));
+    console::post(ui.ctx(), format!("Added {name} — {}", model.display));
     true
 }
 
@@ -355,7 +366,16 @@ fn picker(
 
     // `set_device_port` is the one that decides whether this is a change at all —
     // re-picking what is already set must not cost a snapshot down the channel.
-    session.set_device_port(device, end, chosen)
+    if !session.set_device_port(device, end, chosen.clone()) {
+        return false;
+    }
+    let name = session.device(device).map(|d| d.name.clone()).unwrap_or_default();
+    let what = match &chosen {
+        Some(port) => format!("is now {}", port.name),
+        None => String::from("is now unbound"),
+    };
+    console::post(ui.ctx(), format!("{name}'s {label} port {what}"));
+    true
 }
 
 /// What a closed picker shows. An unbound end says so rather than showing a
@@ -543,7 +563,13 @@ fn patch_read_slot_default(session: &Session, id: DeviceId) -> PatternRef {
 /// actually changed — only true on a successful [`Session::apply_patch_read`],
 /// never on a refusal, so a caller's dirty flag is not set by a read that
 /// touched nothing.
-fn poll_patch_read(session: &mut Session, id: DeviceId) -> bool {
+///
+/// The landed message also goes to the console: the row's own status line is
+/// replaced by the next attempt, and the log is where the previous one
+/// survives. A failure is prefixed with the box's name — the message is worded
+/// for the row it lands under, whose heading says whose it is, and the console
+/// has no such heading.
+fn poll_patch_read(session: &mut Session, id: DeviceId, ctx: &egui::Context) -> bool {
     let outcome = {
         let mut reads = PATCH_READS.lock().unwrap();
         let Some(state) = reads.get_mut(&id) else { return false };
@@ -596,6 +622,13 @@ fn poll_patch_read(session: &mut Session, id: DeviceId) -> bool {
         }
         Err(why) => (why, true, false),
     };
+    console::post(
+        ctx,
+        match is_error {
+            true => format!("{}: {message}", outcome.job.name),
+            false => message.clone(),
+        },
+    );
     PATCH_READS.lock().unwrap().entry(id).or_default().last = Some((message, is_error));
     applied
 }
@@ -613,7 +646,7 @@ fn patch_read_row<D: PatternIo + Send + 'static>(
 ) -> (egui::Response, bool, Option<(String, bool)>) {
     // A landed fetch is applied before this frame draws its own status line,
     // the same order `ui::ports`' panel polls in.
-    let changed = poll_patch_read(session, id);
+    let changed = poll_patch_read(session, id, ui.ctx());
 
     let present = PortsPresent { inputs, outputs };
     let blocked = session.device(id).and_then(|d| patch_read_blocker(d, present));
@@ -711,6 +744,8 @@ fn patch_read_row<D: PatternIo + Send + 'static>(
                 state.last = None;
             }
             Err(why) => {
+                let name = session.device(id).map(|d| d.name.clone()).unwrap_or_default();
+                console::post(ui.ctx(), format!("{name}: {why}"));
                 reads.entry(id).or_default().last = Some((why, true));
             }
         }
