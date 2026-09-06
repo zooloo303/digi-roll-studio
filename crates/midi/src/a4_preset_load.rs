@@ -105,10 +105,13 @@ const AFTER_STORE: Duration = Duration::from_millis(400);
 pub trait A4KitIo {
     /// One preset file's bytes off the +Drive.
     fn read_preset(&mut self, path: &str) -> Result<Vec<u8>, MidiError>;
-    /// The box's **working** kit — a `0x58` reply's payload, 2,410 bytes.
-    fn read_working_kit(&mut self) -> Result<Vec<u8>, MidiError>;
-    /// Put a whole kit payload back into the box's edit buffer.
-    fn write_working_kit(&mut self, payload: &[u8]) -> Result<(), MidiError>;
+    /// The box's **working** kit — a `0x58` reply's index byte and payload,
+    /// 2,410 bytes. The index is the slot of the kit the box has loaded, and it
+    /// is zero on pattern A01 only; see `a4_kit::DUMP_A4_KIT_WORKING`.
+    fn read_working_kit(&mut self) -> Result<(u8, Vec<u8>), MidiError>;
+    /// Put a whole kit payload back into the box's edit buffer, under the index
+    /// byte the read handed back.
+    fn write_working_kit(&mut self, index: u8, payload: &[u8]) -> Result<(), MidiError>;
     /// Wait for the box to digest a store. Separated so a test runs instantly
     /// and a desk waits [`AFTER_STORE`].
     fn settle(&mut self) {
@@ -121,12 +124,12 @@ impl A4KitIo for ElektronDevice {
         self.drive_read_file(path)
     }
 
-    fn read_working_kit(&mut self) -> Result<Vec<u8>, MidiError> {
+    fn read_working_kit(&mut self) -> Result<(u8, Vec<u8>), MidiError> {
         self.fetch_a4_working_kit()
     }
 
-    fn write_working_kit(&mut self, payload: &[u8]) -> Result<(), MidiError> {
-        self.store_a4_working_kit(payload)
+    fn write_working_kit(&mut self, index: u8, payload: &[u8]) -> Result<(), MidiError> {
+        self.store_a4_working_kit(index, payload)
     }
 }
 
@@ -231,34 +234,38 @@ impl From<DriveError> for A4LoadError {
 /// and a difference anywhere in them means this end does not know what the box
 /// is holding. The message names the kit and the track that differ so the report
 /// is still readable.
-fn read_kit_twice(io: &mut impl A4KitIo) -> Result<(A4Kit, Vec<u8>), A4LoadError> {
-    let mut seen: Vec<Vec<u8>> = Vec::new();
+///
+/// The index byte is compared too, and the second read's is what comes back:
+/// it is the slot of the kit the box has loaded, and the store puts it on the
+/// kit it sends.
+fn read_kit_twice(io: &mut impl A4KitIo) -> Result<(A4Kit, u8, Vec<u8>), A4LoadError> {
+    let mut seen: Vec<(u8, Vec<u8>)> = Vec::new();
     for _ in 0..2 {
-        let payload = io.read_working_kit()?;
+        let (index, payload) = io.read_working_kit()?;
         // Decoded on the way in, so an undecodable answer is refused before it
         // can be compared, spliced into or sent.
-        read_kit(0, &payload).map_err(|why| A4LoadError::UnreadableKit { why })?;
-        seen.push(payload);
+        read_kit(index, &payload).map_err(|why| A4LoadError::UnreadableKit { why })?;
+        seen.push((index, payload));
     }
-    let second = seen.pop().expect("two reads");
-    let first = seen.pop().expect("two reads");
-    if first != second {
+    let (index, second) = seen.pop().expect("two reads");
+    let (first_index, first) = seen.pop().expect("two reads");
+    if first != second || first_index != index {
         return Err(A4LoadError::Echo {
-            first: describe(&first),
-            second: describe(&second),
+            first: describe(first_index, &first),
+            second: describe(index, &second),
         });
     }
-    let kit = read_kit(0, &second).map_err(|why| A4LoadError::UnreadableKit { why })?;
-    Ok((kit, second))
+    let kit = read_kit(index, &second).map_err(|why| A4LoadError::UnreadableKit { why })?;
+    Ok((kit, index, second))
 }
 
 /// A kit payload in the few words an error message has room for.
-fn describe(payload: &[u8]) -> String {
-    match read_kit(0, payload) {
+fn describe(index: u8, payload: &[u8]) -> String {
+    match read_kit(index, payload) {
         Ok(kit) => {
             let sounds: Vec<&str> =
                 (0..NUM_SOUNDS).filter_map(|n| kit.sound_name(n)).collect();
-            format!("{} [{}]", kit.name, sounds.join(", "))
+            format!("kit {} {} [{}]", index + 1, kit.name, sounds.join(", "))
         }
         Err(why) => format!("{} bytes that do not decode ({why})", payload.len()),
     }
@@ -293,7 +300,7 @@ pub fn load_a4_preset_onto_track(
         return Err(A4LoadError::NoSuchTrack { track });
     }
 
-    let (kit, payload) = read_kit_twice(io)?;
+    let (kit, index, payload) = read_kit_twice(io)?;
     let replaced = kit.sound_name(usize::from(track)).unwrap_or_default().to_string();
     let backup = sound_slot(&payload, usize::from(track))
         .map_err(|why| A4LoadError::Unspliceable { why })?
@@ -316,10 +323,10 @@ pub fn load_a4_preset_onto_track(
     let spliced = splice_sound(&payload, usize::from(track), &for_kit)
         .map_err(|why| A4LoadError::Unspliceable { why })?;
 
-    io.write_working_kit(&spliced)?;
+    io.write_working_kit(index, &spliced)?;
     io.settle();
 
-    let (after, _) = read_kit_twice(io)?;
+    let (after, _, _) = read_kit_twice(io)?;
     let found = after.sound_name(usize::from(track)).unwrap_or_default().to_string();
     if found != loaded.trim() {
         return Err(A4LoadError::NotVerified { track, expected: loaded, found });
@@ -348,7 +355,7 @@ pub fn revert_a4_track(
     if usize::from(track) >= NUM_SOUNDS {
         return Err(A4LoadError::NoSuchTrack { track });
     }
-    let (_, payload) = read_kit_twice(io)?;
+    let (_, index, payload) = read_kit_twice(io)?;
     let spliced = splice_sound(&payload, usize::from(track), backup)
         .map_err(|why| A4LoadError::Unspliceable { why })?;
     // The name to expect comes from the backup bytes themselves, read through
@@ -356,10 +363,10 @@ pub fn revert_a4_track(
     // against a name it invented.
     let expected = expected_name(&spliced, track)?;
 
-    io.write_working_kit(&spliced)?;
+    io.write_working_kit(index, &spliced)?;
     io.settle();
 
-    let (after, _) = read_kit_twice(io)?;
+    let (after, _, _) = read_kit_twice(io)?;
     let found = after.sound_name(usize::from(track)).unwrap_or_default().to_string();
     if found != expected {
         return Err(A4LoadError::NotVerified { track, expected, found });
@@ -384,9 +391,14 @@ mod tests {
     /// buffer, and real +Drive preset files as its library.
     struct FakeA4 {
         kit: Vec<u8>,
+        /// The slot of the kit the box has loaded — the index byte on its
+        /// `0x58` reply. Not zero, because on hardware it is only zero on
+        /// pattern A01, and a load that assumed zero is what timed out.
+        kit_index: u8,
         files: Vec<(String, Vec<u8>)>,
-        /// Every kit payload this box was asked to store, in order.
-        stored: Vec<Vec<u8>>,
+        /// Every kit store this box was asked for, in order: the index byte
+        /// it went under and the payload.
+        stored: Vec<(u8, Vec<u8>)>,
         /// Set to make the store land nowhere, as a box with the pattern
         /// reloaded under it would.
         deaf: bool,
@@ -414,6 +426,7 @@ mod tests {
         fn new() -> Self {
             Self {
                 kit: kit_payload(KIT00),
+                kit_index: 3,
                 files: vec![
                     ("/soundbanks/A/1".into(), fixture(THE_SAW)),
                     ("/soundbanks/A/7".into(), fixture(EDGAR)),
@@ -441,12 +454,12 @@ mod tests {
                 .ok_or_else(|| MidiError::Send(format!("{path}: no such file")))
         }
 
-        fn read_working_kit(&mut self) -> Result<Vec<u8>, MidiError> {
-            Ok(self.kit.clone())
+        fn read_working_kit(&mut self) -> Result<(u8, Vec<u8>), MidiError> {
+            Ok((self.kit_index, self.kit.clone()))
         }
 
-        fn write_working_kit(&mut self, payload: &[u8]) -> Result<(), MidiError> {
-            self.stored.push(payload.to_vec());
+        fn write_working_kit(&mut self, index: u8, payload: &[u8]) -> Result<(), MidiError> {
+            self.stored.push((index, payload.to_vec()));
             if !self.deaf {
                 self.kit = payload.to_vec();
             }
@@ -478,7 +491,23 @@ mod tests {
         load_a4_preset_onto_track(&mut a4, "/soundbanks/A/7", 0).unwrap();
 
         assert_eq!(a4.stored.len(), 1);
-        assert_eq!(a4.stored[0].len(), before.len(), "a whole kit, not a fragment");
+        assert_eq!(a4.stored[0].1.len(), before.len(), "a whole kit, not a fragment");
+    }
+
+    /// **The kit goes back under the index the box gave it**, not under zero.
+    /// The box on pattern A02 answers `0x68` with the loaded kit's slot; a load
+    /// that read that and then stored under 0 would be sending the box a byte
+    /// it did not say, and what the box does with it is unmeasured off kit 0.
+    #[test]
+    fn the_store_carries_the_index_the_read_came_back_with() {
+        let mut a4 = FakeA4::new();
+        a4.kit_index = 1;
+
+        let report = load_a4_preset_onto_track(&mut a4, "/soundbanks/A/1", 2).unwrap();
+        revert_a4_track(&mut a4, 2, &report.backup).unwrap();
+
+        assert_eq!(a4.stored.len(), 2);
+        assert!(a4.stored.iter().all(|(index, _)| *index == 1), "{:?}", a4.stored.iter().map(|s| s.0).collect::<Vec<_>>());
     }
 
     /// The other three sounds, the kit's name and every byte this crate cannot
@@ -593,12 +622,12 @@ mod tests {
             fn read_preset(&mut self, _: &str) -> Result<Vec<u8>, MidiError> {
                 Ok(fixture(THE_SAW))
             }
-            fn read_working_kit(&mut self) -> Result<Vec<u8>, MidiError> {
+            fn read_working_kit(&mut self) -> Result<(u8, Vec<u8>), MidiError> {
                 let out = self.kits[self.at % self.kits.len()].clone();
                 self.at += 1;
-                Ok(out)
+                Ok((0, out))
             }
-            fn write_working_kit(&mut self, _: &[u8]) -> Result<(), MidiError> {
+            fn write_working_kit(&mut self, _: u8, _: &[u8]) -> Result<(), MidiError> {
                 Ok(())
             }
             fn settle(&mut self) {}
@@ -629,12 +658,12 @@ mod tests {
             fn read_preset(&mut self, _: &str) -> Result<Vec<u8>, MidiError> {
                 Ok(fixture(THE_SAW))
             }
-            fn read_working_kit(&mut self) -> Result<Vec<u8>, MidiError> {
+            fn read_working_kit(&mut self) -> Result<(u8, Vec<u8>), MidiError> {
                 // The right length, the wrong struct version: the one refusal
                 // that says "these offsets are not this box's".
-                Ok(vec![0u8; 2410])
+                Ok((0, vec![0u8; 2410]))
             }
-            fn write_working_kit(&mut self, _: &[u8]) -> Result<(), MidiError> {
+            fn write_working_kit(&mut self, _: u8, _: &[u8]) -> Result<(), MidiError> {
                 panic!("nothing may be sent");
             }
         }

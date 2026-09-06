@@ -88,21 +88,29 @@ pub const NUM_SOUNDS: usize = 4;
 pub const DUMP_A4_KIT: u8 = DUMP_KIT;
 pub const DUMP_A4_KIT_REQUEST: u8 = DUMP_KIT_REQUEST;
 
-/// The **working** kit — the box's edit buffer, the `0x68` reply, index ignored
-/// and echoed as zero.
+/// The **working** kit — the box's edit buffer, the `0x68` reply. The request's
+/// index is ignored; **the reply's index byte is the box's, not an echo**, and
+/// nothing that reads it may filter on it.
 ///
 /// The `-0x10` sibling of [`DUMP_A4_KIT`], on the same rule that makes `0x5A`
 /// the working pattern. During the 2026-08-31 sweep `0x68`'s reply was
 /// byte-identical to stored kit 0, which is what a box sitting on kit 0 with no
-/// unsaved edits should return.
+/// unsaved edits should return — and for five days that read as "index echoed
+/// as zero", because every capture was taken with the box on pattern A01, where
+/// zero is also the loaded kit's slot. On 2026-09-05 a load from pattern A02
+/// timed out at the pre-read: the reply came back and the reader dropped it for
+/// carrying an index other than the zero it had asked for. The reading that
+/// fits both is that the byte names the kit the box has loaded, and the read
+/// path now accepts whatever it says and carries it back on the store.
 pub const DUMP_A4_KIT_WORKING: u8 = 0x58;
 pub const DUMP_A4_KIT_WORKING_REQUEST: u8 = 0x68;
 
 /// A parsed gen-1 kit dump.
 #[derive(Debug, Clone)]
 pub struct A4Kit {
-    /// The reply's index byte: the kit slot for a `0x62`, and zero for a `0x68`
-    /// whatever was asked for.
+    /// The reply's index byte: the kit slot for a `0x62`, and for a `0x68` the
+    /// slot of the kit the box has loaded — whatever was asked for. See
+    /// [`DUMP_A4_KIT_WORKING`] for how zero was mistaken for a constant.
     pub index: u8,
     pub version: u32,
     /// The kit's own name — `POLYTRON`, `STEPPA`. Often set, unlike a pattern's.
@@ -430,7 +438,23 @@ pub fn splice_sound(payload: &[u8], slot: usize, sound: &[u8]) -> Result<Vec<u8>
 ///
 /// The framing is [`build_dump_message`] unmodified and reproduces the box's own
 /// `0x58` message byte for byte; the round-trip test is what says so.
+///
+/// Index zero — the kit-0 capture's own byte. A caller sending a kit back to a
+/// box that answered its `0x68` with any other index wants
+/// [`build_working_kit_at`], which puts the box's own byte back where it was.
 pub fn build_working_kit(payload: &[u8]) -> Result<Vec<u8>, String> {
+    build_working_kit_at(payload, 0)
+}
+
+/// [`build_working_kit`] with the reply's index byte carried through.
+///
+/// **Why the index travels at all.** A `0x68` reply's index is the slot of the
+/// kit the box has loaded (see [`DUMP_A4_KIT_WORKING`]). Whether the box reads
+/// that byte on a `0x58` it *receives* — as "which kit is this edit buffer
+/// for" — or ignores it is unmeasured on any kit but 0, where the two answers
+/// coincide. Sending back the byte the box itself gave is the one choice that
+/// is right under both readings, so a load does that rather than guess.
+pub fn build_working_kit_at(payload: &[u8], index: u8) -> Result<Vec<u8>, String> {
     check_kit(payload)?;
     let tail = &payload[payload.len() - payload.len() % 7..];
     if tail.iter().any(|b| b & 0x80 != 0) {
@@ -440,7 +464,7 @@ pub fn build_working_kit(payload: &[u8]) -> Result<Vec<u8>, String> {
             tail.iter().map(|b| format!("{b:02x}")).collect::<Vec<_>>().join(" ")
         ));
     }
-    Ok(build_dump_message(FAMILY_ANALOG_FOUR, DUMP_A4_KIT_WORKING, 0, payload))
+    Ok(build_dump_message(FAMILY_ANALOG_FOUR, DUMP_A4_KIT_WORKING, index, payload))
 }
 
 /// The destination checks every splice makes: this is a kit payload of the

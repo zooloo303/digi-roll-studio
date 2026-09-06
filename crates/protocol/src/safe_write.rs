@@ -333,7 +333,11 @@ pub trait PatternIo {
     ///
     /// The default refuses in the box's own terms, so a caller that dispatches
     /// on the wrong route gets a sentence rather than a panic or a wrong kit.
-    fn fetch_a4_working_kit(&mut self) -> Result<Vec<u8>, String> {
+    ///
+    /// Returns the reply's index byte with the payload: the slot of the kit the
+    /// box has loaded, which is not zero off pattern A01 — see
+    /// `a4_kit::DUMP_A4_KIT_WORKING`.
+    fn fetch_a4_working_kit(&mut self) -> Result<(u8, Vec<u8>), String> {
         Err("this box has no gen-1 kit dump to read an edit buffer from".into())
     }
 }

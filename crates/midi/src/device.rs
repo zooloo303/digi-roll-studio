@@ -55,7 +55,7 @@ use digi_protocol::drive::{
 };
 use digi_protocol::query::{parse_query_reply, query_args, QueryValue, API_QUERY};
 use digi_protocol::a4_kit::{
-    build_working_kit, DUMP_A4_KIT_REQUEST, DUMP_A4_KIT_WORKING_REQUEST,
+    build_working_kit_at, DUMP_A4_KIT_REQUEST, DUMP_A4_KIT_WORKING_REQUEST,
 };
 use digi_protocol::a4_pattern::{build_pattern, DUMP_A4_PATTERN_REQUEST};
 use digi_protocol::protocol::{
@@ -406,6 +406,17 @@ fn next_msg_id(current: u16) -> u16 {
     }
 }
 
+/// What a single-dump fetch does with the index byte of the reply it is
+/// waiting for. See [`ElektronDevice::fetch_dump_matching`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ReplyIndex {
+    /// The reply must carry the index the request named; anything else is a
+    /// stray and is skipped. Every stored-slot fetch.
+    Echoed,
+    /// The reply's index is the box's own information and is taken as it
+    /// comes. The A4's working-state requests, which name no slot.
+    TheBoxs,
+}
 
 /// A dump message as received, keeping the original bytes. An unknown box's
 /// version bytes and framing are evidence, so captures keep the box's own
@@ -571,10 +582,34 @@ impl ElektronDevice {
         request_type: u8,
         index: u8,
     ) -> Result<DumpResponse, MidiError> {
+        self.fetch_dump_matching(family, request_type, index, &[], ReplyIndex::Echoed)
+    }
+
+    /// The one receive loop behind every single-dump fetch: send one `0x6n`
+    /// request, take the first `0x5n` that answers it.
+    ///
+    /// `reply_index` is the policy on the reply's index byte, and it is a
+    /// parameter because the boxes are not consistent about what that byte
+    /// means. A stored-slot request is answered with the slot it named, so a
+    /// reply carrying any other index is a stray — a late answer to an
+    /// abandoned request, a dump the box's own front panel sent — and is
+    /// skipped. A **working-state** request (`0x68`–`0x6d` on the A4) names no
+    /// slot, and the byte in its reply is the box saying which slot it has
+    /// loaded; filtering that against the zero this end sent is how a load off
+    /// any pattern but A01 timed out on 2026-09-05 with the answer sitting in
+    /// the queue.
+    fn fetch_dump_matching(
+        &mut self,
+        family: u8,
+        request_type: u8,
+        index: u8,
+        args: &[u8],
+        reply_index: ReplyIndex,
+    ) -> Result<DumpResponse, MidiError> {
         assert_request_opcode(request_type)?;
         let response_type = request_type - 0x10;
         self.drain();
-        self.send(&build_dump_message(family, request_type, index, &[]))?;
+        self.send(&build_dump_message(family, request_type, index, args))?;
 
         let deadline = Instant::now() + DUMP_STALL;
         loop {
@@ -589,11 +624,14 @@ impl ElektronDevice {
             };
             let msg = parse_sysex(&frame);
             let Some(dump) = msg.dump else { continue };
-            if dump.family != family || dump.dump_type != response_type || dump.index != index {
+            if dump.family != family || dump.dump_type != response_type {
+                continue;
+            }
+            if reply_index == ReplyIndex::Echoed && dump.index != index {
                 continue;
             }
             if !dump.checksum_ok || !dump.count_ok {
-                return Err(MidiError::CorruptDump { dump_type: dump.dump_type, index });
+                return Err(MidiError::CorruptDump { dump_type: dump.dump_type, index: dump.index });
             }
             return Ok(DumpResponse {
                 family: dump.family,
@@ -626,38 +664,7 @@ impl ElektronDevice {
         index: u8,
         args: &[u8],
     ) -> Result<DumpResponse, MidiError> {
-        assert_request_opcode(request_type)?;
-        let response_type = request_type - 0x10;
-        self.drain();
-        self.send(&build_dump_message(family, request_type, index, args))?;
-
-        let deadline = Instant::now() + DUMP_STALL;
-        loop {
-            let remaining = deadline.saturating_duration_since(Instant::now());
-            if remaining.is_zero() {
-                return Err(MidiError::Timeout);
-            }
-            let frame = match self.rx.recv_timeout(remaining) {
-                Ok(f) => f,
-                Err(RecvTimeoutError::Timeout) => return Err(MidiError::Timeout),
-                Err(RecvTimeoutError::Disconnected) => return Err(MidiError::Disconnected),
-            };
-            let msg = parse_sysex(&frame);
-            let Some(dump) = msg.dump else { continue };
-            if dump.family != family || dump.dump_type != response_type || dump.index != index {
-                continue;
-            }
-            if !dump.checksum_ok || !dump.count_ok {
-                return Err(MidiError::CorruptDump { dump_type: dump.dump_type, index });
-            }
-            return Ok(DumpResponse {
-                family: dump.family,
-                dump_type: dump.dump_type,
-                index: dump.index,
-                payload: dump.payload,
-                raw: frame,
-            });
-        }
+        self.fetch_dump_matching(family, request_type, index, args, ReplyIndex::Echoed)
     }
 
     /// One pattern dump from the identified box, in whatever the box's pattern
@@ -696,23 +703,47 @@ impl ElektronDevice {
         self.fetch_a4_kit_of(DUMP_A4_KIT_REQUEST, index)
     }
 
-    /// The A4's **working** kit — its edit buffer, `0x68` → `0x58`, with the
-    /// index ignored and echoed as zero.
+    /// The A4's **working** kit — its edit buffer, `0x68` → `0x58`. The request's
+    /// index is ignored; the reply's is the slot of the kit the box has loaded,
+    /// and this returns it alongside the payload.
     ///
     /// This is the one thing the gen-2 dump protocol as implemented here cannot
     /// do: `ui::sync`'s patch-names read says out loud that a dump request names
     /// a *stored* slot and that nothing can ask a box what it is playing right
     /// now. On this box something can, and unsaved kit edits are included.
-    pub fn fetch_a4_working_kit(&mut self) -> Result<Vec<u8>, MidiError> {
-        self.fetch_a4_kit_of(DUMP_A4_KIT_WORKING_REQUEST, 0)
+    ///
+    /// **The reply is matched on family and type, never on index.** Until
+    /// 2026-09-05 this went through the same strict filter a stored-slot fetch
+    /// uses, and the reply's index was documented as "echoed as zero" on the
+    /// strength of captures all taken on pattern A01 — whose kit *is* slot 0.
+    /// From A02 the box answers with index 1, the filter dropped its answer, and
+    /// a preset load reported a timeout with nothing wrong on the wire.
+    /// [`Self::store_a4_working_kit`] takes the index back so the kit returns
+    /// under the byte the box gave it.
+    pub fn fetch_a4_working_kit(&mut self) -> Result<(u8, Vec<u8>), MidiError> {
+        let family = self.a4_family()?;
+        let reply = self.fetch_dump_matching(
+            family,
+            DUMP_A4_KIT_WORKING_REQUEST,
+            0,
+            &[],
+            ReplyIndex::TheBoxs,
+        )?;
+        Ok((reply.index, reply.payload))
     }
 
     fn fetch_a4_kit_of(&mut self, request: u8, index: u8) -> Result<Vec<u8>, MidiError> {
+        let family = self.a4_family()?;
+        Ok(self.fetch_dump(family, request, index)?.payload)
+    }
+
+    /// The identified family, refusing anything but an Analog Four.
+    fn a4_family(&self) -> Result<u8, MidiError> {
         let family = self.family()?;
         if family != FAMILY_ANALOG_FOUR {
             return Err(MidiError::Protocol(DeviceError::NotAnAnalogFour(family)));
         }
-        Ok(self.fetch_dump(family, request, index)?.payload)
+        Ok(family)
     }
 
     /// List one +Drive directory (`0x10` request → `0x90` response).
@@ -1149,11 +1180,14 @@ impl ElektronDevice {
     ///
     /// No reply comes back, as for every store here, so the only way to know
     /// what happened is to read the kit again.
-    pub fn store_a4_working_kit(&mut self, payload: &[u8]) -> Result<(), MidiError> {
-        let family = self.family()?;
-        if family != FAMILY_ANALOG_FOUR {
-            return Err(MidiError::Protocol(DeviceError::NotAnAnalogFour(family)));
-        }
+    ///
+    /// `index` is the byte the box put on the `0x58` it answered
+    /// [`Self::fetch_a4_working_kit`] with — the loaded kit's slot — and it goes
+    /// back exactly as it came. Whether the box reads that byte on a kit it
+    /// *receives* is unmeasured off kit 0; returning its own byte is right
+    /// either way, and inventing a zero is right on pattern A01 only.
+    pub fn store_a4_working_kit(&mut self, index: u8, payload: &[u8]) -> Result<(), MidiError> {
+        self.a4_family()?;
         // The firmware allowlist, exactly as `plan_store` and
         // `plan_track_sound_store` apply it: an OS build whose format was never
         // verified is the case no backup was taken for, and this path has no
@@ -1162,7 +1196,7 @@ impl ElektronDevice {
         if !gate.ok {
             return Err(MidiError::WriteRefused(gate.reason));
         }
-        let msg = build_working_kit(payload).map_err(MidiError::WriteRefused)?;
+        let msg = build_working_kit_at(payload, index).map_err(MidiError::WriteRefused)?;
         let conn = &mut self.conn_out;
         let cancel = std::sync::atomic::AtomicBool::new(false);
         crate::a4_transfer::send_working_kit(
@@ -1304,7 +1338,7 @@ impl PatternIo for ElektronDevice {
         self.store_pattern_kit(index, payload).map_err(|e| e.to_string())
     }
 
-    fn fetch_a4_working_kit(&mut self) -> Result<Vec<u8>, String> {
+    fn fetch_a4_working_kit(&mut self) -> Result<(u8, Vec<u8>), String> {
         ElektronDevice::fetch_a4_working_kit(self).map_err(|e| e.to_string())
     }
 }

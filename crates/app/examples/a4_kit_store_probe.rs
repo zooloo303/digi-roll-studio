@@ -77,15 +77,15 @@ fn main() {
 
     // --- 1. read -------------------------------------------------------------
 
-    let before = match device.fetch_a4_working_kit() {
+    let (kit_index, before) = match device.fetch_a4_working_kit() {
         Ok(p) => p,
         Err(e) => {
             eprintln!("could not read the working kit: {e}");
             std::process::exit(1);
         }
     };
-    let kit = read_kit(0, &before).expect("the working kit should decode");
-    println!("\n1. READ  {} bytes — kit {:?}", before.len(), kit.name);
+    let kit = read_kit(kit_index, &before).expect("the working kit should decode");
+    println!("\n1. READ  {} bytes — kit {} {:?}", before.len(), kit_index + 1, kit.name);
     for n in 0..NUM_SOUNDS {
         println!("     SYN{}  {}", n + 1, kit.sound_name(n).unwrap_or("(none)"));
     }
@@ -105,9 +105,9 @@ fn main() {
             read_kit(0, &stored).unwrap().sound_name(usize::from(slot)).unwrap_or("(none)"),
             kit.sound_name(usize::from(slot)).unwrap_or("(none)")
         );
-        device.store_a4_working_kit(&spliced).expect("the store failed");
+        device.store_a4_working_kit(kit_index, &spliced).expect("the store failed");
         device.settle();
-        let end = device.fetch_a4_working_kit().expect("a kit read");
+        let (_, end) = device.fetch_a4_working_kit().expect("a kit read");
         println!(
             "   SYN{track} now reads {:?}, and the slot is {}",
             read_kit(0, &end).unwrap().sound_name(usize::from(slot)).unwrap_or("(none)"),
@@ -172,13 +172,13 @@ fn main() {
     // --- 2. store what was already there -------------------------------------
 
     println!("\n2. STORE the same {} bytes back (0x58, DIN-paced)", before.len());
-    if let Err(e) = device.store_a4_working_kit(&before) {
+    if let Err(e) = device.store_a4_working_kit(kit_index, &before) {
         eprintln!("   the store failed on the wire: {e}");
         std::process::exit(1);
     }
     device.settle();
     let after = match device.fetch_a4_working_kit() {
-        Ok(p) => p,
+        Ok((_, p)) => p,
         Err(e) => {
             eprintln!("   the box stopped answering after the store: {e}");
             eprintln!("   power-cycle it before trying again");
@@ -224,7 +224,7 @@ fn main() {
         }
     }
 
-    let end = device.fetch_a4_working_kit().expect("a final read");
+    let (_, end) = device.fetch_a4_working_kit().expect("a final read");
     println!(
         "\nfinal: the kit is {}",
         if end == before {

@@ -1671,11 +1671,14 @@ pub fn read_patch_kit(device: &mut impl PatternIo, job: &PatchJob) -> Result<Pat
         // buffer, unsaved kit edits included. So the gen-1 read takes no slot at
         // all — see `PatchKit::Gen1` and `TrackPatch::live`.
         PatternRoute::RequestGen1 => {
-            let bytes = device.fetch_a4_working_kit()?;
+            // The reply's index is the slot of the kit the box has loaded, and
+            // it is carried through so the kit the panel names is the right
+            // one — it is only zero on pattern A01.
+            let (index, bytes) = device.fetch_a4_working_kit()?;
             parse_working_kit(&build_dump_message(
                 FAMILY_ANALOG_FOUR,
                 DUMP_A4_KIT_WORKING,
-                0,
+                index,
                 &bytes,
             ))
             .map(PatchKit::Gen1)
@@ -1817,12 +1820,16 @@ mod patch_read_tests {
         /// is not a slot — because the whole point of `0x68` is that it names
         /// no slot, and a fake that served it out of index 0 would let a read
         /// that wrongly asked for slot 0 pass.
-        fn fetch_a4_working_kit(&mut self) -> Result<Vec<u8>, String> {
+        fn fetch_a4_working_kit(&mut self) -> Result<(u8, Vec<u8>), String> {
             *self.fetches.borrow_mut() += 1;
             self.slots
                 .borrow()
                 .get(&WORKING_KIT)
                 .cloned()
+                // Index 1, not 0: the box on any pattern but A01 answers with
+                // the loaded kit's slot, and a reader that only copes with zero
+                // is the bug this fake exists to catch.
+                .map(|bytes| (1, bytes))
                 .ok_or_else(|| "this fake holds no working kit".to_string())
         }
     }

@@ -21,7 +21,8 @@
 use crate::common::fixture_bytes;
 
 use digi_protocol::a4_kit::{
-    build_working_kit, is_a4_kit, is_a4_working_kit, parse_kit, parse_working_kit, read_kit,
+    build_working_kit, build_working_kit_at, is_a4_kit, is_a4_working_kit, parse_kit,
+    parse_working_kit, read_kit,
     sound_for_kit, sound_slot, splice_sound, A4Kit, KIT_SOUND_VERSION, KIT_VERSION, NUM_SOUNDS,
     PAYLOAD_LEN, SOUNDS_OFFSET, SOUND_SIZE, V5_ONLY_BYTE, V5_ONLY_VALUE,
 };
@@ -348,6 +349,23 @@ fn a_spliced_kit_frames_as_a_working_kit_dump() {
     assert!(wire[1..wire.len() - 1].iter().all(|b| b & 0x80 == 0), "a high bit inside the frame");
     let sent = parse_working_kit(&wire).expect("a working kit");
     assert_eq!(sent.sound_name(2), Some("THE SAW"));
+}
+
+/// The index byte the box put on its `0x68` reply goes back on the `0x58` a
+/// load sends, and nothing else in the frame moves. Off pattern A01 that byte
+/// is not zero, and it is the box's to say.
+#[test]
+fn a_working_kit_is_framed_under_the_index_the_box_gave() {
+    let payload = parse_sysex(&fixture_bytes(KIT00_WORKING)).dump.unwrap().payload;
+
+    let at_zero = build_working_kit(&payload).unwrap();
+    let at_one = build_working_kit_at(&payload, 1).unwrap();
+
+    assert_eq!(parse_working_kit(&at_one).unwrap().index, 1);
+    assert_eq!(at_one[9], 1, "byte 9 is the dump index");
+    assert_eq!(at_zero[..9], at_one[..9]);
+    // The index byte sits before the checksum's range, so only it differs.
+    assert_eq!(at_zero[10..], at_one[10..]);
 }
 
 /// A payload that is not a kit never reaches a wire, and neither does one whose

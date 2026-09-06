@@ -3221,7 +3221,7 @@ The map, all checksums and counts verified, every reply saved under
 | `0x65` | `0x55`, 1,304 B | unidentified — 16 per project | |
 | `0x66` | `0x56`, 366 B | project settings — 1 per project | |
 | `0x67` | `0x57`, 2,277 B | global — **4 per project**, the box's exact GLOBAL slot count | |
-| `0x68`–`0x6d` | `0x58`–`0x5d` | the same six objects, **current state** | index ignored, echoed as 0 |
+| `0x68`–`0x6d` | `0x58`–`0x5d` | the same six objects, **current state** | request index ignored; ~~echoed as 0~~ — the reply's index is the **loaded slot** (0 on A01 is where "echoed as 0" came from; A02 answers 1, found 2026-09-05 when a load off A02 timed out at a reader filtering on 0) |
 | `0x58` sent | — | **stores the working kit** | verified 2026-09-01; the preset-load path |
 | `0x6e` | silent | — | |
 | `0x6f` | untried | excluded from the sweep; `0x60` already streams the project | |

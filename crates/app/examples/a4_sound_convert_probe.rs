@@ -64,7 +64,7 @@ fn main() {
     let identity = device.identify().expect("the A4 did not answer");
     println!("=== {} — {} (build {}) ===", identity.name, identity.version, identity.build);
 
-    let opening = device.fetch_a4_working_kit().expect("a kit read");
+    let (kit_index, opening) = device.fetch_a4_working_kit().expect("a kit read");
     let opening_slot = sound_slot(&opening, slot).expect("a slot").to_vec();
     println!(
         "SYN{track} holds {:?} (version {})",
@@ -91,9 +91,9 @@ fn main() {
         read_kit(0, &opening).unwrap().sound_name(source).unwrap_or("(none)").to_string();
     println!("\n0. splice SYN{}'s own {own_name:?} (version 6) onto SYN{track}", source + 1);
     let spliced = splice_sound(&opening, slot, &own).expect("a splice");
-    device.store_a4_working_kit(&spliced).expect("the store failed");
+    device.store_a4_working_kit(kit_index, &spliced).expect("the store failed");
     device.settle();
-    let back = device.fetch_a4_working_kit().expect("a kit read");
+    let (_, back) = device.fetch_a4_working_kit().expect("a kit read");
     let got = sound_slot(&back, slot).expect("a slot");
     println!(
         "   the box now calls SYN{track} {:?}, and {} of {SOUND_SIZE} bytes differ from what \
@@ -106,11 +106,11 @@ fn main() {
     for path in [FIRST, SECOND] {
         let file = device.drive_read_file(path).expect("the +Drive read failed");
         let sound = a4_preset_sound(&file).expect("an A4 preset").to_vec();
-        let kit = device.fetch_a4_working_kit().expect("a kit read");
+        let (_, kit) = device.fetch_a4_working_kit().expect("a kit read");
         let spliced = splice_sound(&kit, slot, &sound).expect("a splice");
-        device.store_a4_working_kit(&spliced).expect("the store failed");
+        device.store_a4_working_kit(kit_index, &spliced).expect("the store failed");
         device.settle();
-        let back = device.fetch_a4_working_kit().expect("a kit read");
+        let (_, back) = device.fetch_a4_working_kit().expect("a kit read");
         let got = sound_slot(&back, slot).expect("a slot").to_vec();
         let name = read_kit(0, &back).unwrap().sound_name(slot).unwrap_or("(none)").to_string();
         let differ = (0..SOUND_SIZE).filter(|&i| got[i] != sound[i]).count();
@@ -139,11 +139,11 @@ fn main() {
 
     // --- put it back ---------------------------------------------------------
 
-    let kit = device.fetch_a4_working_kit().expect("a kit read");
+    let (_, kit) = device.fetch_a4_working_kit().expect("a kit read");
     let restored = splice_sound(&kit, slot, &opening_slot).expect("a splice");
-    device.store_a4_working_kit(&restored).expect("the restore failed");
+    device.store_a4_working_kit(kit_index, &restored).expect("the restore failed");
     device.settle();
-    let end = device.fetch_a4_working_kit().expect("a kit read");
+    let (_, end) = device.fetch_a4_working_kit().expect("a kit read");
     let end_slot = sound_slot(&end, slot).expect("a slot");
     println!(
         "\nrestored: SYN{track} is {}",
