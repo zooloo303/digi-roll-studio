@@ -595,6 +595,7 @@ mod tests {
             channel: 9,
             mute: false,
             solo: false,
+            ghost_hidden: false,
             patch: None,
         };
         apply_part_to_track(&mut track, bass, Some("DnB bass"));
@@ -693,6 +694,7 @@ mod tests {
             channel: 3,
             mute: false,
             solo: false,
+            ghost_hidden: false,
             patch: None,
         };
         apply_part_to_track(&mut track, lead, None);

@@ -1478,6 +1478,35 @@ fn the_record_input_round_trips_and_a_file_without_one_still_loads() {
     assert_eq!(Project::from_json(&older).unwrap().session.record_input, None);
 }
 
+/// The ghost layer's two switches survive a save and an open, and a project
+/// written before them loads with the layer off and every track shown — the
+/// same `#[serde(default)]` bargain `song` and `record_input` struck, so
+/// `FORMAT_VERSION` stays at 1.
+#[test]
+fn the_ghost_switches_round_trip_and_a_file_without_them_still_loads() {
+    let mut s = dt2_and_dn2();
+    s.ghost_tracks = true;
+    let dt2 = s.devices[0].id;
+    s.device_mut(dt2).unwrap().pattern_mut(0).unwrap().track_mut(3).unwrap().ghost_hidden = true;
+    let json = Project::new(s.clone()).to_json().unwrap();
+    let loaded = Project::from_json(&json).unwrap().session;
+    assert!(loaded.ghost_tracks);
+    let tracks = loaded.device(dt2).unwrap().pattern(0).unwrap().tracks();
+    assert!(tracks[3].ghost_hidden, "T4 hidden");
+    assert!(tracks.iter().enumerate().all(|(i, t)| i == 3 || !t.ghost_hidden), "and no other");
+    assert!(json.contains("\"ghostTracks\"") && json.contains("\"ghostHidden\""), "camelCase like everything else");
+
+    // A file an older build wrote: the keys are simply absent.
+    let older = Project::new(dt2_and_dn2()).to_json().unwrap();
+    let mut v: serde_json::Value = serde_json::from_str(&older).unwrap();
+    v["session"].as_object_mut().unwrap().remove("ghostTracks");
+    let stripped = serde_json::to_string(&v).unwrap();
+    assert!(!stripped.contains("ghostTracks"));
+    let old = Project::from_json(&stripped).unwrap().session;
+    assert!(!old.ghost_tracks, "off, so the roll opens looking as it did");
+    assert!(old.devices[0].pattern(0).unwrap().tracks().iter().all(|t| !t.ghost_hidden));
+}
+
 /// A project written before recording existed opens with the record input
 /// unset, rather than refusing. `FORMAT_VERSION` does not move for a
 /// `#[serde(default)]` field — the same bargain `song` struck.

@@ -284,6 +284,18 @@ pub struct Track {
     pub mute: bool,
     #[serde(default)]
     pub solo: bool,
+    /// Whether this track is kept *out* of the roll's ghost layer — the other
+    /// tracks of the pattern drawn translucent behind the one being edited
+    /// (`ui::pianoroll`'s ghosts, 2026-09-06). Studio state like `mute`, and
+    /// undoable for the same reason `mute` is: it lives on the track.
+    ///
+    /// **Stated as the negation so the default is "shown".** A serde default
+    /// for a `bool` is `false`, and a project written before this field — or a
+    /// track that has never been touched — should ghost the moment the layer
+    /// is switched on, not need sixteen clicks to appear. The layer's own
+    /// on/off switch is the session's, `Session::ghost_tracks`.
+    #[serde(default)]
+    pub ghost_hidden: bool,
     /// The box's own track LEVEL, once someone has moved it — and `None` until
     /// then, which is the whole of why this is an `Option`.
     ///
@@ -411,6 +423,7 @@ impl Track {
             channel: (index % 16) as u8,
             mute: false,
             solo: false,
+            ghost_hidden: false,
             // Never a number: see the field. Until someone moves the fader
             // there is nothing honest to send.
             level: None,

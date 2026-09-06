@@ -621,8 +621,14 @@ The elements:
   are a selection, not a jump. The PTN/SONG mode pill is in the transport bar's
   zone 5 beside the scene, and the same toggle is at the top of the panel: the
   mode belongs beside PLAY and the arrangement belongs beside the rows.
-- **Piano roll** for the selected track. Ghosting the other tracks behind it is
-  parked.
+- **Piano roll** for the selected track, with the pattern's other tracks drawn
+  translucent behind it — the **ghost layer**, un-parked and built 2026-09-06
+  after a user asked for it. GHOSTS in the TRACKS header switches it; each track
+  gets a fixed hue, shown as a swatch beside its number, and a right-click on a
+  cell takes that track out of the layer. Only the selected track is editable: a
+  click on a ghost is a click on an empty cell. The polymeter question that
+  parked it is answered by *drawing once*: a ghost of a different length stops
+  at its own loop point with a marker there, and the drift is not drawn.
 - **Trig lane** under the roll — per-step PROB/FILL/COND, ported from
   `js/triglane.js`.
 - **P-lock lane strip** — ported from `js/plocklane.js`, with the parameter

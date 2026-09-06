@@ -78,6 +78,7 @@ use eframe::egui::{self, Align, Align2, FontId, Layout, Pos2, Rect, Sense, Strok
 use crate::engine::EngineLink;
 use crate::ui::console;
 use crate::ui::generate;
+use crate::ui::pianoroll::{ghost_colour, Ghost};
 
 /// Which track the roll is editing: a device by position in the session, and a
 /// track within whatever pattern that device plays in the current scene.
@@ -359,6 +360,62 @@ pub fn track_mut(session: &mut Session, selection: Selection) -> Option<&mut Tra
     let device = session.devices.get(selection.device)?.id;
     let slot = session.slot_in_scene(session.current_scene, device)?.slot();
     session.device_mut(device)?.pattern_mut(slot)?.track_mut(selection.track)
+}
+
+/// The ghost layer the roll draws behind `selection`'s track: the same
+/// pattern's other tracks that carry notes and are not hidden, in track order —
+/// or nothing at all while the session's switch is off.
+///
+/// **The three rules live here and nowhere else.** The roll draws whatever it
+/// is handed (`PianoRoll::ui`'s `ghosts`), and the cell swatch below asks
+/// [`is_ghosting`] the same question per track, so what is drawn and what the
+/// grid says is drawn cannot disagree. A track with no notes is left out
+/// because it would draw nothing but its loop marker, and sixteen markers for
+/// nothing is the busy roll the polymeter note in PLAN.md §5 warned about.
+///
+/// The selected track's *own* pattern only — never another box's. Two boxes'
+/// tracks share nothing but the clock, and a hue keyed on track index would
+/// give a DN2's T1 and a DT2's T1 one colour behind one roll.
+pub fn ghosts(session: &Session, selection: Selection) -> Vec<Ghost> {
+    if !session.ghost_tracks {
+        return Vec::new();
+    }
+    let Some(device) = session.devices.get(selection.device) else {
+        return Vec::new();
+    };
+    let Some(pattern) = session.current_pattern(device.id) else {
+        return Vec::new();
+    };
+    pattern
+        .tracks()
+        .iter()
+        .enumerate()
+        .filter(|(index, track)| is_ghosting(session, *index, track, selection))
+        .map(|(index, track)| Ghost { index, track: std::sync::Arc::clone(track) })
+        .collect()
+}
+
+/// Whether the track at `index` in the selected box's pattern is one the roll
+/// is drawing behind the selection right now — the per-track half of
+/// [`ghosts`], shared with the cell swatch so the two agree.
+fn is_ghosting(session: &Session, index: usize, track: &Track, selection: Selection) -> bool {
+    session.ghost_tracks && index != selection.track && !track.ghost_hidden && !track.notes.is_empty()
+}
+
+/// The hover line a cell adds about the ghost layer, or `None` when the layer
+/// is off — the right-click that toggles it is the one gesture in this pane
+/// nothing on screen names, so the cell's own hover has to. The selected
+/// track's cell gets no line: it is the one being edited, and nothing is drawn
+/// behind itself.
+fn ghost_tooltip_line(layer_on: bool, selected: bool, hidden: bool) -> Option<&'static str> {
+    if !layer_on || selected {
+        return None;
+    }
+    Some(if hidden {
+        "Hidden behind the roll · right-click to show it"
+    } else {
+        "Drawn behind the roll when another track is selected · right-click to hide it"
+    })
 }
 
 // --- Shift+C / Shift+V: whole-track copy/paste -------------------------------
@@ -881,6 +938,11 @@ const ROW_GAP: f32 = 8.0;
 /// The header line's own height, and the gap the outer flex column leaves
 /// below it before the first device row.
 const HEADER_H: f32 = 18.0;
+/// The GHOSTS switch in the header, wide enough for its six letters at 10px
+/// with the same breathing room the summary text has.
+const GHOST_SWITCH_W: f32 = 52.0;
+/// The ghost swatch's side, beside the number on a cell's top row.
+const GHOST_SWATCH: f32 = 7.0;
 const SECTION_GAP: f32 = 10.0;
 /// Padding between the last device row's divider and the parameter row below —
 /// the spec's `padding-top: 10px` on that row.
@@ -1012,7 +1074,17 @@ fn header_pattern_label(session: &Session, selection: Selection) -> Option<Strin
 
 /// The header row: "TRACKS", the pattern being edited, a filler rule, and the
 /// live "N OF M TRACKS CARRY DATA" summary.
-fn paint_header(ui: &mut Ui, session: &Session, selection: Selection) {
+/// The pane's header row, and the one control in it: the **GHOSTS** switch for
+/// the roll's ghost layer. Returns whether it was flipped.
+///
+/// **Why the switch is here and not in the Edit panel's VIEW group** beside
+/// the zoom, which is the other "how the roll looks" control: this pane is
+/// always drawn and sits directly over the roll, and the swatches the switch
+/// lights up are in the cells under it — the state and its evidence are one
+/// glance apart. The Edit panel folds away. It is also *not* a zoom: it is
+/// saved with the session (`Session::ghost_tracks`), so unlike `view_group` it
+/// reports its change, the way the M and S toggles in the parameter row do.
+fn paint_header(ui: &mut Ui, session: &mut Session, selection: Selection) -> bool {
     let (with_data, total) = data_summary(session);
     let summary = format!("{with_data} OF {total} TRACKS CARRY DATA");
     let pattern_label = header_pattern_label(session, selection);
@@ -1029,12 +1101,48 @@ fn paint_header(ui: &mut Ui, session: &Session, selection: Selection) {
         x = r.max.x + 10.0;
     }
 
+    // The switch, right-aligned ahead of the summary. Painted by hand like
+    // the rest of the row — a `toggle_value` here would bring the button
+    // frame's height and padding into an 18px row sized for text.
+    let switch = Rect::from_min_max(
+        Pos2::new(rect.max.x - GHOST_SWITCH_W, rect.min.y),
+        Pos2::new(rect.max.x, rect.max.y),
+    );
+    let response = ui.interact(switch, ui.id().with("ghost-switch"), Sense::click()).on_hover_text(
+        "Draw the pattern's other tracks behind the one you are editing, each in its \
+         own colour. Only the selected track can be edited; right-click a cell to \
+         keep that track out of the layer. A track of a different length is drawn \
+         once, to its own loop point.",
+    );
+    let flipped = response.clicked();
+    if flipped {
+        session.ghost_tracks = !session.ghost_tracks;
+    }
+    let on = session.ghost_tracks;
+    let (fill, text) = if on {
+        (super::CYAN_FILL, super::CYAN_TEXT)
+    } else if response.hovered() {
+        (super::INSET_BG_HOVER, super::TEXT_SECONDARY)
+    } else {
+        (super::INSET_BG, super::TEXT_DIM)
+    };
+    painter.rect_filled(switch, 2.0, fill);
+    painter.rect_stroke(
+        switch,
+        2.0,
+        Stroke::new(1.0, if on { super::CYAN } else { super::PANEL_BORDER }),
+        egui::StrokeKind::Inside,
+    );
+    painter.text(switch.center(), Align2::CENTER_CENTER, "GHOSTS", font.clone(), text);
+
     let summary_w = painter.layout_no_wrap(summary.clone(), font.clone(), super::TEXT_DIMMEST).size().x;
-    let rule_end = rect.max.x - summary_w - 10.0;
+    let summary_right = switch.min.x - 10.0;
+    let rule_end = summary_right - summary_w - 10.0;
     if rule_end > x {
         painter.line_segment([Pos2::new(x, y), Pos2::new(rule_end, y)], Stroke::new(1.0, super::PANEL_BORDER));
     }
-    painter.text(Pos2::new(rect.max.x, y), Align2::RIGHT_CENTER, &summary, font, super::TEXT_DIMMEST);
+    painter.text(Pos2::new(summary_right, y), Align2::RIGHT_CENTER, &summary, font, super::TEXT_DIMMEST);
+    flipped
 }
 
 /// One track cell: three text rows, the step-density strip, and — for a track
@@ -1049,6 +1157,16 @@ fn paint_header(ui: &mut Ui, session: &Session, selection: Selection) {
 /// two competing ones. Modest on purpose — `DEVELOPMENT.md`'s glyph lesson is
 /// why this is a shape, not a badge crowded in among the four corners that are
 /// already spoken for on a data-carrying cell.
+/// What the cell says about its track's place in the roll's ghost layer, when
+/// the layer is on and the track is not the one being edited: its colour, and
+/// whether the right-click menu has taken it out.
+#[derive(Clone, Copy, PartialEq, Debug)]
+struct GhostMark {
+    colour: egui::Color32,
+    hidden: bool,
+}
+
+#[allow(clippy::too_many_arguments)]
 fn paint_cell(
     painter: &egui::Painter,
     rect: Rect,
@@ -1058,6 +1176,7 @@ fn paint_cell(
     focused: bool,
     copied: bool,
     position_steps: f64,
+    ghost: Option<GhostMark>,
 ) {
     let has = has_data(track);
     let bg = if has { super::CELL_BG_DATA } else { super::INSET_BG };
@@ -1076,13 +1195,31 @@ fn paint_cell(
 
     let inner = rect.shrink2(Vec2::new(5.0, 4.0));
     let num_colour = if has { super::TEXT_BRIGHT } else { super::TEXT_DISABLED };
-    painter.text(
+    let number_rect = painter.text(
         Pos2::new(inner.min.x, inner.min.y),
         Align2::LEFT_TOP,
         format!("{number:02}"),
         FontId::proportional(13.0),
         num_colour,
     );
+    // **The ghost swatch: the same hue the roll draws this track in**, so a
+    // colour seen behind the active track can be found up here. Beside the
+    // number on the top row — the four corners of a data-carrying cell are
+    // spoken for (see the `copied` ring's doc comment), and this is the one
+    // stretch of the row with nothing in it. Filled while the track is in the
+    // layer, an outline once the right-click has taken it out: a swatch that
+    // vanished would leave no sign that there was ever something to put back.
+    if let Some(mark) = ghost {
+        let swatch = Rect::from_min_size(
+            Pos2::new(number_rect.max.x + 5.0, number_rect.center().y - GHOST_SWATCH / 2.0),
+            Vec2::splat(GHOST_SWATCH),
+        );
+        if mark.hidden {
+            painter.rect_stroke(swatch, 1.0, Stroke::new(1.0, mark.colour), egui::StrokeKind::Inside);
+        } else {
+            painter.rect_filled(swatch, 1.0, mark.colour);
+        }
+    }
     if has {
         painter.text(
             Pos2::new(inner.max.x, inner.min.y),
@@ -1176,6 +1313,7 @@ struct DropAim {
 /// cell was clicked and changed the selection — folded into the caller's
 /// `changed`-style bookkeeping is deliberately *not* done here, since picking a
 /// track to look at is not a session edit any more than it was in the old pane.
+#[allow(clippy::too_many_arguments)]
 fn paint_device_row(
     ui: &mut Ui,
     device: &Device,
@@ -1185,6 +1323,11 @@ fn paint_device_row(
     copied_selection: Option<Selection>,
     position_steps: f64,
     drop_aim: Option<&DropAim>,
+    ghost_layer_on: bool,
+    // Set to the track whose ghost the right-click menu asked to show or hide.
+    // Applied by the caller once the pattern borrow ends, since a `&Pattern`
+    // cannot flip a flag on one of its tracks.
+    ghost_toggle: &mut Option<usize>,
 ) -> Option<(generate::DragPart, Destination, String)> {
     let mut landed: Option<(generate::DragPart, Destination, String)> = None;
     let width = ui.available_width();
@@ -1230,9 +1373,36 @@ fn paint_device_row(
                 t + 1
             )
         });
+        let this_cell = Selection { device: device_index, track: t };
+        let is_selected = *selection == this_cell;
+        let hover = aim_text.unwrap_or_else(|| {
+            let mut text = track_tooltip_text(t + 1, track, pattern.source.as_ref());
+            if let Some(line) = ghost_tooltip_line(ghost_layer_on, is_selected, track.ghost_hidden) {
+                text.push('\n');
+                text.push_str(line);
+            }
+            text
+        });
         let response = ui
             .interact(cell, cell_id(device.id, t), Sense::click())
-            .on_hover_text(aim_text.unwrap_or_else(|| track_tooltip_text(t + 1, track, pattern.source.as_ref())));
+            .on_hover_text(hover);
+        // **Right-click: this track's place in the ghost layer.** A menu rather
+        // than a bare secondary click, so the gesture names what it does; and
+        // shown whether or not the layer is on, because a session that has hidden
+        // a track wants to be able to find that fact again with the layer off.
+        // Ghost state is per pattern-slot track, so the label says what will
+        // happen to *this* one.
+        response.context_menu(|ui| {
+            let label = if track.ghost_hidden {
+                "Show behind the roll"
+            } else {
+                "Hide behind the roll"
+            };
+            if ui.button(label).clicked() {
+                *ghost_toggle = Some(t);
+                ui.close();
+            }
+        });
         if response.clicked() {
             // **The click takes keyboard focus as well as the selection**, which
             // is what arms Delete — see `handle_clear_shortcut` for why that key
@@ -1248,10 +1418,17 @@ fn paint_device_row(
         if response.clicked() || response.gained_focus() {
             *selection = Selection { device: device_index, track: t };
         }
-        let this_cell = Selection { device: device_index, track: t };
         let selected = *selection == this_cell;
         let copied = copied_selection == Some(this_cell);
-        paint_cell(&painter, cell, t + 1, track, selected, response.has_focus(), copied, position_steps);
+        // Decided after the click above may have moved the selection, so the
+        // cell just clicked loses its swatch on the frame it becomes the active
+        // track rather than one frame later.
+        let ghost = if ghost_layer_on && !selected && !track.notes.is_empty() {
+            Some(GhostMark { colour: ghost_colour(t), hidden: track.ghost_hidden })
+        } else {
+            None
+        };
+        paint_cell(&painter, cell, t + 1, track, selected, response.has_focus(), copied, position_steps, ghost);
 
         // A part-drag hover paints over the base cell — wash plus a heavier
         // border, the same vocabulary the selected cell uses but doubled, so
@@ -1371,7 +1548,7 @@ pub fn ui(ui: &mut Ui, session: &mut Session, selection: &mut Selection, engine:
                 // Back to reading order for what is left: the header at the
                 // top, the grid filling the gap down to the rule above.
                 ui.with_layout(Layout::top_down(Align::Min), |ui| {
-                    paint_header(ui, session, *selection);
+                    changed |= paint_header(ui, session, *selection);
                     // **A fixed gap, and nothing here that can grow.** What a
                     // copy, a paste, a clear or a transpose has to say goes to
                     // `ui::console`, along the window's floor. It used to be a
@@ -1391,6 +1568,10 @@ pub fn ui(ui: &mut Ui, session: &mut Session, selection: &mut Selection, engine:
                             // device row because each row can report its own
                             // slot, and only one cell is hovered at a time.
                             let aim = generate::dragging_part(ui.ctx());
+                            let ghost_layer_on = session.ghost_tracks;
+                            // The right-click menu's answer, if a cell gave one
+                            // this frame: which box's row, and which track.
+                            let mut ghost_toggle: Option<(usize, usize)> = None;
                             for (index, device) in session.devices.iter().enumerate() {
                                 let Some(pattern) = session.current_pattern(device.id) else {
                                     continue;
@@ -1401,6 +1582,7 @@ pub fn ui(ui: &mut Ui, session: &mut Session, selection: &mut Selection, engine:
                                         .unwrap_or(PatternRef::new(0, 0));
                                     DropAim { part, device: device.id, slot }
                                 });
+                                let mut toggled = None;
                                 let landed = paint_device_row(
                                     ui,
                                     device,
@@ -1410,11 +1592,26 @@ pub fn ui(ui: &mut Ui, session: &mut Session, selection: &mut Selection, engine:
                                     state.copied,
                                     position_steps,
                                     drop_aim.as_ref(),
+                                    ghost_layer_on,
+                                    &mut toggled,
                                 );
+                                if let Some(t) = toggled {
+                                    ghost_toggle = Some((index, t));
+                                }
                                 if let Some((drag, destination, label)) = landed {
                                     generate::leave_drop(ui.ctx(), drag.part, destination, label);
                                 }
                                 ui.add_space(ROW_GAP);
+                            }
+                            // After the rows, once nothing borrows the patterns.
+                            // Through `track_mut`, the same path every other edit
+                            // to a track in this pane takes, so it lands on the
+                            // slot the scene is actually playing.
+                            if let Some((device, track)) = ghost_toggle {
+                                if let Some(t) = track_mut(session, Selection { device, track }) {
+                                    t.ghost_hidden = !t.ghost_hidden;
+                                    changed = true;
+                                }
                             }
                             // The pointer came up over nothing: end the drag so
                             // the ghost chip stops floating and hover text goes
@@ -2745,6 +2942,131 @@ mod tests {
         assert_eq!(read_state(&ctx).copied, Some(selection));
 
         selection = Selection { device: 1, track: 3 };
+        frame(&ctx, vec![], &mut session, &mut selection, &engine);
+        frame(&ctx, vec![], &mut session, &mut selection, &engine);
+    }
+
+    // --- the ghost layer's three rules ---------------------------------------
+
+    /// `two_box_session()` with a note on DT2 T1, T2 and T3, so the layer has
+    /// something to show.
+    fn session_with_three_noted_tracks() -> Session {
+        let mut session = digi_core::two_box_session();
+        for t in 0..3 {
+            track_mut(&mut session, Selection { device: 0, track: t })
+                .unwrap()
+                .notes
+                .push(digi_core::Note::new(t as f64, 60, 1.0, 100, 0.0));
+        }
+        session
+    }
+
+    #[test]
+    fn the_layer_is_empty_until_the_session_switch_is_on() {
+        let mut session = session_with_three_noted_tracks();
+        let selection = Selection { device: 0, track: 0 };
+        assert!(ghosts(&session, selection).is_empty(), "off is the default");
+        session.ghost_tracks = true;
+        let on: Vec<usize> = ghosts(&session, selection).iter().map(|g| g.index).collect();
+        assert_eq!(on, vec![1, 2], "the other noted tracks, in track order, and never the selection");
+    }
+
+    #[test]
+    fn a_hidden_track_and_an_empty_one_stay_out_of_the_layer() {
+        let mut session = session_with_three_noted_tracks();
+        session.ghost_tracks = true;
+        let selection = Selection { device: 0, track: 0 };
+        track_mut(&mut session, Selection { device: 0, track: 2 }).unwrap().ghost_hidden = true;
+        let on: Vec<usize> = ghosts(&session, selection).iter().map(|g| g.index).collect();
+        assert_eq!(on, vec![1], "T3 hidden by hand; T4 to T16 carry no notes");
+        // The colour a ghost draws in is its own track's, whatever else is hidden.
+        assert_eq!(ghosts(&session, selection)[0].track.name, "T2");
+    }
+
+    #[test]
+    fn the_layer_is_the_selected_boxs_pattern_and_never_another_boxs() {
+        let mut session = session_with_three_noted_tracks();
+        session.ghost_tracks = true;
+        // Select the DN2, whose pattern is empty: nothing to ghost, even
+        // though the DT2 beside it has three noted tracks.
+        assert!(ghosts(&session, Selection { device: 1, track: 0 }).is_empty());
+    }
+
+    #[test]
+    fn a_right_click_on_a_cell_toggles_that_track_out_of_the_layer_and_back() {
+        // Through the real pane: the context menu is egui's, the button in it
+        // is ours, and the flag has to land on the track the cell shows —
+        // through `track_mut`, after the pattern borrow ends.
+        let ctx = egui::Context::default();
+        let mut session = session_with_three_noted_tracks();
+        session.ghost_tracks = true;
+        let mut selection = Selection { device: 0, track: 0 };
+        let engine = EngineLink::default();
+        // DT2 T2's cell, one cell right of `first_cell`'s in the integration
+        // tests: the frame margin, gutter and gap across, then one cell width
+        // plus its gap. Cells share `ui.available_width()` sixteen ways, so the
+        // width is read back off the layout rather than assumed.
+        frame(&ctx, vec![], &mut session, &mut selection, &engine);
+        let cell_w = {
+            let grid_w = ctx.content_rect().width()
+                - (FRAME_MARGIN.left + FRAME_MARGIN.right) as f32
+                - GUTTER_W
+                - GUTTER_GRID_GAP;
+            (grid_w - CELL_GAP * 15.0) / 16.0
+        };
+        let second = egui::Pos2::new(
+            FRAME_MARGIN.left as f32 + GUTTER_W + GUTTER_GRID_GAP + cell_w + CELL_GAP + 3.0,
+            FRAME_MARGIN.top as f32 + HEADER_H + SECTION_GAP + 3.0,
+        );
+        let secondary = |pressed| egui::Event::PointerButton {
+            pos: second,
+            button: egui::PointerButton::Secondary,
+            pressed,
+            modifiers: egui::Modifiers::NONE,
+        };
+        frame(&ctx, vec![egui::Event::PointerMoved(second), secondary(true)], &mut session, &mut selection, &engine);
+        frame(&ctx, vec![secondary(false)], &mut session, &mut selection, &engine);
+        // The menu is open now; a frame lays out its one button. egui anchors a
+        // context menu at the pointer, so the button's body is a little down and
+        // right of the click — checked against the layer under that point
+        // rather than assumed, since `Areas` keeps its rects to itself.
+        frame(&ctx, vec![], &mut session, &mut selection, &engine);
+        let on_button = second + egui::vec2(24.0, 12.0);
+        let layer = ctx.layer_id_at(on_button).expect("something is under the pointer");
+        assert_eq!(layer.order, egui::Order::Foreground, "the context menu, not the pane");
+        let primary = |pressed| egui::Event::PointerButton {
+            pos: on_button,
+            button: egui::PointerButton::Primary,
+            pressed,
+            modifiers: egui::Modifiers::NONE,
+        };
+        frame(&ctx, vec![egui::Event::PointerMoved(on_button), primary(true)], &mut session, &mut selection, &engine);
+        frame(&ctx, vec![primary(false)], &mut session, &mut selection, &engine);
+
+        assert!(track(&session, Selection { device: 0, track: 1 }).unwrap().ghost_hidden, "T2 is out");
+        assert!(!track(&session, Selection { device: 0, track: 0 }).unwrap().ghost_hidden, "and only T2");
+        assert_eq!(selection, Selection { device: 0, track: 0 }, "a right-click does not select");
+    }
+
+    #[test]
+    fn the_cell_hover_names_the_right_click_only_while_the_layer_is_on() {
+        assert_eq!(ghost_tooltip_line(false, false, false), None, "nothing to find with the layer off");
+        assert_eq!(ghost_tooltip_line(true, true, false), None, "the selected track ghosts nothing");
+        assert!(ghost_tooltip_line(true, false, false).unwrap().contains("right-click to hide"));
+        assert!(ghost_tooltip_line(true, false, true).unwrap().contains("right-click to show"));
+    }
+
+    #[test]
+    fn drawing_the_pane_with_the_layer_on_runs_without_panicking() {
+        // A swatch beside every noted cell's number, an outline on the hidden
+        // one, and the header's switch lit: none of it legible from here
+        // (lesson 8), all of it wired.
+        let ctx = egui::Context::default();
+        let mut session = session_with_three_noted_tracks();
+        session.ghost_tracks = true;
+        track_mut(&mut session, Selection { device: 0, track: 2 }).unwrap().ghost_hidden = true;
+        let mut selection = Selection { device: 0, track: 0 };
+        let engine = EngineLink::default();
         frame(&ctx, vec![], &mut session, &mut selection, &engine);
         frame(&ctx, vec![], &mut session, &mut selection, &engine);
     }

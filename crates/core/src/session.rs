@@ -236,6 +236,17 @@ pub struct Session {
     /// happened when `song` was added.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub record_input: Option<PortRef>,
+    /// Whether the roll draws the pattern's other tracks translucent behind the
+    /// one being edited — the ghost layer, 2026-09-06. One switch for the
+    /// session rather than one per pattern: it is a way of looking, like the
+    /// key, and a person who wants to see the kick under the hat wants it in
+    /// every pattern they open. Which tracks take part is per track
+    /// (`Track::ghost_hidden`), since that is a decision about a track.
+    ///
+    /// Off by default, so a project written before this field — where the key
+    /// is simply absent — opens looking exactly as it did.
+    #[serde(default)]
+    pub ghost_tracks: bool,
 }
 
 impl Default for Session {
@@ -250,6 +261,7 @@ impl Default for Session {
             song: None,
             generator: None,
             record_input: None,
+            ghost_tracks: false,
         }
     }
 }

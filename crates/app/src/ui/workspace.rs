@@ -89,8 +89,13 @@ pub fn ui(
     // it. `Harmony` is `Copy` and eight small fields, so a copy out and a compare
     // back costs nothing and keeps the roll ignorant of sessions.
     let mut harmony = session.harmony;
+    // **The ghosts come out before the active track is borrowed `&mut`**, for
+    // the same reason the key does: they are the same pattern's other slots.
+    // `Pattern::tracks()` is `Arc<Track>` per slot, so this is a pointer bump
+    // per ghost per frame, not a copy of anyone's notes.
+    let ghosts = tracks::ghosts(session, *selection);
     match tracks::track_mut(session, *selection) {
-        Some(track) => edited |= roll.ui(ui, track, playhead, &mut harmony, recording),
+        Some(track) => edited |= roll.ui(ui, track, &ghosts, playhead, &mut harmony, recording),
         None => {
             ui.weak("no track selected");
         }

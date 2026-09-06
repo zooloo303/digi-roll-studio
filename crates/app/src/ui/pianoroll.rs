@@ -90,6 +90,7 @@ use digi_core::edit_ops::{
 use digi_core::lengths::snap_len_fine;
 use digi_core::{Note, Track};
 use egui::{Color32, Pos2, Rect, Ui, Vec2};
+use std::sync::Arc;
 
 use crate::ui::plocklane::{self, PLockStrip};
 use crate::ui::triglane::{self, TrigLane};
@@ -167,6 +168,94 @@ impl Band {
 /// in it and the lane labels its rows in the same strip below. A press in it is
 /// on a key, never on step 0.
 pub const KEY_W: f32 = 52.0;
+
+/// One of the pattern's other tracks, drawn translucent behind the one being
+/// edited — the roll's **ghost layer**, un-parked 2026-09-06 after a user asked
+/// for it. Read-only by construction: nothing in [`PianoRoll::interact`] ever
+/// sees one, so a click on a ghost note is a click on an empty cell of the
+/// active track, and a ghost can be neither moved nor deleted from here.
+///
+/// **Polymeter, which is why this was parked (PLAN.md §5).** A ghost is drawn
+/// *once*, at its own steps, and stops at its own loop point with a marker there
+/// ([`ghost_marker_step`]). It is not tiled across the active track's length and
+/// the drift between the two is not drawn: a 12-step hat behind a 16-step kick
+/// lines up as shown for the first lap only, and the marker at step 12 is the
+/// roll saying so rather than pretending. Neil's decision, 2026-09-06, over the
+/// three alternatives (tile the first lap, draw the drift, skip odd lengths).
+///
+/// Holds an `Arc` rather than a borrow because the workspace hands the roll the
+/// active track `&mut` out of the same pattern; `Pattern::tracks()` is already
+/// `Arc<Track>` per slot, so this costs a pointer bump per ghost per frame.
+#[derive(Clone, Debug)]
+pub struct Ghost {
+    /// The track's position in its pattern, 0-based — what picks its colour
+    /// ([`ghost_colour`]) and what the hover box names it by.
+    pub index: usize,
+    pub track: Arc<Track>,
+}
+
+/// The number of hues [`ghost_colour`] hands out before repeating — one per
+/// track of the widest box this app knows (the digis' sixteen).
+const GHOST_HUES: usize = 16;
+
+/// How far a ghost's fill is knocked back. Low enough that the active track's
+/// solid notes read as the foreground and a ghost reads as context rather than
+/// as a note, high enough that drum ghosts piled on one row still show as
+/// separate colours. Started at 0.38; Neil's read of the first screenshot,
+/// 2026-09-06, was "lighter, more transparent", and this is the second cut.
+const GHOST_ALPHA: f32 = 0.22;
+
+/// The band of the hue wheel no ghost may use, as fractions of a turn: the
+/// greens either side of [`PianoRoll::note_fill`]'s unselected note (about
+/// 135 degrees). **Seen on screen 2026-09-06, not reasoned to**: with the
+/// wheel used whole, T4 drew at 112 degrees and its ghosts read as more of the
+/// active track's own notes, one row down. A ghost has no stroke and no
+/// velocity bar, but at a glance the hue is what says whose note it is.
+const GHOST_HUE_GAP: (f32, f32) = (90.0 / 360.0, 165.0 / 360.0);
+
+/// A fixed hue per track index, the same in the roll and in the TRACKS pane's
+/// swatch, so a colour seen behind the active track can be found in the grid
+/// above it.
+///
+/// **Sixteen hues, in an order that keeps neighbours apart, none of them the
+/// active track's green.** A Digitakt's eight drum tracks are also its
+/// most-compared ones, and by default every one of their trigs sits on the
+/// same pitch row, so T1 against T2 is the hard case: walking the wheel in
+/// steps of 7/16 of its span (7 is coprime with 16, so every track still gets
+/// its own hue) puts adjacent tracks a third of the span apart rather than a
+/// sixteenth. The span is the wheel minus [`GHOST_HUE_GAP`], entered just
+/// above the gap and wrapping round to just below it. Saturation and value are
+/// fixed and the hue is the only thing that varies, which is what lets
+/// [`GHOST_ALPHA`] be one number rather than one per colour.
+pub fn ghost_colour(index: usize) -> Color32 {
+    let (gap_lo, gap_hi) = GHOST_HUE_GAP;
+    let span = 1.0 - (gap_hi - gap_lo);
+    // Half a step in from each end of the span, so the first and last hues sit
+    // clear of the gap after the round trip through 8-bit colour — which put
+    // T1 a hair inside it when the span started exactly at the gap's edge.
+    let along = (((index * 7) % GHOST_HUES) as f32 + 0.5) / GHOST_HUES as f32;
+    let hue = (gap_hi + along * span) % 1.0;
+    egui::ecolor::Hsva::new(hue, 0.62, 0.92, 1.0).into()
+}
+
+/// Where a ghost's loop marker goes, in steps, or `None` when there is nothing
+/// to say: the active track's own length line already sits where a ghost of
+/// the same length would wrap, and a zero-length track has no loop point.
+fn ghost_marker_step(ghost_len: u16, active_len: u16) -> Option<f64> {
+    (ghost_len > 0 && ghost_len != active_len).then_some(f64::from(ghost_len))
+}
+
+/// What the hover box calls a ghost: its number, and its name when the name
+/// says something the number does not. `Track::new` names every track `T<n>`,
+/// and "T03 T3" is one fact printed twice.
+fn ghost_label(index: usize, name: &str) -> String {
+    let number = format!("T{:02}", index + 1);
+    if name.is_empty() || name == format!("T{}", index + 1) {
+        number
+    } else {
+        format!("{number} {name}")
+    }
+}
 
 /// The pitch drawn at the top of the roll before anyone scrolls. High enough to
 /// keep a bass line on screen, low enough that the useful range is not off the
@@ -287,6 +376,12 @@ pub struct PianoRoll {
     /// live — is the only place that decides it; `paint_hover_box` only reads
     /// it back.
     hover_box: Option<(u32, Vec<String>)>,
+    /// The ghost layer's own hover box: the cell it is anchored to, and one
+    /// line per ghost track with a note under the pointer. Decided in
+    /// [`Self::update_ghost_hover`] on the same dwell clock as `hover_box`, and
+    /// never at the same time as it — an active note under the pointer owns
+    /// the box, since it is the one a click would act on.
+    ghost_box: Option<(Pos2, Vec<String>)>,
     /// Scroll points spent by alt+wheel since the last inversion step. Only a
     /// trackpad puts anything here; see [`PianoRoll::wheel_inversion`].
     wheel: f32,
@@ -399,6 +494,7 @@ impl Default for PianoRoll {
             readout: None,
             hover_still: None,
             hover_box: None,
+            ghost_box: None,
             wheel: 0.0,
         }
     }
@@ -626,6 +722,10 @@ impl PianoRoll {
     /// Draw and edit `track`. `playhead` is where the engine is *within this
     /// track*, in its own steps, or `None` when stopped.
     ///
+    /// `ghosts` are the pattern's other tracks to draw behind it — see
+    /// [`Ghost`]; the caller has already applied the session's switch and each
+    /// track's own `ghost_hidden`, so an empty slice simply draws nothing.
+    ///
     /// `harmony` is the session's key and chord settings, and it is `&mut` for one
     /// gesture: **alt+wheel over the grid cycles the chord inversion**, which the
     /// Harmony panel also edits. Everything else here only reads it — the tinted
@@ -640,6 +740,7 @@ impl PianoRoll {
         &mut self,
         ui: &mut Ui,
         track: &mut Track,
+        ghosts: &[Ghost],
         playhead: Option<f64>,
         harmony: &mut Harmony,
         recording: bool,
@@ -720,6 +821,10 @@ impl PianoRoll {
         };
 
         self.paint_grid(&painter, rect, &grid, track, harmony);
+        // Under the active track's notes and over the grid: a ghost is context
+        // for the notes, not one of them, and nothing of the active track may
+        // be hidden behind a neighbour.
+        Self::paint_ghosts(&painter, rect, &grid, track, ghosts);
         self.paint_notes(&painter, &grid, track);
         // Over the notes and under the playhead: it is a preview of notes, so it
         // belongs in their layer, and nothing may sit on top of where the engine is.
@@ -745,6 +850,10 @@ impl PianoRoll {
         self.paint_keyboard(&painter, rect, &grid);
 
         changed |= self.interact(&response, &grid, track, harmony);
+        // After `interact`, which ran `update_hover` and so owns this frame's
+        // dwell clock; this only reads it back.
+        let hovering = response.hover_pos().filter(|p| p.x >= rect.min.x + KEY_W);
+        self.update_ghost_hover(response.ctx.input(|i| i.time), hovering, &grid, track, ghosts);
         self.paint_marquee(&painter, &grid);
         // After `interact`, so the number is this frame's rather than last
         // frame's — the same reason the marquee is drawn here.
@@ -753,6 +862,7 @@ impl PianoRoll {
         // (called from `interact`) clears `hover_box` whenever a drag —
         // hence a `readout` — is running.
         self.paint_hover_box(&painter, rect, &grid, track);
+        self.paint_ghost_box(&painter, rect);
         let cols = triglane::Cols { origin_x: grid.origin.x, cell_w: grid.cell.x };
         // **This is the line the marquee was built for.** The lane's
         // selection-wide edit has been ported since the lane shipped, and until
@@ -1236,6 +1346,33 @@ impl PianoRoll {
         ))
     }
 
+    /// The ghost layer: every ghost's notes as a translucent fill in its own
+    /// colour, and a loop marker where its length differs from `track`'s.
+    ///
+    /// No stroke and no velocity bar — those two are what say "this is a note
+    /// you can grab", and a ghost is not. Piled ghosts (drum tracks all on one
+    /// row) simply composite, which is what makes four colours on a cell read
+    /// as four tracks. A note above or below the drawable band is skipped
+    /// rather than drawn off the top, as `Grid::pitch_at` refuses it too; the
+    /// band is the active track's and does not grow for a ghost — Neil's call,
+    /// 2026-09-06, so a ghost cannot rescale the roll under the pointer.
+    fn paint_ghosts(painter: &egui::Painter, rect: Rect, grid: &Grid, track: &Track, ghosts: &[Ghost]) {
+        for ghost in ghosts {
+            let colour = ghost_colour(ghost.index);
+            let fill = colour.gamma_multiply(GHOST_ALPHA);
+            for note in ghost.track.notes.iter().filter(|n| grid.band.contains(n.pitch)) {
+                painter.rect_filled(grid.note_rect(note), 2.0, fill);
+            }
+            if let Some(step) = ghost_marker_step(ghost.track.length_steps, track.length_steps) {
+                let x = grid.x_of_step(step);
+                painter.line_segment(
+                    [Pos2 { x, y: rect.min.y }, Pos2 { x, y: rect.max.y }],
+                    egui::Stroke::new(1.0, colour.gamma_multiply(0.45)),
+                );
+            }
+        }
+    }
+
     fn paint_notes(&self, painter: &egui::Painter, grid: &Grid, track: &Track) {
         for note in &track.notes {
             let rect = grid.note_rect(note);
@@ -1489,6 +1626,64 @@ impl PianoRoll {
             .map(|note| (note.id, Self::hover_lines(note)));
     }
 
+    /// One line per ghost track with a note under `pos`, in track order, or
+    /// empty. Hit-tested on the same [`Grid::note_rect`] the ghost was drawn
+    /// with, for the reason `update_hover` gives: a box naming a note that is
+    /// not the one under the pointer is worse than none. Every track under the
+    /// pointer is listed rather than the first — piled drum ghosts are exactly
+    /// the case where the eye cannot separate them and the box has to.
+    fn ghost_lines_at(grid: &Grid, ghosts: &[Ghost], pos: Pos2) -> Vec<String> {
+        ghosts
+            .iter()
+            .filter(|g| {
+                g.track
+                    .notes
+                    .iter()
+                    .any(|n| grid.band.contains(n.pitch) && grid.note_rect(n).contains(pos))
+            })
+            .map(|g| ghost_label(g.index, &g.track.name))
+            .collect()
+    }
+
+    /// The ghost layer's hover box, decided after [`Self::update_hover`] has run
+    /// for the frame: same dwell, same suppression while dragging, and it
+    /// stands down whenever an active note is under the pointer, because that
+    /// note is what a click would act on and its box already says so.
+    ///
+    /// **Reads the dwell clock rather than keeping a second one.** `hover_still`
+    /// is where `update_hover` records when the pointer last landed somewhere
+    /// new, and it already asks for the repaint that ends the wait; a copy of
+    /// that here would be the third-place rule `DEVELOPMENT.md` lesson 5 is
+    /// about.
+    fn update_ghost_hover(
+        &mut self,
+        now: f64,
+        pos: Option<Pos2>,
+        grid: &Grid,
+        track: &Track,
+        ghosts: &[Ghost],
+    ) {
+        self.ghost_box = None;
+        if ghosts.is_empty() || self.dragging.is_some() {
+            return;
+        }
+        let Some(pos) = pos else { return };
+        let Some((still, since)) = self.hover_still else { return };
+        if still != pos || now - since < Self::HOVER_DWELL {
+            return;
+        }
+        if self.note_at(grid, track, pos).is_some() {
+            return;
+        }
+        let lines = Self::ghost_lines_at(grid, ghosts, pos);
+        let Some(pitch) = grid.pitch_at(pos.y) else { return };
+        if lines.is_empty() {
+            return;
+        }
+        let anchor = Pos2 { x: grid.x_of_step(grid.step_at(pos.x)), y: grid.y_of_pitch(pitch) };
+        self.ghost_box = Some((anchor, lines));
+    }
+
     /// The hover box itself: a backed rect behind the text, unlike
     /// `paint_readout`'s bare white letters. A drag readout is brief and the
     /// eye is on the pointer already; a dwell box sits over a busy grid and
@@ -1496,6 +1691,20 @@ impl PianoRoll {
     fn paint_hover_box(&self, painter: &egui::Painter, rect: Rect, grid: &Grid, track: &Track) {
         let Some((id, lines)) = &self.hover_box else { return };
         let Some(note) = track.notes.iter().find(|n| n.id == *id) else { return };
+        let anchor = Pos2 { x: grid.x_of_step(grid.start_of(note)), y: grid.y_of_pitch(note.pitch) };
+        Self::paint_box(painter, rect, anchor, lines);
+    }
+
+    /// The ghost layer's box, in the same dress as the note's: one look for
+    /// "what is under the pointer", whichever layer answers.
+    fn paint_ghost_box(&self, painter: &egui::Painter, rect: Rect) {
+        let Some((anchor, lines)) = &self.ghost_box else { return };
+        Self::paint_box(painter, rect, *anchor, lines);
+    }
+
+    /// A backed text box just above the cell at `anchor` — the top-left of the
+    /// row the thing being described sits on.
+    fn paint_box(painter: &egui::Painter, rect: Rect, anchor: Pos2, lines: &[String]) {
         let font = egui::FontId::proportional(11.0);
         const LINE_H: f32 = 13.0;
         const PAD: f32 = 4.0;
@@ -1511,10 +1720,10 @@ impl PianoRoll {
             + PAD * 2.0;
         let height = LINE_H * lines.len() as f32 + PAD * 2.0;
         let at = Pos2 {
-            x: grid.x_of_step(grid.start_of(note)) + 2.0,
+            x: anchor.x + 2.0,
             // Same clamp as `paint_readout`: never off the top of the roll,
             // so a note on the top row still gets a legible box.
-            y: (grid.y_of_pitch(note.pitch) - 3.0 - height).max(rect.min.y),
+            y: (anchor.y - 3.0 - height).max(rect.min.y),
         };
         let bg = Rect::from_min_size(at, Vec2 { x: width, y: height });
         painter.rect_filled(bg, 3.0, Color32::from_rgba_unmultiplied(20, 22, 26, 235));
@@ -5131,17 +5340,33 @@ mod tests {
         modifiers: egui::Modifiers,
         events: Vec<egui::Event>,
     ) -> bool {
+        frame_with_ghosts(ctx, None, roll, track, &[], modifiers, events)
+    }
+
+    /// [`frame`] with a ghost layer and, optionally, a clock — the ghost hover
+    /// box waits out the same dwell the note box does, and `RawInput::time` is
+    /// the one place a test can move that clock without sleeping.
+    fn frame_with_ghosts(
+        ctx: &egui::Context,
+        time: Option<f64>,
+        roll: &mut PianoRoll,
+        track: &mut Track,
+        ghosts: &[Ghost],
+        modifiers: egui::Modifiers,
+        events: Vec<egui::Event>,
+    ) -> bool {
         let mut changed = false;
         let mut all = vec![egui::Event::ModifiersChanged(modifiers)];
         all.extend(events);
         let input = egui::RawInput {
             events: all,
             screen_rect: Some(TEST_RECT),
+            time,
             ..Default::default()
         };
         let mut harmony = Harmony::default();
         let mut output = ctx.run_ui(input, |ui| {
-            changed = roll.ui(ui, track, None, &mut harmony, false);
+            changed = roll.ui(ui, track, ghosts, None, &mut harmony, false);
         });
         output.textures_delta.clear();
         changed
@@ -5334,5 +5559,195 @@ mod tests {
         assert_eq!(roll.zoom(), 1.0, "the pointer was not on the grid");
     }
 
-}
 
+    // ----------------------------------------------------- the ghost layer
+
+    /// A track of `notes` as `(step, pitch)` pairs, wrapped as a ghost at
+    /// `index`.
+    fn ghost(index: usize, length_steps: u16, notes: &[(f64, u8)]) -> Ghost {
+        let mut track = Track::new(index, TrackKind::Audio);
+        track.length_steps = length_steps;
+        track.notes = notes.iter().map(|&(s, p)| Note::new(s, p, 1.0, 100, 0.0)).collect();
+        Ghost { index, track: Arc::new(track) }
+    }
+
+    #[test]
+    fn every_track_of_a_sixteen_track_box_gets_its_own_hue() {
+        let colours: std::collections::BTreeSet<[u8; 4]> =
+            (0..16).map(|i| ghost_colour(i).to_array()).collect();
+        assert_eq!(colours.len(), 16, "7 is coprime with 16, so no two collide");
+        // T1 against T2 is the hard case — a Digitakt's kick and snare, both on
+        // one pitch row — so adjacent tracks must not be adjacent hues. A third
+        // of the wheel apart is what the step of 7/16 buys; measured as the
+        // channel that differs most.
+        let (a, b) = (ghost_colour(0), ghost_colour(1));
+        let gap: u32 = [a.r().abs_diff(b.r()), a.g().abs_diff(b.g()), a.b().abs_diff(b.b())]
+            .iter()
+            .map(|d| u32::from(*d))
+            .sum();
+        assert!(gap > 150, "T1 and T2 are far apart: {a:?} vs {b:?}");
+    }
+
+    #[test]
+    fn no_ghost_wears_the_active_tracks_green() {
+        // The hue an unselected note is drawn in, read off `note_fill` rather
+        // than restated here, so the two cannot drift apart unnoticed.
+        let note = egui::ecolor::Hsva::from(PianoRoll::note_fill(100, false)).h;
+        let (lo, hi) = GHOST_HUE_GAP;
+        assert!((lo..hi).contains(&note), "the gap has to be around the note's own hue ({note})");
+        for i in 0..GHOST_HUES {
+            let h = egui::ecolor::Hsva::from(ghost_colour(i)).h;
+            assert!(!(lo..hi).contains(&h), "T{} at hue {h} sits in the active track's green", i + 1);
+        }
+    }
+
+    #[test]
+    fn a_ghost_label_drops_a_name_that_only_repeats_the_number() {
+        assert_eq!(ghost_label(2, "T3"), "T03", "Track::new's own name says nothing new");
+        assert_eq!(ghost_label(2, ""), "T03");
+        assert_eq!(ghost_label(2, "BD HARD"), "T03 BD HARD");
+        assert_eq!(ghost_label(11, "hat"), "T12 hat");
+    }
+
+    #[test]
+    fn a_ghost_marks_its_loop_point_only_where_the_lengths_differ() {
+        // The active track's own length line is already at 16.
+        assert_eq!(ghost_marker_step(16, 16), None);
+        assert_eq!(ghost_marker_step(12, 16), Some(12.0), "the polymeter case the layer was parked over");
+        assert_eq!(ghost_marker_step(64, 16), Some(64.0), "longer as well as shorter");
+        assert_eq!(ghost_marker_step(0, 16), None, "no length, no loop point");
+    }
+
+    #[test]
+    fn the_ghost_box_lists_every_track_piled_under_the_pointer_in_track_order() {
+        // Three drum tracks on one row — the Digitakt case, where the eye
+        // cannot separate three translucent fills and the box has to.
+        let g = grid();
+        let ghosts = [
+            ghost(0, 16, &[(4.0, 60)]),
+            ghost(1, 16, &[(8.0, 60)]),
+            ghost(2, 16, &[(4.0, 60)]),
+            ghost(9, 16, &[(4.0, 60)]),
+        ];
+        let pos = g.note_rect(&ghosts[0].track.notes[0]).center();
+        assert_eq!(
+            PianoRoll::ghost_lines_at(&g, &ghosts, pos),
+            vec!["T01".to_string(), "T03".to_string(), "T10".to_string()],
+            "T02's note is on another step"
+        );
+        let empty = Pos2 { x: g.x_of_step(12.0) + 3.0, y: g.y_of_pitch(60) + 3.0 };
+        assert!(PianoRoll::ghost_lines_at(&g, &ghosts, empty).is_empty());
+    }
+
+    #[test]
+    fn a_ghost_note_outside_the_band_is_neither_drawn_nor_hovered() {
+        // The band is the active track's and does not grow for a ghost: a
+        // pitch above C8 is off the top, and `pitch_at` would refuse it too.
+        let g = grid();
+        let ghosts = [ghost(0, 16, &[(4.0, PITCH_MAX + 5)])];
+        let pos = g.note_rect(&ghosts[0].track.notes[0]).center();
+        assert!(PianoRoll::ghost_lines_at(&g, &ghosts, pos).is_empty());
+    }
+
+    #[test]
+    fn a_click_on_a_ghost_note_stamps_a_note_on_the_active_track() {
+        // **The whole of the "you can only edit the active track" promise**,
+        // through the real `ui`: a ghost is context, not a target, so the
+        // press lands as it would on an empty cell — a new note on the track
+        // being edited, and the ghost's own track untouched.
+        let ctx = egui::Context::default();
+        let mut roll = PianoRoll::default();
+        let mut track = Track::new(0, TrackKind::Audio);
+        let ghosts = [ghost(3, 16, &[(4.0, TOP_PITCH)])];
+        let before = ghosts[0].track.clone();
+
+        frame_with_ghosts(&ctx, None, &mut roll, &mut track, &ghosts, egui::Modifiers::NONE, vec![]);
+        let g = grid_of(&roll, FULL_BAND);
+        let pos = g.note_rect(&ghosts[0].track.notes[0]).center();
+        let changed = frame_with_ghosts(
+            &ctx,
+            None,
+            &mut roll,
+            &mut track,
+            &ghosts,
+            egui::Modifiers::NONE,
+            vec![egui::Event::PointerMoved(pos), button(pos, true), button(pos, false)],
+        );
+
+        assert!(changed);
+        assert_eq!(track.notes.len(), 1, "one new note on the active track");
+        assert_eq!((track.notes[0].step, track.notes[0].pitch), (4.0, TOP_PITCH), "in the ghost's cell");
+        assert_eq!(*ghosts[0].track, *before, "and the ghost's track is exactly as it was");
+    }
+
+    #[test]
+    fn the_ghost_box_names_the_track_after_the_same_dwell_as_the_note_box() {
+        let ctx = egui::Context::default();
+        let mut roll = PianoRoll::default();
+        let mut track = Track::new(0, TrackKind::Audio);
+        let mut named = ghost(2, 16, &[(4.0, TOP_PITCH)]);
+        Arc::make_mut(&mut named.track).name = "hat".into();
+        let ghosts = [named];
+        let frame = |roll: &mut PianoRoll, track: &mut Track, time, events| {
+            frame_with_ghosts(&ctx, Some(time), roll, track, &ghosts, egui::Modifiers::NONE, events)
+        };
+
+        frame(&mut roll, &mut track, 0.0, vec![]);
+        let g = grid_of(&roll, FULL_BAND);
+        let pos = g.note_rect(&ghosts[0].track.notes[0]).center();
+        frame(&mut roll, &mut track, 0.0, vec![egui::Event::PointerMoved(pos)]);
+        assert!(roll.ghost_box.is_none(), "not yet — the dwell has not elapsed");
+
+        frame(&mut roll, &mut track, PianoRoll::HOVER_DWELL, vec![]);
+        let (anchor, lines) = roll.ghost_box.clone().expect("dwell elapsed, pointer held still");
+        assert_eq!(lines, vec!["T03 hat".to_string()]);
+        assert_eq!(anchor, Pos2 { x: g.x_of_step(4.0), y: g.y_of_pitch(TOP_PITCH) }, "anchored to the cell");
+        assert!(roll.hover_box.is_none(), "no active note under the pointer, so the note box stays down");
+    }
+
+    #[test]
+    fn an_active_note_under_the_pointer_owns_the_box_and_the_ghost_stands_down() {
+        // The note is what a click would act on, and its box already says so;
+        // two boxes on one cell is the failure `update_hover` names.
+        let ctx = egui::Context::default();
+        let mut roll = PianoRoll::default();
+        let mut track = Track::new(0, TrackKind::Audio);
+        track.notes = vec![Note::new(4.0, TOP_PITCH, 1.0, 100, 0.0)];
+        let ghosts = [ghost(2, 16, &[(4.0, TOP_PITCH)])];
+        let frame = |roll: &mut PianoRoll, track: &mut Track, time, events| {
+            frame_with_ghosts(&ctx, Some(time), roll, track, &ghosts, egui::Modifiers::NONE, events)
+        };
+
+        frame(&mut roll, &mut track, 0.0, vec![]);
+        let g = grid_of(&roll, FULL_BAND);
+        let pos = g.note_rect(&track.notes[0]).center();
+        frame(&mut roll, &mut track, 0.0, vec![egui::Event::PointerMoved(pos)]);
+        frame(&mut roll, &mut track, PianoRoll::HOVER_DWELL, vec![]);
+        assert!(roll.hover_box.is_some(), "the note's box");
+        assert!(roll.ghost_box.is_none(), "and not the ghost's");
+    }
+
+    #[test]
+    fn an_empty_ghost_list_draws_and_hovers_nothing() {
+        // The layer off is the default, and the roll must be exactly what it
+        // was: no box after any dwell, and no change reported for looking.
+        let ctx = egui::Context::default();
+        let mut roll = PianoRoll::default();
+        let mut track = Track::new(0, TrackKind::Audio);
+        frame_with_ghosts(&ctx, Some(0.0), &mut roll, &mut track, &[], egui::Modifiers::NONE, vec![]);
+        let g = grid_of(&roll, FULL_BAND);
+        let pos = at(&g, 4.0, TOP_PITCH);
+        let changed = frame_with_ghosts(
+            &ctx,
+            Some(0.0),
+            &mut roll,
+            &mut track,
+            &[],
+            egui::Modifiers::NONE,
+            vec![egui::Event::PointerMoved(pos)],
+        );
+        assert!(!changed);
+        frame_with_ghosts(&ctx, Some(2.0), &mut roll, &mut track, &[], egui::Modifiers::NONE, vec![]);
+        assert!(roll.ghost_box.is_none());
+    }
+}
