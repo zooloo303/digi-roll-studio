@@ -23,6 +23,7 @@ pub mod midi_import;
 pub mod midifile;
 pub mod model;
 pub mod project;
+pub mod record;
 pub mod session;
 pub mod song;
 pub mod track_clip;
@@ -41,6 +42,7 @@ pub use midi_import::{
 pub use midifile::{midi_file_to_notes, track_to_midi_file, Imported, MidiFileError};
 pub use model::{ModelError, Note, PLockLane, Pattern, Source, Track, TrackKind, TrackScale};
 pub use project::{Project, ProjectError, FORMAT_VERSION};
+pub use record::{PlacedEvent, PlacedKind, Take, TakeOptions, TakeReport};
 pub use session::{BindError, PatternRef, Scene, Session};
 pub use song::{EndAction, Song, SongRow, LABELS, MAX_ROWS, ROW_LENGTH_MAX, ROW_LENGTH_MIN};
 pub use track_clip::{paste_track, ChordDrop, PasteReport, TrackClip};

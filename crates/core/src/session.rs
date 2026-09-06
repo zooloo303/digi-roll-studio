@@ -220,6 +220,22 @@ pub struct Session {
     /// no note, and `history::Content` snapshots patterns only.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub generator: Option<serde_json::Value>,
+    /// The one input port live recording listens to — MIDI_RECORD_DESIGN.md
+    /// decision 1, and §5.3's picker in Setup.
+    ///
+    /// **Not a box's bound input.** `DeviceIo::input` is the end a SysEx dump
+    /// comes back on and belongs to one device; this is session-level, has no
+    /// device, and every channel arriving on it is merged — the incoming
+    /// channel is discarded and thru rewrites it to the selected track's. A
+    /// keyboard is not a box in this session and must not have to be added as
+    /// one to be played.
+    ///
+    /// `None` until somebody picks one, which is also what a project written
+    /// before this field loads as. `FORMAT_VERSION` stays at 1: an older build
+    /// reading a file with this in it ignores one key, which is exactly what
+    /// happened when `song` was added.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub record_input: Option<PortRef>,
 }
 
 impl Default for Session {
@@ -233,6 +249,7 @@ impl Default for Session {
             harmony: Harmony::default(),
             song: None,
             generator: None,
+            record_input: None,
         }
     }
 }

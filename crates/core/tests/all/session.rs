@@ -277,6 +277,13 @@ fn seeded_session() -> Session {
         },
     };
 
+    // --- the record input. Session-level, `#[serde(default)]`, and `None` by
+    // default — so like everything else here it is only witnessed by being set.
+    s.record_input = Some(PortRef {
+        id: "in-keys".into(),
+        name: "Keystep Pro".into(),
+    });
+
     // --- two scenes, each box on a different slot, and not sitting on the first.
     let verse = s.add_scene("Verse", None);
     assert!(s.set_slot_in_scene(verse, dt2, PatternRef::new(0, 4)));
@@ -1449,6 +1456,34 @@ fn a_song_round_trips_through_the_project_file() {
     assert_eq!(row.length_steps, Some(32));
     assert_eq!(row.mutes(dt2, 5), Some(true));
     assert_eq!(loaded.song().unwrap().end, digi_core::EndAction::Stop);
+}
+
+/// The record input survives a save and an open, and a project written before
+/// it existed still loads — MIDI_RECORD_DESIGN.md §10 and §3's note that
+/// `FORMAT_VERSION` stays at 1.
+#[test]
+fn the_record_input_round_trips_and_a_file_without_one_still_loads() {
+    let mut s = dt2_and_dn2();
+    s.record_input = Some(PortRef { id: "in-keys".into(), name: "Keystep Pro".into() });
+    let json = Project::new(s.clone()).to_json().unwrap();
+    let loaded = Project::from_json(&json).unwrap().session;
+    assert_eq!(loaded.record_input, s.record_input);
+    assert!(json.contains("\"recordInput\""), "and it is camelCase like everything else");
+
+    // A project written before this field. Not a hand-trimmed string: the file
+    // an older build produced simply has no such key, and `#[serde(default)]` is
+    // what makes that a load rather than an error.
+    let older = Project::new(dt2_and_dn2()).to_json().unwrap();
+    assert!(!older.contains("recordInput"), "a session with none writes none");
+    assert_eq!(Project::from_json(&older).unwrap().session.record_input, None);
+}
+
+/// A project written before recording existed opens with the record input
+/// unset, rather than refusing. `FORMAT_VERSION` does not move for a
+/// `#[serde(default)]` field — the same bargain `song` struck.
+#[test]
+fn the_format_version_did_not_move_for_the_record_input() {
+    assert_eq!(digi_core::FORMAT_VERSION, 1);
 }
 
 #[test]

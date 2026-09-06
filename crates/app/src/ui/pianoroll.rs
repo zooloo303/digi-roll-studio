@@ -642,6 +642,7 @@ impl PianoRoll {
         track: &mut Track,
         playhead: Option<f64>,
         harmony: &mut Harmony,
+        recording: bool,
     ) -> bool {
         let full = ui.available_rect_before_wrap();
         // The trig lane and the p-lock strip take the bottom of what the roll was
@@ -725,9 +726,19 @@ impl PianoRoll {
         self.paint_chord_ghost(&painter, rect, &grid, track, harmony, response.hover_pos());
         if let Some(step) = playhead {
             let x = grid.x_of_step(step);
+            // **The REC colour while a take is open** —
+            // MIDI_RECORD_DESIGN.md §5.1. The state has to be visible *over the
+            // notes* and not only in the corner of the transport bar: while
+            // recording you are looking at the grid, not at a 40px button two
+            // feet away. Amber is the same treatment REC itself wears.
+            let colour = if recording {
+                super::WARN_AMBER
+            } else {
+                Color32::from_rgb(255, 210, 80)
+            };
             painter.line_segment(
                 [Pos2 { x, y: rect.min.y }, Pos2 { x, y: rect.max.y }],
-                egui::Stroke::new(2.0, Color32::from_rgb(255, 210, 80)),
+                egui::Stroke::new(2.0, colour),
             );
         }
 
@@ -5130,7 +5141,7 @@ mod tests {
         };
         let mut harmony = Harmony::default();
         let mut output = ctx.run_ui(input, |ui| {
-            changed = roll.ui(ui, track, None, &mut harmony);
+            changed = roll.ui(ui, track, None, &mut harmony, false);
         });
         output.textures_delta.clear();
         changed

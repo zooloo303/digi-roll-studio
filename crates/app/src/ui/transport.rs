@@ -70,8 +70,10 @@ use digi_core::Session;
 use eframe::egui::{self, Color32, Ui};
 
 use crate::engine::EngineLink;
+use crate::record::{self, Recorder};
 use crate::ui::midi_import::MidiImportPanel;
 use crate::ui::scenes;
+use crate::ui::tracks::Selection;
 
 /// The bar's height — v2 §2a's `height: 40px`.
 const BAR_H: f32 = 40.0;
@@ -90,6 +92,7 @@ const CLOCK_HINT: &str =
 
 /// Draw the bar. Returns whether the session changed — the tempo lives in the
 /// session, so moving it is an edit, and so is anything the scene popup does.
+#[allow(clippy::too_many_arguments)]
 pub fn ui(
     ui: &mut Ui,
     engine: &mut EngineLink,
@@ -98,6 +101,11 @@ pub fn ui(
     // The shell's song-import dialog state, handed down to the scene popup's
     // IMPORT MIDI FILE… button (MIDI_IMPORT_DESIGN.md §5.1).
     import: &mut MidiImportPanel,
+    // REC and QUANT, and the track REC would record onto — MIDI_RECORD_DESIGN.md
+    // §5.1. The bar owns neither piece of state: `Recorder` does, because a take
+    // outlives any one frame of this widget.
+    recorder: &mut Recorder,
+    selection: Selection,
 ) -> bool {
     let mut changed = false;
     let playing = engine.is_playing();
@@ -118,7 +126,7 @@ pub fn ui(
                     ui.spacing_mut().item_spacing.x = 0.0;
 
                     zone(ui, 10.0, 4.0, |ui| {
-                        transport_zone(ui, engine, session, playing)
+                        transport_zone(ui, engine, session, playing, recorder, selection)
                     });
                     divider(ui);
                     zone(ui, 14.0, 8.0, |ui| {
@@ -127,7 +135,7 @@ pub fn ui(
                     divider(ui);
                     zone(ui, 14.0, 10.0, |ui| position_zone(ui, engine, playing));
                     divider(ui);
-                    zone(ui, 12.0, 6.0, |ui| clock_zone(ui, engine));
+                    zone(ui, 12.0, 6.0, |ui| clock_zone(ui, engine, recorder));
                     divider(ui);
                     zone(ui, 12.0, 8.0, |ui| {
                         changed |= scene_zone(ui, session, engine, import)
@@ -184,19 +192,102 @@ pub fn ui(
 /// cannot carry, and because Shift+Space and Alt+Space are left free for it to
 /// grow into. PANIC is emphatically not on a key — see [`right_zone_b`] for why
 /// it is not even next to the transport buttons.
-pub fn shortcuts(ui: &Ui, engine: &mut EngineLink, session: &Session) -> bool {
-    if !space_tap(ui.ctx(), session) {
-        return false;
+pub fn shortcuts(
+    ui: &Ui,
+    engine: &mut EngineLink,
+    session: &Session,
+    recorder: &mut Recorder,
+    selection: Selection,
+) -> bool {
+    let mut took = false;
+
+    // **`R` before Space, and they cannot collide.** Each read matches its
+    // modifiers exactly and takes only its own key out of the queue, so a frame
+    // can carry both — which it does whenever someone presses R to arm while the
+    // transport is already running and hits Space in the same frame's input.
+    if key_tap(ui.ctx(), session, egui::Key::R) {
+        took = true;
+        toggle_record(engine, session, recorder, selection);
     }
-    if engine.is_playing() {
-        engine.stop();
-    } else {
-        engine.play(session);
+
+    if key_tap(ui.ctx(), session, egui::Key::Space) {
+        took = true;
+        if engine.is_playing() {
+            engine.stop();
+        } else {
+            engine.play(session);
+        }
     }
-    true
+    took
 }
 
-/// Whether a plain spacebar arrived this frame, taking it out of the queue.
+/// What REC does, whichever control asked for it — decision 5.
+///
+/// Arming does not capture anything on its own; the transport also has to be
+/// running. So **REC pressed while stopped starts it from the top**, because
+/// arming and then having to reach for PLAY is two gestures for one intention,
+/// and no count-in was asked for. REC pressed while it is already running just
+/// arms, and the take begins at the next note.
+///
+/// Disarming never stops the transport: STOP is the control for that, and one
+/// of them silently doing the other's job is how a set ends by accident.
+fn toggle_record(
+    engine: &mut EngineLink,
+    session: &Session,
+    recorder: &mut Recorder,
+    selection: Selection,
+) {
+    if recorder.armed() {
+        recorder.set_armed(false);
+        return;
+    }
+    if !can_record(engine, session, selection) {
+        return;
+    }
+    recorder.set_armed(true);
+    if !engine.is_playing() {
+        engine.play(session);
+    }
+}
+
+/// Whether REC can be armed at all, and if not, why — the tooltip is the same
+/// sentence in both places, which is why this returns the reason rather than a
+/// bool the caller has to re-derive an explanation for.
+fn record_blocker(engine: &EngineLink, session: &Session, selection: Selection) -> Option<String> {
+    if session.record_input.is_none() {
+        return Some(String::from(
+            "No record input. Open SETUP and pick the keyboard under RECORD INPUT.",
+        ));
+    }
+    if let Some(failure) = engine.input_failure() {
+        return Some(format!("The record input would not open — {failure}"));
+    }
+    if engine.song_mode() {
+        // §9 decision 2: which pattern is under a track during a row change has
+        // no answer a take could follow yet, so REC is off rather than
+        // recording into whichever pattern happened to be up.
+        return Some(String::from(
+            "Recording is off while the song is walking — switch to PTN to record.",
+        ));
+    }
+    if !record::has_target(session, selection) {
+        return Some(String::from("Nothing is selected — pick a track in TRACKS first."));
+    }
+    None
+}
+
+fn can_record(engine: &EngineLink, session: &Session, selection: Selection) -> bool {
+    record_blocker(engine, session, selection).is_none()
+}
+
+/// Whether a plain, unmodified press of `key` arrived this frame, taking the
+/// whole keypress out of the queue.
+///
+/// Written for the spacebar and generalised for `R` (MIDI_RECORD_DESIGN.md
+/// §5.2), which wants exactly the same two rules — first press of a hold, and
+/// modifiers matched exactly — for exactly the same reasons. One function
+/// rather than two, so a future transport key cannot get one rule and not the
+/// other.
 ///
 /// ## Why this is not `consume_key(Modifiers::NONE, Key::Space)`
 ///
@@ -233,28 +324,37 @@ pub fn shortcuts(ui: &Ui, engine: &mut EngineLink, session: &Session) -> bool {
 /// space is printable, so it makes both (`egui-winit` 0.36.1 `lib.rs` ~1064) —
 /// goes with it. Consuming half a keypress and leaving the other half for
 /// whatever takes focus next is how a stray space ends up in a track name.
-fn space_tap(ctx: &egui::Context, session: &digi_core::Session) -> bool {
+fn key_tap(ctx: &egui::Context, session: &digi_core::Session, key: egui::Key) -> bool {
     if crate::ui::tracks::typing_elsewhere(ctx, session)
         || ctx.memory(|m| m.top_modal_layer().is_some())
     {
         return false;
     }
+    // The printable character `egui-winit` pushes beside the key event. A space
+    // is `" "`; a letter is its own lower case, which is what `Key::name`
+    // gives. Both have to go with the key — consuming half a keypress and
+    // leaving the other half for whatever takes focus next is how a stray
+    // character ends up in a track name.
+    // `Key::name()` gives `"Space"` for the spacebar, and what the platform
+    // actually pushes beside it is a single space. Every other key here is a
+    // letter, whose character *is* its lower-case name.
+    let text = if key == egui::Key::Space {
+        String::from(" ")
+    } else {
+        key.name().to_ascii_lowercase()
+    };
     ctx.input_mut(|i| {
         let mut tapped = false;
         let mut took_key = false;
         i.events.retain(|event| match event {
-            egui::Event::Key {
-                key: egui::Key::Space,
-                pressed: true,
-                repeat,
-                modifiers,
-                ..
-            } if modifiers.matches_exact(egui::Modifiers::NONE) => {
+            egui::Event::Key { key: k, pressed: true, repeat, modifiers, .. }
+                if *k == key && modifiers.matches_exact(egui::Modifiers::NONE) =>
+            {
                 took_key = true;
                 tapped |= !repeat;
                 false
             }
-            egui::Event::Text(text) if took_key && text == " " => false,
+            egui::Event::Text(t) if took_key && t.eq_ignore_ascii_case(&text) => false,
             _ => true,
         });
         tapped
@@ -263,9 +363,16 @@ fn space_tap(ctx: &egui::Context, session: &digi_core::Session) -> bool {
 
 // ---------------------------------------------------------------- the six zones
 
-/// Zone 1 — transport. PLAY filled and green; STOP and CONTINUE as outlines.
-/// Panic is deliberately *not* here; see [`right_zone_b`].
-fn transport_zone(ui: &mut Ui, engine: &mut EngineLink, session: &Session, playing: bool) {
+/// Zone 1 — transport. PLAY filled and green; STOP, CONTINUE and REC as
+/// outlines. Panic is deliberately *not* here; see [`right_zone_b`].
+fn transport_zone(
+    ui: &mut Ui,
+    engine: &mut EngineLink,
+    session: &Session,
+    playing: bool,
+    recorder: &mut Recorder,
+    selection: Selection,
+) {
     let play = ui
         .add_enabled_ui(!playing, |ui| {
             styled_button(
@@ -305,6 +412,88 @@ fn transport_zone(ui: &mut Ui, engine: &mut EngineLink, session: &Session, playi
         .inner;
     if cont.clicked() {
         engine.resume(session);
+    }
+
+    record_button(ui, engine, session, recorder, selection);
+}
+
+/// REC — MIDI_RECORD_DESIGN.md §5.1.
+///
+/// **An outline that fills amber when armed, and never cyan.** The bar's one
+/// colour rule is *filled cyan means a thing you can press*, and armed-REC is a
+/// state rather than a press — so it takes the amber destructive treatment PANIC
+/// wears, which is also the honest colour for "everything you play is being
+/// written down". It is not next to PANIC, because unlike PANIC it is completely
+/// reversible.
+///
+/// **The word `REC`, with no dot.** `●` U+25CF was a tofu box on the scene bar
+/// and is not on `ui::mod`'s confirmed-rendering list; a record button that
+/// draws as an empty rectangle on somebody's machine is worse than one that
+/// spells itself out.
+fn record_button(
+    ui: &mut Ui,
+    engine: &mut EngineLink,
+    session: &Session,
+    recorder: &mut Recorder,
+    selection: Selection,
+) {
+    let armed = recorder.armed();
+    let blocker = record_blocker(engine, session, selection);
+    // Disarming is always allowed. Being unable to switch REC off because the
+    // thing that armed it has since gone away is the one state this must not
+    // reach.
+    let enabled = armed || blocker.is_none();
+
+    let response = ui
+        .add_enabled_ui(enabled, |ui| {
+            if armed {
+                pill_or_outline(
+                    ui,
+                    "REC",
+                    super::WARN_AMBER_FILL,
+                    super::WARN_AMBER_TEXT,
+                    super::WARN_AMBER_BORDER,
+                    super::WARN_AMBER_FILL_HOVER,
+                    super::WARN_AMBER_TEXT,
+                    super::WARN_AMBER,
+                )
+            } else {
+                pill_or_outline(
+                    ui,
+                    "REC",
+                    super::INSET_BG,
+                    super::TEXT_MUTED,
+                    super::PANEL_BORDER,
+                    super::INSET_BG,
+                    super::WARN_AMBER,
+                    super::WARN_AMBER_BORDER,
+                )
+            }
+        })
+        .inner;
+
+    // The tooltip says what is stopping it when something is, and what it does
+    // when nothing is. A disabled control with no reason is a control that looks
+    // broken — the same rule `ui::sync`'s blockers follow.
+    let response = match (&blocker, armed) {
+        (Some(reason), false) => response.on_disabled_hover_text(reason.clone()),
+        _ => {
+            let routed = record::selection_is_routed(engine, session, selection);
+            let onto = record::selected_label(session, selection)
+                .map(|l| format!(" onto {l}"))
+                .unwrap_or_default();
+            let mut tip = format!(
+                "Arm recording{onto} — or press R. Play the keyboard; STOP ends the take."
+            );
+            if !routed {
+                tip.push_str("\n\nThat track is routed nowhere, so you will not hear it.");
+            }
+            response.on_hover_text(tip)
+        }
+    };
+
+    if response.clicked() {
+        toggle_record(engine, session, recorder, selection);
     }
 }
 
@@ -385,7 +574,7 @@ fn position_zone(ui: &mut Ui, engine: &EngineLink, playing: bool) {
 /// The pill is a *value* that happens to be clickable, not a lit toggle: it wears
 /// the cyan pill treatment in both states and says which one it is in words, so
 /// nothing on this bar is lit-versus-unlit any more.
-fn clock_zone(ui: &mut Ui, engine: &mut EngineLink) {
+fn clock_zone(ui: &mut Ui, engine: &mut EngineLink, recorder: &mut Recorder) {
     ui.label(
         egui::RichText::new("CLOCK")
             .size(9.0)
@@ -420,6 +609,35 @@ fn clock_zone(ui: &mut Ui, engine: &mut EngineLink) {
         .clicked()
     {
         engine.set_fill(!fill);
+    }
+
+    // QUANT — MIDI_RECORD_DESIGN.md §5.1. Same widget and same lit/unlit
+    // treatment as FILL, because it is the same kind of thing: a standing
+    // setting that changes what the next thing you do means.
+    let quantize = recorder.quantize();
+    let response = if quantize {
+        cyan_pill(ui, "QUANT")
+    } else {
+        pill_button(
+            ui,
+            "QUANT",
+            super::INSET_BG,
+            super::TEXT_DIMMER,
+            super::PANEL_BORDER,
+            super::INSET_BG,
+            super::TEXT_PRIMARY,
+            super::BORDER_HOVER,
+        )
+    };
+    if response
+        .on_hover_text(
+            "Snap recorded notes to the step and their lengths to whole steps.\n\n\
+             Only new notes: nothing already in the track is moved, and switching \
+             this off does not put the timing back.",
+        )
+        .clicked()
+    {
+        recorder.set_quantize(!quantize);
     }
 }
 
@@ -739,6 +957,33 @@ fn styled_button(
     .inner
 }
 
+/// A zone-1 button at STOP's size, with both states spelled out. REC needs
+/// this rather than [`outline_button`] because its two states differ in fill
+/// *and* in text colour, which that one hard-codes.
+#[allow(clippy::too_many_arguments)]
+fn pill_or_outline(
+    ui: &mut Ui,
+    text: &str,
+    fill: Color32,
+    text_colour: Color32,
+    border: Color32,
+    hover_fill: Color32,
+    hover_text: Color32,
+    hover_border: Color32,
+) -> egui::Response {
+    styled_button(
+        ui,
+        egui::RichText::new(text).size(11.0),
+        egui::vec2(10.0, 5.0),
+        fill,
+        text_colour,
+        border,
+        hover_fill,
+        hover_text,
+        hover_border,
+    )
+}
+
 /// STOP and CONTINUE: an inset fill that does not move, a border that lightens.
 fn outline_button(ui: &mut Ui, text: &str) -> egui::Response {
     styled_button(
@@ -997,7 +1242,7 @@ mod tests {
                 ..Default::default()
             },
             |ui| {
-                let took = space_tap(ui.ctx(), session);
+                let took = key_tap(ui.ctx(), session, egui::Key::Space);
                 let left = ui.ctx().input(|i| i.events.clone());
                 answer = (took, left);
             },

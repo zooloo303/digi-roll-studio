@@ -155,6 +155,21 @@ screen reading beside almost every offset.
   model holds notes and a trigless trig is a trig with no note. An import counts
   them and drops them; an export writes none. A pattern that leans on them comes
   back different, and the import report is the only warning.
+- ~~**Live MIDI recording is built and has never met a keyboard.**~~ Added
+  2026-09-05 (`MIDI_RECORD_DESIGN.md` phases A–D) and **played on hardware the
+  same day, onto a DT2 and an A4 — Neil's words, "works perfectly"**. A record
+  input chosen in Setup, thru to the selected track's box, REC and QUANT on the
+  transport bar, `R` on the keyboard, and a take that lands notes on the armed
+  track's own grid under polymeter and SCALE and undoes as one step.
+
+  **What that run covered is playing and recording, and not the rest of phase
+  E**, which is left open here rather than folded into "works": a recorded
+  pattern written to a DT2 with `safe_write` and fetched back byte-exact, a
+  recorded triad confirmed on an A4's own screen as root plus NO2–NO4, and phase
+  B's spy-driver measurement of the added thru latency, which §4.2 wants a real
+  number for instead of the 5 ms `IDLE_POLL` bound. None of the three is
+  load-bearing for playing into the app; all three are the difference between a
+  feature that works and one that is known to.
 
 **Honest summary:** a verified protocol foundation; a sequencer that has driven
 two real boxes in sync; read, write and restore all proven on hardware from the
@@ -483,6 +498,19 @@ everything. That is cheap only if `Pattern` and `Track` are themselves behind
 `Arc`s inside `Session`, so a snapshot is ~40 pointer bumps rather than a deep
 copy of 32 tracks of notes. Built that way from the start.
 
+**Live recording added a second direction across the same seam**, 2026-09-05.
+Notes played on the record input reach the engine thread on an `mpsc` from the
+driver callback, and the engine does the two things only it can: it echoes each
+one straight to the selected track's port and channel — outside the queue, for
+`SendNow`'s reason, because these are a person's hands and not the sequencer —
+and, while a take is running, converts the arrival into *this track, this step,
+this micro, this pass* against that track's own `origin_at` and SCALE. That
+placement goes back to the UI on a second `mpsc`, which is one heap node per
+note and the one place this thread knowingly allocates; `MIDI_RECORD_DESIGN.md`
+§4.2 names the fixed-capacity ring that replaces it if `JitterStats` ever moves.
+The rules about what a take *does* with a placed event are on the UI thread,
+because that is the thread that owns the model.
+
 ---
 
 ## 5. UI
@@ -671,6 +699,17 @@ The elements:
   a held key is one tap, not a stutter, and CONTINUE stays a button because
   "from the top" and "from where the cursors are" are a distinction one key
   cannot carry.
+
+  **REC and QUANT** (2026-09-05, `MIDI_RECORD_DESIGN.md` §5.1) sit at either end
+  of the bar's middle: REC after CONTINUE as an outline that fills amber when
+  armed — the bar's rule is that *filled cyan means a thing you can press*, and
+  armed-REC is a state — and QUANT beside FILL, which is the same kind of thing
+  FILL is, a standing setting that changes what the next thing you do means.
+  **`R` arms**, read beside Space and under the same two rules, and REC pressed
+  while stopped starts the transport from the top because arming and then
+  reaching for PLAY is two gestures for one intention. REC is disabled, with the
+  reason in its tooltip, when no record input is picked, when the record input
+  will not open, in song mode, and when nothing is selected.
 
 The look — spacing, the colour tokens in `ui::mod`, the panel and slider-row
 rules — came from two design-handoff packages, in a first pass (Setup panel and
@@ -991,6 +1030,18 @@ re-run on them.
 - **v0.1.2 in real use** — 2026-08-22. The registers, the longer basslines and ↻
   were all reported from a stretch of playing rather than from a test, which is
   how the three of them came to be the release.
+- **Live recording, played into two boxes** — 2026-09-05, DT2 0071 / A4 0195, the
+  day it was built. A keyboard on the record input, thru heard on the selected
+  track's box, and takes recorded onto a DT2 track and an A4 track. Neil's words
+  were "works perfectly", and this entry is deliberately no wider than that
+  sentence: what was **driven** is playing and recording, and the three things
+  `MIDI_RECORD_DESIGN.md` phase E also asks for were not — the byte-exact
+  write-back of a recorded pattern, the A4's own screen showing a recorded triad
+  as root plus NO2–NO4, and the spy-driver latency number. It closes the part of
+  this feature that no test could ever have closed, which is that the timing is
+  right to an ear: 63 tests said the arithmetic was right, and only a box can say
+  the notes land where they were played. The DN2 was on the desk and was not
+  recorded onto, so this is "two boxes" rather than "the desk".
 
 ### The +Drive and preset layer — 2026-08-26, DT2 0071 / DN2 0050
 
@@ -1315,6 +1366,20 @@ verification has to cover:
   between two patterns whose same-numbered track carries a different SCALE. A test
   pins the second, and half a bar of silence is the kind of thing a test can pin
   and an ear should confirm.
+
+~~**Live recording is the current whole-feature hole in this register.**~~
+**Driven on 2026-09-05**, the day it was built — so REC filling amber when armed,
+the roll drawing notes as the keys go down, the REC-coloured playhead and the
+console's report line were all in front of somebody while a take ran, rather
+than merely being drawn. That is the strong half of the claim and it is Neil's,
+from a session of playing rather than from a checklist.
+
+The weak half, kept because a sweep is weaker evidence than an itemised check:
+**the three disabled-REC tooltips were not walked** — no record input, song mode,
+and nothing selected — and each is a sentence against the right edge of a 320px
+column, which is exactly the shape that has clipped before. Nor was the RECORD
+INPUT row's amber "will not open" line, which needs a keyboard unplugged
+mid-session to appear at all.
 
 What is carried forward as still owed a look:
 

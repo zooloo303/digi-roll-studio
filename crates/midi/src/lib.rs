@@ -3,6 +3,7 @@ use digi_protocol::protocol::split_sysex_stream;
 pub mod a4_preset_load;
 pub mod a4_transfer;
 pub mod device;
+pub mod live_input;
 pub mod ports;
 pub mod preset_load;
 pub mod preset_scan;
@@ -13,6 +14,7 @@ pub use a4_transfer::{
     ReceiveReport, SendError, SendReport,
 };
 pub use device::{DumpResponse, ElektronDevice, KIT_TRACKS};
+pub use live_input::{parse_live, LiveEvent, LiveInput, LiveKind};
 pub use ports::{
     capture_sysex, list_inputs, list_outputs, open_output_by_name, PortBinding, PortInfo,
     SysExInbox,

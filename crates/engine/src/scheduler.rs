@@ -503,6 +503,42 @@ impl Scheduler {
         (track.length_steps > 0).then(|| cursor.elapsed_steps() % track.length_steps as u64)
     }
 
+    /// Where a note played at `t` lands on one track's grid — the scheduler's
+    /// half of MIDI_RECORD_DESIGN.md §4.2.
+    ///
+    /// All this does is find the three facts [`crate::record::place`] needs and
+    /// that only a scheduler holds: **the cursor's `origin_at`**, so placement
+    /// is measured from where that track's pattern began rather than from the
+    /// top of the timeline; and the track's **`scale`** and **`length_steps`**,
+    /// which is what makes two tracks under one clock divide it differently.
+    /// The arithmetic itself is in `record`, where it can be tested without a
+    /// session.
+    ///
+    /// `None` for a track that is not being played at all: no cursor for it, or
+    /// the sounding scene's pattern for that device has no such track. A take
+    /// counts those rather than guessing a step for them.
+    pub fn place_live(
+        &self,
+        session: &Session,
+        device: DeviceId,
+        track: usize,
+        t: f64,
+        quantize: bool,
+    ) -> Option<crate::record::Placement> {
+        let cursor = self
+            .cursors
+            .iter()
+            .find(|c| c.device == device && c.track == track)?;
+        let track = self.pattern(session, device)?.track(track)?;
+        Some(crate::record::place(
+            cursor.origin_at,
+            track_step_seconds(self.bpm, track.scale),
+            track.length_steps,
+            t,
+            quantize,
+        ))
+    }
+
     /// Resolve a session into cursors, histories and clock ports.
     ///
     /// Called on the UI thread whenever the session snapshot changes — this is

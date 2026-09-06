@@ -10,15 +10,19 @@
 // `tests/all/engine_link.rs`) and the widget in `ui::transport` is only buttons.
 
 use crate::plocks::CuratedPLocks;
+use std::sync::mpsc::{Receiver, Sender, TryRecvError};
 use std::sync::Arc;
 
 use digi_core::audition::track_level_message;
-use digi_core::device::DeviceId;
+use digi_core::device::{DeviceId, PortRef};
+use digi_core::record::PlacedEvent;
 use digi_core::Session;
-use digi_engine::event::{MidiMsg, PortTable};
+use digi_engine::event::{MidiMsg, PortId, PortTable};
 use digi_engine::scheduler::{intern_ports, Scheduler};
 use digi_engine::sink::MidirSink;
 use digi_engine::transport::{PortSink, Transport, TransportCommand, TransportState};
+use digi_midi::live_input::{LiveEvent, LiveInput};
+use digi_midi::PortBinding;
 
 /// Opens the connections a port table names.
 ///
@@ -40,6 +44,27 @@ pub fn midir_sinks() -> SinkFactory {
             .map(|(id, e)| format!("{}: {e}", ports.name(*id).unwrap_or("?")))
             .collect();
         (Box::new(sink), failed)
+    })
+}
+
+/// Opens the record input — MIDI_RECORD_DESIGN.md §5.3.
+///
+/// Injected for [`SinkFactory`]'s reason and one more of its own: a test that
+/// drove this through `midir` would need a keyboard plugged into the machine
+/// running it, which no test in this repo may need. The handle is opaque —
+/// **dropping it closes the port** and that is the whole of its interface — so a
+/// test can hand back anything at all, including the `Sender` it means to push
+/// events down.
+pub type InputFactory =
+    Box<dyn Fn(&PortRef, Sender<LiveEvent>) -> Result<Box<dyn Send>, String>>;
+
+/// The real one: a `midir` input connection, filtered down to notes.
+pub fn midir_input() -> InputFactory {
+    Box::new(|port, tx| {
+        let binding = PortBinding { id: port.id.clone(), name: port.name.clone() };
+        LiveInput::open(&binding, tx)
+            .map(|input| Box::new(input) as Box<dyn Send>)
+            .map_err(|e| format!("{}: {e}", port.name))
     })
 }
 
@@ -71,16 +96,56 @@ pub struct EngineLink {
     song_mode: bool,
     song_row: usize,
     rebuilds: u64,
+
+    // --- recording, MIDI_RECORD_DESIGN.md §4.4 ------------------------------
+    open_input: InputFactory,
+    /// The open record input. Opaque and held only to keep the port open, the
+    /// same contract `SysExInbox`'s connection has; dropped and reopened on
+    /// every rebuild, because the `Sender` inside it belongs to the engine
+    /// thread that is going away.
+    live_input: Option<Box<dyn Send>>,
+    /// What `live_input` was opened against, so `reroute` can tell a keyboard
+    /// that moved from one that did not.
+    record_input: Option<PortRef>,
+    /// The open error, if the record input would not open. Joins `failed` so the
+    /// status strip and the console see it the way they see a box's port.
+    input_failure: Option<String>,
+    /// Placed events coming back from the engine thread. `None` until the first
+    /// rebuild; replaced by every one after it.
+    placed_rx: Option<Receiver<PlacedEvent>>,
+    /// The track thru is echoing to, as a *selection* rather than as a resolved
+    /// `(PortId, u8)`.
+    ///
+    /// **Deliberately not the resolved pair.** A `PortId` is an index into the
+    /// table the open sink was built against, and a rebuild renumbers it — so
+    /// remembering the resolved answer across a rebuild is how thru ends up
+    /// playing the wrong box after a cable is plugged in. Remembering the
+    /// selection and resolving it again is the same discipline `scheduler::prepare`
+    /// keeps for the cursors.
+    monitor_track: Option<(DeviceId, usize)>,
+    /// The last resolved pair actually sent, so the per-frame re-send in
+    /// `Recorder::tick` costs a comparison rather than a command.
+    monitor_sent: Option<(PortId, u8)>,
+    armed: bool,
+    record_target: Option<(DeviceId, usize)>,
+    quantize: bool,
 }
 
 impl Default for EngineLink {
     fn default() -> Self {
-        Self::with_sinks(midir_sinks())
+        Self::with_sinks_and_input(midir_sinks(), midir_input())
     }
 }
 
 impl EngineLink {
+    /// A link with a test's sink and the real record input. The input opens
+    /// nothing until a session names one, so this stays hardware-free for every
+    /// test that does not set `Session::record_input`.
     pub fn with_sinks(open_sinks: SinkFactory) -> Self {
+        Self::with_sinks_and_input(open_sinks, midir_input())
+    }
+
+    pub fn with_sinks_and_input(open_sinks: SinkFactory, open_input: InputFactory) -> Self {
         Self {
             open_sinks,
             transport: None,
@@ -96,6 +161,16 @@ impl EngineLink {
             song_mode: false,
             song_row: 0,
             rebuilds: 0,
+            open_input,
+            live_input: None,
+            record_input: None,
+            input_failure: None,
+            placed_rx: None,
+            monitor_track: None,
+            monitor_sent: None,
+            armed: false,
+            record_target: None,
+            quantize: false,
         }
     }
 
@@ -113,7 +188,16 @@ impl EngineLink {
     pub fn reroute(&mut self, session: &Session) -> bool {
         let mut wanted = PortTable::new();
         intern_ports(session, &mut wanted);
-        if self.transport.is_some() && wanted == self.ports {
+        // **The record input is compared too.** It is not in the port table —
+        // that table is outputs, and this is an input on a different OS
+        // namespace — so without this line a keyboard picked in Setup would not
+        // reach the engine until something else happened to force a rebuild.
+        // Same treatment as a box's output for the same reason: a replugged
+        // keyboard comes back on its own.
+        if self.transport.is_some()
+            && wanted == self.ports
+            && session.record_input == self.record_input
+        {
             return false;
         }
 
@@ -147,6 +231,23 @@ impl EngineLink {
         if self.song_mode {
             scheduler.set_song_mode(session, true, self.song_row, 0.0);
         }
+        // Recording's two channels, fresh per engine. The old `LiveInput` is
+        // dropped first: it holds the `Sender` for a thread that is already
+        // gone, and two connections to one input port is the same mistake two
+        // connections to one output port would be.
+        self.live_input = None;
+        let (live_tx, live_rx) = std::sync::mpsc::channel();
+        let (placed_tx, placed_rx) = std::sync::mpsc::channel();
+        self.placed_rx = Some(placed_rx);
+        self.record_input = session.record_input.clone();
+        self.input_failure = None;
+        if let Some(port) = &self.record_input {
+            match (self.open_input)(port, live_tx) {
+                Ok(input) => self.live_input = Some(input),
+                Err(e) => self.input_failure = Some(e),
+            }
+        }
+
         self.transport = Some(Transport::spawn(
             Arc::new(session.clone()),
             scheduler,
@@ -156,10 +257,29 @@ impl EngineLink {
             // about. Built here rather than held, because it is only correct for
             // the session this transport is being spawned against.
             Box::new(CuratedPLocks::new(session)),
+            live_rx,
+            placed_tx,
         ));
         self.ports = wanted;
         self.failed = failed;
+        if let Some(line) = &self.input_failure {
+            self.failed.push(line.clone());
+        }
         self.rebuilds += 1;
+
+        // **Everything the new thread cannot know.** A rebuild is a new
+        // `EngineThread` with a `None` monitor and REC off, so thru would go
+        // silent and a take would stop capturing the moment a box was plugged
+        // in. The monitor is *re-resolved* rather than re-sent, because the
+        // `PortId` it was last sent as is an index into a table that has just
+        // been renumbered.
+        self.monitor_sent = None;
+        self.push_monitor(session);
+        self.send(TransportCommand::SetRecord {
+            armed: self.armed,
+            target: self.record_target,
+            quantize: self.quantize,
+        });
 
         // Plugging a box in mid-set should not end the set. It does restart it
         // from the top rather than resuming: the cursors live in the scheduler,
@@ -214,6 +334,7 @@ impl EngineLink {
     /// wants to say "the fader moved but nothing heard it" has this to say it
     /// from; nothing here writes to the session.
     pub fn send_track_level(&self, session: &Session, device: DeviceId, track: usize) -> bool {
+        let index = track;
         let Some(device) = session.devices.iter().find(|d| d.id == device) else {
             return false;
         };
@@ -243,11 +364,7 @@ impl EngineLink {
         let Some(message) = track_level_message(kind, level) else {
             return false;
         };
-        let name = match &track.out_port {
-            Some(name) => Some(name.as_str()),
-            None => device.io.output.as_ref().map(|p| p.name.as_str()),
-        };
-        let Some(port) = name.and_then(|n| self.ports.get(n)) else {
+        let Some((port, _)) = self.resolve_track_port(session, device.id, index) else {
             return false;
         };
         // NRPN first, CC as the fallback — `plocks::CuratedPLocks` chooses in
@@ -271,6 +388,119 @@ impl EngineLink {
         };
         self.send(TransportCommand::SendNow(vec![(port, msg)]));
         self.transport.is_some()
+    }
+
+    /// The port and channel a track's notes go out on — **the one place that
+    /// rule is spelled for a control the user is turning.**
+    ///
+    /// The track's own `out_port` if it has one, else its device's output,
+    /// looked up in the table the open sink is indexed by. That is
+    /// `scheduler::prepare`'s rule for playback; this is the same rule for a
+    /// fader and for thru, and it is a function rather than three copies
+    /// because DEVELOPMENT.md lesson 5 is exactly this shape — one rule, two
+    /// places, and the second one forgotten.
+    ///
+    /// `None` covers a device this session does not have, a track the sounding
+    /// pattern does not have, and a track routed to a port that is not open.
+    pub fn resolve_track_port(
+        &self,
+        session: &Session,
+        device: DeviceId,
+        track: usize,
+    ) -> Option<(PortId, u8)> {
+        let device = session.devices.iter().find(|d| d.id == device)?;
+        let track = session.current_pattern(device.id)?.track(track)?;
+        let name = match &track.out_port {
+            Some(name) => Some(name.as_str()),
+            None => device.io.output.as_ref().map(|p| p.name.as_str()),
+        };
+        Some((self.ports.get(name?)?, track.channel))
+    }
+
+    // ------------------------------------------------------------- recording
+
+    /// Point thru at a track, or at nothing — MIDI_RECORD_DESIGN.md §4.2.
+    ///
+    /// Cheap to call every frame, and it is: the resolved pair is compared
+    /// against the last one sent and only a difference costs a command. That is
+    /// what makes "select a track, play the keyboard, hear that box" hold
+    /// without any caller remembering to tell the engine.
+    ///
+    /// A track routed nowhere resolves to `None`, which goes quiet rather than
+    /// leaving thru pointed at whatever was selected before.
+    pub fn set_monitor(&mut self, session: &Session, track: Option<(DeviceId, usize)>) {
+        self.monitor_track = track;
+        self.push_monitor(session);
+    }
+
+    /// Resolve [`Self::monitor_track`] against the table as it now stands, and
+    /// send it if it differs from what the thread was last told.
+    fn push_monitor(&mut self, session: &Session) {
+        let resolved = self
+            .monitor_track
+            .and_then(|(device, track)| self.resolve_track_port(session, device, track));
+        if resolved == self.monitor_sent {
+            return;
+        }
+        self.monitor_sent = resolved;
+        self.send(TransportCommand::SetMonitor(resolved));
+    }
+
+    /// Where thru is pointed right now, as the engine has been told it.
+    pub fn monitor(&self) -> Option<(PortId, u8)> {
+        self.monitor_sent
+    }
+
+    /// Arm or disarm, name the track a take lands on, and set QUANTIZE.
+    ///
+    /// Remembered here for the reason the scene and FILL are: a rebuild is a new
+    /// thread that knows none of it, and a take that stopped capturing because
+    /// somebody plugged a box in would be the worst possible time to find out.
+    pub fn set_record(
+        &mut self,
+        armed: bool,
+        target: Option<(DeviceId, usize)>,
+        quantize: bool,
+    ) {
+        if armed == self.armed && target == self.record_target && quantize == self.quantize {
+            return;
+        }
+        self.armed = armed;
+        self.record_target = target;
+        self.quantize = quantize;
+        self.send(TransportCommand::SetRecord { armed, target, quantize });
+    }
+
+    pub fn armed(&self) -> bool {
+        self.armed
+    }
+
+    /// Everything the engine has placed since the last call, appended to `out`.
+    ///
+    /// `out` is the caller's, reused frame to frame, so a take that is running
+    /// costs no allocation on the UI thread either.
+    pub fn drain_placed(&mut self, out: &mut Vec<PlacedEvent>) {
+        let Some(rx) = &self.placed_rx else { return };
+        loop {
+            match rx.try_recv() {
+                Ok(event) => out.push(event),
+                // Disconnected means the thread has gone and a rebuild is about
+                // to replace this receiver. Nothing more will arrive on it, and
+                // that is not an error.
+                Err(TryRecvError::Empty) | Err(TryRecvError::Disconnected) => return,
+            }
+        }
+    }
+
+    /// Whether a record input is open. The REC button is disabled without one,
+    /// and says so.
+    pub fn record_input_open(&self) -> bool {
+        self.live_input.is_some()
+    }
+
+    /// Why the record input would not open, if it would not.
+    pub fn input_failure(&self) -> Option<&str> {
+        self.input_failure.as_deref()
     }
 
     pub fn stop(&mut self) {

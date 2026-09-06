@@ -326,43 +326,7 @@ fn picker(
     };
     let current = session.device(device).and_then(|d| d.port(end)).cloned();
     let choices = port_choices(session, device, end, ports);
-
-    let mut chosen = current.clone();
-    ui.horizontal(|ui| {
-        ui.weak(label);
-        // The picker takes the rest of the row, whatever the panel has been
-        // dragged to: a fixed width either overflows a narrow panel or leaves a
-        // gap in a wide one, and port names are long.
-        let width = (ui.available_width() - 4.0).max(90.0);
-        // **`.truncate()`, and this is the line that keeps the panel 320px
-        // wide.** A `ComboBox` in a horizontal layout inherits `Extend`, and
-        // `Extend` lays the closed picker out at the full width of the name it
-        // is showing — `width` is only a *minimum*. On macOS that is invisible:
-        // CoreMIDI calls the socket "Elektron Digitone II" and it fits. ALSA
-        // calls the same socket "Elektron Digitone II:Elektron Digitone II MIDI
-        // 1 28:0", which is ~348px, so the row pushed the Setup panel ~28px
-        // wider than `exact_size` and every heading in it lost its first two
-        // characters under the workspace that egui had already been told to
-        // draw up to the un-grown edge. Reported from an Omarchy desk,
-        // 2026-09-02.
-        let response = egui::ComboBox::from_id_salt(("device-port", device.0, label))
-            .selected_text(selected_text(current.as_ref()))
-            .width(width)
-            .truncate()
-            .show_ui(ui, |ui| {
-                for (port, text) in &choices {
-                    ui.selectable_value(&mut chosen, port.clone(), text);
-                }
-            })
-            .response;
-        // Truncation costs the tail of the name, and on ALSA the tail is the
-        // `client:port` numbers that tell two identically-named sockets apart.
-        // The hover gives them back, so nothing the picker can show is only
-        // available by widening a panel that does not widen.
-        if let Some(port) = &current {
-            response.on_hover_text(&port.name);
-        }
-    });
+    let chosen = port_picker(ui, ("device-port", device.0, label), label, &current, &choices);
 
     // `set_device_port` is the one that decides whether this is a change at all —
     // re-picking what is already set must not cost a snapshot down the channel.
@@ -376,6 +340,73 @@ fn picker(
     };
     console::post(ui.ctx(), format!("{name}'s {label} port {what}"));
     true
+}
+
+/// One port dropdown: a dim label and a combo box that fills the rest of the
+/// row. Returns what is now chosen, which may be what was chosen before.
+///
+/// Shared with the Setup panel's RECORD INPUT row rather than copied there
+/// (DEVELOPMENT.md lesson 5): the truncation rule below is the whole reason the
+/// panel stays 320px wide, and a second picker that forgot it would widen the
+/// panel again from a different file.
+///
+/// **`.truncate()`, and this is the line that keeps the panel 320px wide.** A
+/// `ComboBox` in a horizontal layout inherits `Extend`, and `Extend` lays the
+/// closed picker out at the full width of the name it is showing — the width
+/// below is only a *minimum*. On macOS that is invisible: CoreMIDI calls the
+/// socket "Elektron Digitone II" and it fits. ALSA calls the same socket
+/// "Elektron Digitone II:Elektron Digitone II MIDI 1 28:0", which is ~348px, so
+/// the row pushed the Setup panel ~28px wider than `exact_size` and every
+/// heading in it lost its first two characters under the workspace that egui had
+/// already been told to draw up to the un-grown edge. Reported from an Omarchy
+/// desk, 2026-09-02.
+pub fn port_picker(
+    ui: &mut Ui,
+    id_salt: impl std::hash::Hash + std::fmt::Debug,
+    label: &str,
+    current: &Option<PortRef>,
+    choices: &[(Option<PortRef>, String)],
+) -> Option<PortRef> {
+    let mut chosen = current.clone();
+    ui.horizontal(|ui| {
+        ui.weak(label);
+        // The picker takes the rest of the row, whatever the panel has been
+        // dragged to: a fixed width either overflows a narrow panel or leaves a
+        // gap in a wide one, and port names are long.
+        let width = (ui.available_width() - 4.0).max(90.0);
+        let response = egui::ComboBox::from_id_salt(id_salt)
+            .selected_text(selected_text(current.as_ref()))
+            .width(width)
+            .truncate()
+            .show_ui(ui, |ui| {
+                for (port, text) in choices {
+                    ui.selectable_value(&mut chosen, port.clone(), text);
+                }
+            })
+            .response;
+        // Truncation costs the tail of the name, and on ALSA the tail is the
+        // `client:port` numbers that tell two identically-named sockets apart.
+        // The hover gives them back, so nothing the picker can show is only
+        // available by widening a panel that does not widen.
+        if let Some(port) = current {
+            response.on_hover_text(&port.name);
+        }
+    });
+    chosen
+}
+
+/// Every connected port as a choice, "none" first — the shape
+/// [`port_picker`] takes. The device-aware version that labels a port another
+/// box already holds is [`port_choices`].
+pub fn plain_port_choices(ports: &[PortInfo]) -> Vec<(Option<PortRef>, String)> {
+    let mut out: Vec<(Option<PortRef>, String)> = vec![(None, "— none —".into())];
+    out.extend(ports.iter().map(|p| {
+        (
+            Some(PortRef { id: p.id.clone(), name: p.name.clone() }),
+            p.name.clone(),
+        )
+    }));
+    out
 }
 
 /// What a closed picker shows. An unbound end says so rather than showing a

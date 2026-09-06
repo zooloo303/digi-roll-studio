@@ -911,3 +911,297 @@ fn leaving_song_mode_stops_the_walk_without_stopping_the_music() {
     assert_eq!(engine.playing_scene(), 1, "on the scene the last row left up");
     engine.stop();
 }
+
+// --- thru and takes, MIDI_RECORD_DESIGN.md §4.2 ------------------------------
+//
+// Everything below drives a real engine thread against the recording sink, with
+// a keyboard that is a `Sender<LiveEvent>` this file pushes down. No hardware,
+// no `midir`, and no driver callback — which is the whole point of `InputFactory`
+// being a trait object: a keyboard is the one piece of equipment no test in this
+// repo may need.
+
+/// An input factory that hands the caller back the `Sender` the engine gave it,
+/// so a test can play notes into a running engine.
+///
+/// The handle it returns is `()`. `EngineLink` only ever holds it and drops it,
+/// which is the whole of the contract — dropping it closes the port, and there
+/// is no port here to close.
+fn playable_input() -> (Arc<Mutex<Option<std::sync::mpsc::Sender<digi_midi::LiveEvent>>>>, digi_roll_studio::engine::InputFactory) {
+    let held = Arc::new(Mutex::new(None));
+    let mine = Arc::clone(&held);
+    let factory: digi_roll_studio::engine::InputFactory = Box::new(move |_port, tx| {
+        *mine.lock().expect("keyboard") = Some(tx);
+        Ok(Box::new(()) as Box<dyn Send>)
+    });
+    (held, factory)
+}
+
+type Keyboard = Arc<Mutex<Option<std::sync::mpsc::Sender<digi_midi::LiveEvent>>>>;
+
+fn play_note(keyboard: &Keyboard, kind: digi_midi::LiveKind) {
+    keyboard
+        .lock()
+        .expect("keyboard")
+        .as_ref()
+        .expect("the record input was opened")
+        .send(digi_midi::LiveEvent { at: std::time::Instant::now(), kind })
+        .expect("the engine thread is listening");
+}
+
+/// Give the engine thread a moment to notice. It wakes at least every
+/// `IDLE_POLL` (5 ms), so this is generous by two orders of magnitude.
+fn settle() {
+    std::thread::sleep(Duration::from_millis(60));
+}
+
+/// A two-box session with both boxes on their own ports and a keyboard picked.
+fn thru_session() -> Session {
+    let mut session = digi_core::two_box_session();
+    bind_output(&mut session, 0, "Elektron Digitakt II");
+    bind_output(&mut session, 1, "Elektron Digitone II");
+    session.record_input =
+        Some(PortRef { id: "kbd".into(), name: "A Keyboard".into() });
+    session
+}
+
+/// Channel-voice messages only, as `(port, status, data1, data2)`.
+fn voice_messages(log: &Arc<Mutex<Log>>) -> Vec<(usize, u8, u8, u8)> {
+    log.lock()
+        .expect("sink log")
+        .sent
+        .iter()
+        .filter_map(|(port, b)| match b[..] {
+            [status, d1, d2] if status & 0xf0 == 0x90 || status & 0xf0 == 0x80 => {
+                Some((port.0, status, d1, d2))
+            }
+            _ => None,
+        })
+        .collect()
+}
+
+#[test]
+fn a_played_note_reaches_the_selected_tracks_port_and_channel() {
+    let (log, sinks) = recording();
+    let (keyboard, inputs) = playable_input();
+    let mut engine = EngineLink::with_sinks_and_input(sinks, inputs);
+    let session = thru_session();
+    engine.reroute(&session);
+
+    // Track 3 of the first box: channel 2, on the DT2's port, which interns
+    // first and is therefore `PortId(0)`.
+    let dt2 = session.devices[0].id;
+    engine.set_monitor(&session, Some((dt2, 2)));
+    play_note(&keyboard, digi_midi::LiveKind::NoteOn { pitch: 60, velocity: 100 });
+    settle();
+
+    assert_eq!(
+        voice_messages(&log),
+        vec![(0, 0x92, 60, 100)],
+        "the channel came from the track, not from whatever the keyboard sent on"
+    );
+
+    play_note(&keyboard, digi_midi::LiveKind::NoteOff { pitch: 60 });
+    settle();
+    assert_eq!(voice_messages(&log).len(), 2);
+    assert!(nothing_left_sounding(&log.lock().expect("sink log")));
+}
+
+/// Decision 2: selecting a track is how you choose what the keyboard sounds.
+/// Two boxes, two ports, and the note follows the selection.
+#[test]
+fn moving_the_selection_moves_which_box_the_keyboard_plays() {
+    let (log, sinks) = recording();
+    let (keyboard, inputs) = playable_input();
+    let mut engine = EngineLink::with_sinks_and_input(sinks, inputs);
+    let session = thru_session();
+    engine.reroute(&session);
+    let (dt2, dn2) = (session.devices[0].id, session.devices[1].id);
+
+    engine.set_monitor(&session, Some((dt2, 0)));
+    play_note(&keyboard, digi_midi::LiveKind::NoteOn { pitch: 60, velocity: 100 });
+    play_note(&keyboard, digi_midi::LiveKind::NoteOff { pitch: 60 });
+    settle();
+
+    engine.set_monitor(&session, Some((dn2, 0)));
+    play_note(&keyboard, digi_midi::LiveKind::NoteOn { pitch: 64, velocity: 100 });
+    play_note(&keyboard, digi_midi::LiveKind::NoteOff { pitch: 64 });
+    settle();
+
+    let ports: Vec<usize> = voice_messages(&log).iter().map(|(p, ..)| *p).collect();
+    assert_eq!(ports, vec![0, 0, 1, 1], "the first pair on the DT2, the second on the DN2");
+}
+
+/// **The held table, and the failure it exists to prevent.** Change track with a
+/// chord under your hands and the old box has to be let go of — otherwise it
+/// drones with nothing left in the app that could release it, which is the one
+/// failure a user cannot fix from the UI.
+#[test]
+fn changing_track_mid_chord_releases_the_chord_on_the_box_it_is_leaving() {
+    let (log, sinks) = recording();
+    let (keyboard, inputs) = playable_input();
+    let mut engine = EngineLink::with_sinks_and_input(sinks, inputs);
+    let session = thru_session();
+    engine.reroute(&session);
+    let (dt2, dn2) = (session.devices[0].id, session.devices[1].id);
+
+    engine.set_monitor(&session, Some((dt2, 0)));
+    for pitch in [60, 64, 67] {
+        play_note(&keyboard, digi_midi::LiveKind::NoteOn { pitch, velocity: 100 });
+    }
+    settle();
+
+    engine.set_monitor(&session, Some((dn2, 0)));
+    settle();
+
+    let messages = voice_messages(&log);
+    let offs: Vec<(usize, u8)> = messages
+        .iter()
+        .filter(|(_, status, ..)| status & 0xf0 == 0x80)
+        .map(|(port, _, pitch, _)| (*port, *pitch))
+        .collect();
+    assert_eq!(
+        offs,
+        vec![(0, 60), (0, 64), (0, 67)],
+        "released on the port being left, not on the one being joined"
+    );
+    assert!(nothing_left_sounding(&log.lock().expect("sink log")));
+}
+
+/// Stop is the other release, and it has to work with the transport never
+/// having started: thru is held outside the scheduler's active table, so the
+/// early return in `flush_stop` would otherwise skip it.
+#[test]
+fn stop_releases_what_the_keyboard_is_holding_even_from_stopped() {
+    let (log, sinks) = recording();
+    let (keyboard, inputs) = playable_input();
+    let mut engine = EngineLink::with_sinks_and_input(sinks, inputs);
+    let session = thru_session();
+    engine.reroute(&session);
+
+    engine.set_monitor(&session, Some((session.devices[0].id, 0)));
+    play_note(&keyboard, digi_midi::LiveKind::NoteOn { pitch: 48, velocity: 90 });
+    settle();
+    assert!(!engine.is_playing(), "the transport was never started");
+
+    engine.stop();
+    settle();
+    assert!(nothing_left_sounding(&log.lock().expect("sink log")));
+}
+
+/// Panic is the button for when something is sounding and nothing else will
+/// release it, so it has to reach the notes a hand is on — which the scheduler
+/// knows nothing about.
+#[test]
+fn panic_releases_what_the_keyboard_is_holding() {
+    let (log, sinks) = recording();
+    let (keyboard, inputs) = playable_input();
+    let mut engine = EngineLink::with_sinks_and_input(sinks, inputs);
+    let session = thru_session();
+    engine.reroute(&session);
+
+    engine.set_monitor(&session, Some((session.devices[0].id, 0)));
+    play_note(&keyboard, digi_midi::LiveKind::NoteOn { pitch: 55, velocity: 90 });
+    settle();
+
+    engine.panic();
+    settle();
+    assert!(nothing_left_sounding(&log.lock().expect("sink log")));
+}
+
+/// A track routed nowhere goes quiet rather than leaving thru pointed at
+/// whatever was selected before — which would play the wrong box.
+#[test]
+fn a_track_routed_nowhere_makes_thru_silent_rather_than_stale() {
+    let (log, sinks) = recording();
+    let (keyboard, inputs) = playable_input();
+    let mut engine = EngineLink::with_sinks_and_input(sinks, inputs);
+    let mut session = thru_session();
+    // Take the second box's port away, so its tracks resolve to nothing.
+    session.devices[1].io.output = None;
+    engine.reroute(&session);
+    let (dt2, dn2) = (session.devices[0].id, session.devices[1].id);
+
+    engine.set_monitor(&session, Some((dt2, 0)));
+    assert!(engine.monitor().is_some());
+    engine.set_monitor(&session, Some((dn2, 0)));
+    assert_eq!(engine.monitor(), None, "nothing to send to");
+
+    play_note(&keyboard, digi_midi::LiveKind::NoteOn { pitch: 60, velocity: 100 });
+    settle();
+    assert!(voice_messages(&log).is_empty());
+}
+
+/// **Picking a keyboard is a rebuild, and everything the new thread cannot know
+/// has to be re-sent.** Without that, plugging a box in mid-session leaves thru
+/// silent and a take not capturing, both with no visible cause.
+#[test]
+fn the_record_input_rebuilds_the_engine_and_the_monitor_survives_it() {
+    let (log, sinks) = recording();
+    let (keyboard, inputs) = playable_input();
+    let mut engine = EngineLink::with_sinks_and_input(sinks, inputs);
+    let mut session = digi_core::two_box_session();
+    bind_output(&mut session, 0, "Elektron Digitakt II");
+    engine.reroute(&session);
+    assert_eq!(engine.rebuilds(), 1);
+    assert!(!engine.record_input_open(), "no keyboard picked yet");
+
+    engine.set_monitor(&session, Some((session.devices[0].id, 0)));
+    engine.set_record(true, Some((session.devices[0].id, 0)), true);
+
+    // Setup's RECORD INPUT picker, as the engine sees it.
+    session.record_input = Some(PortRef { id: "kbd".into(), name: "A Keyboard".into() });
+    assert!(engine.reroute(&session), "a new record input is a rebuild");
+    assert_eq!(engine.rebuilds(), 2);
+    assert!(engine.record_input_open());
+    assert!(engine.armed(), "REC is remembered across the rebuild");
+
+    // And the monitor was re-resolved and re-sent, so the keyboard is still
+    // heard on the same box.
+    play_note(&keyboard, digi_midi::LiveKind::NoteOn { pitch: 72, velocity: 64 });
+    settle();
+    assert_eq!(voice_messages(&log), vec![(0, 0x90, 72, 64)]);
+    engine.stop();
+}
+
+/// The engine only places while all three hold: armed, playing, and a target
+/// with a cursor. Arming alone captures nothing — decision 5.
+#[test]
+fn nothing_is_placed_until_rec_is_armed_and_the_transport_is_running() {
+    let (_log, sinks) = recording();
+    let (keyboard, inputs) = playable_input();
+    let mut engine = EngineLink::with_sinks_and_input(sinks, inputs);
+    let session = thru_session();
+    engine.reroute(&session);
+    let dt2 = session.devices[0].id;
+    engine.set_monitor(&session, Some((dt2, 0)));
+
+    let mut placed = Vec::new();
+
+    // Armed, stopped.
+    engine.set_record(true, Some((dt2, 0)), false);
+    play_note(&keyboard, digi_midi::LiveKind::NoteOn { pitch: 60, velocity: 100 });
+    settle();
+    engine.drain_placed(&mut placed);
+    assert!(placed.is_empty(), "armed but not running places nothing");
+
+    // Playing, disarmed.
+    engine.set_record(false, Some((dt2, 0)), false);
+    engine.play(&session);
+    settle();
+    play_note(&keyboard, digi_midi::LiveKind::NoteOn { pitch: 62, velocity: 100 });
+    settle();
+    engine.drain_placed(&mut placed);
+    assert!(placed.is_empty(), "running but not armed places nothing");
+
+    // Both.
+    engine.set_record(true, Some((dt2, 0)), false);
+    play_note(&keyboard, digi_midi::LiveKind::NoteOn { pitch: 64, velocity: 100 });
+    settle();
+    engine.drain_placed(&mut placed);
+    assert_eq!(placed.len(), 1, "and now it is a take");
+    assert_eq!(
+        placed[0].kind,
+        digi_core::record::PlacedKind::NoteOn { pitch: 64, velocity: 100 }
+    );
+    engine.stop();
+}

@@ -15,6 +15,7 @@
 use digi_core::device::PortRef;
 use digi_core::history::{Content, History};
 use digi_roll_studio::engine::EngineLink;
+use digi_roll_studio::record::Recorder;
 use digi_roll_studio::ui::autoconnect::AutoConnect;
 use digi_roll_studio::ui::console::Console;
 use digi_roll_studio::ui::edit::EditPanel;
@@ -97,6 +98,11 @@ struct App {
     /// where that line is; the shell's job is the two calls below that decide
     /// where one step ends.
     history: History,
+    /// Live recording's UI-thread half — REC, QUANT, and the open take. Owned
+    /// by the shell rather than by the transport bar because a take outlives any
+    /// one frame of that widget, and because the commit guard below has to be
+    /// able to ask whether one is running.
+    recorder: Recorder,
 }
 
 impl eframe::App for App {
@@ -175,7 +181,30 @@ impl eframe::App for App {
         // first is what lets one frame both start the transport and draw the
         // button as unavailable. It changes the engine, never the session, so it
         // joins neither `edited` nor `stepped`.
-        transport::shortcuts(ui, &mut self.engine, &self.session);
+        transport::shortcuts(
+            ui,
+            &mut self.engine,
+            &self.session,
+            &mut self.recorder,
+            self.selection,
+        );
+
+        // **The recorder, after the keys and before anything draws.** After, so
+        // R-while-stopped can arm and start the transport in the same frame that
+        // reads the key. Before, so a note played this frame is already in the
+        // track when the roll paints it rather than a frame later.
+        //
+        // It reports an edit the way a panel does, and it opens its own history
+        // step off `before` — a take is one undo step, and the guard further
+        // down is what keeps that step open across the frames of the take.
+        edited |= self.recorder.tick(
+            ui.ctx(),
+            &mut self.engine,
+            &mut self.session,
+            self.selection,
+            &mut self.history,
+            before.as_ref(),
+        );
 
         // The rail's letters — E, H, G, S, P — and Cmd+S, read here for exactly
         // the same reason and in the same place: a key that only works while the
@@ -260,6 +289,8 @@ impl eframe::App for App {
                     // transport's scene popup shares it (§5.1's two entry
                     // points, one dialog).
                     self.song.import_mut(),
+                    &mut self.recorder,
+                    self.selection,
                 );
             });
 
@@ -382,6 +413,7 @@ impl eframe::App for App {
                 &mut self.engine,
                 &mut self.selection,
                 &mut self.roll,
+                self.recorder.take_open(),
             );
         });
 
@@ -454,7 +486,13 @@ impl eframe::App for App {
                 self.history.begin(before);
             }
         }
-        if !ui.ctx().input(|i| i.pointer.any_down()) {
+        // **A take holds the step open the way a drag does.** Without the
+        // second clause this commits on every frame the pointer happens to be
+        // up, which for a hands-on-the-keyboard take is every frame — one undo
+        // step per note, and Cmd+Z would walk a bar back a note at a time
+        // instead of removing the take. `Recorder::finish` commits the step
+        // itself when the take ends.
+        if !ui.ctx().input(|i| i.pointer.any_down()) && !self.recorder.take_open() {
             self.history.commit(&self.session);
         }
 

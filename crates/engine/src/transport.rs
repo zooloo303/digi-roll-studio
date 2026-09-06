@@ -32,9 +32,12 @@ use std::sync::mpsc::{Receiver, Sender, TryRecvError};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+use digi_core::device::DeviceId;
 use digi_core::session::Session;
+use digi_midi::live_input::{LiveEvent, LiveKind};
 
 use crate::event::{MidiMsg, PortId, PortTable, ScheduledEvent};
+use crate::record::{placed_kind, PlacedEvent};
 use crate::rng::{Rng, XorShift64};
 use crate::scheduler::{PLockMap, Scheduler};
 
@@ -80,6 +83,26 @@ pub enum TransportCommand {
     SetSongMode { on: bool, row: usize },
     /// Move the walk to a row. Ignored in pattern mode.
     JumpToSongRow(usize),
+    /// Where thru goes: the selected track's resolved port and channel, or
+    /// `None` to go quiet — MIDI_RECORD_DESIGN.md §4.2.
+    ///
+    /// Re-sent by the UI whenever the selection moves, and remembered by
+    /// `EngineLink` across rebuilds, because a rebuild is a new thread that
+    /// knows none of this. Changing it releases anything the old monitor is
+    /// holding: without that, moving track with a chord under your hands leaves
+    /// it ringing on the box you just left, with nothing that could stop it.
+    SetMonitor(Option<(PortId, u8)>),
+    /// Arm or disarm, naming the track a take would land on, and QUANTIZE.
+    ///
+    /// Arming alone captures nothing — the transport also has to be running,
+    /// which is decision 5. `target` is `None` when nothing is selected, which
+    /// is armed-but-aimed-nowhere and is a state the UI shows rather than one
+    /// this thread has to resolve.
+    SetRecord {
+        armed: bool,
+        target: Option<(DeviceId, usize)>,
+        quantize: bool,
+    },
     /// A new whole-session snapshot. One `Arc` for the entire session, not one
     /// per device, so the boxes can never pick up halves of an edit
     /// (PLAN.md §4).
@@ -290,12 +313,22 @@ impl Transport {
     /// `plocks` is how the caller supplies the per-box parameter tables this
     /// crate is not allowed to know about — see [`PLockMap`]. Pass
     /// [`NoPLocks`] to play a session's notes and none of its lanes.
+    ///
+    /// `live_rx` and `placed_tx` are recording's two ends of this thread
+    /// (MIDI_RECORD_DESIGN.md §4.2): notes played on the record input come *in*
+    /// on the first, and the ones that fell inside a take go *out* on the second
+    /// with a step, a micro and a pass attached. Both are plain `mpsc`s and both
+    /// are allowed to be dead — a session with no keyboard has a `live_rx` that
+    /// never yields and a `placed_tx` nobody drains, and neither is an error
+    /// worth a branch anywhere else in this file.
     pub fn spawn(
         session: Arc<Session>,
         scheduler: Scheduler,
         sink: Box<dyn PortSink>,
         state: Arc<TransportState>,
         plocks: Box<dyn PLockMap + Send>,
+        live_rx: Receiver<LiveEvent>,
+        placed_tx: Sender<PlacedEvent>,
     ) -> Self {
         let (tx, rx) = std::sync::mpsc::channel();
         let thread_state = Arc::clone(&state);
@@ -314,6 +347,13 @@ impl Transport {
                     bytes: Vec::with_capacity(16),
                     started_at: None,
                     scheduled_to: 0.0,
+                    live_rx,
+                    placed_tx,
+                    monitor: None,
+                    held_thru: [false; 128],
+                    armed: false,
+                    record_target: None,
+                    quantize: false,
                 };
                 engine.run(rx);
             })
@@ -359,6 +399,24 @@ struct EngineThread {
     /// `None` when stopped.
     started_at: Option<Instant>,
     scheduled_to: f64,
+
+    // --- recording, MIDI_RECORD_DESIGN.md §4.2 ------------------------------
+    /// Notes off the record input, stamped by the driver callback.
+    live_rx: Receiver<LiveEvent>,
+    /// The same notes, placed on the armed track's grid. One heap node per
+    /// note-on and one per note-off; a fast player makes perhaps twenty a
+    /// second, which is why this is an `mpsc` and not the fixed-capacity ring
+    /// the design names as its replacement if [`JitterStats`] ever moves.
+    placed_tx: Sender<PlacedEvent>,
+    /// Where thru goes, or nowhere.
+    monitor: Option<(PortId, u8)>,
+    /// Which pitches thru is currently holding down on `monitor`. A 128-slot
+    /// array rather than a list, because it is written from this thread on every
+    /// arrival and read whole only when something has to release it.
+    held_thru: [bool; 128],
+    armed: bool,
+    record_target: Option<(DeviceId, usize)>,
+    quantize: bool,
 }
 
 impl EngineThread {
@@ -371,6 +429,12 @@ impl EngineThread {
                 }
                 ControlFlow::Continue => {}
             }
+
+            // **Before the stopped check, not after it.** Thru has to work
+            // with the transport stopped — that is decision 2, and it is the
+            // whole reason thru lives on this thread rather than in the UI,
+            // which may not draw a frame for seconds at a time.
+            self.drain_live();
 
             let Some(started_at) = self.started_at else {
                 std::thread::sleep(IDLE_POLL);
@@ -540,6 +604,21 @@ impl EngineThread {
                 }
             }
             TransportCommand::Stop => self.flush_stop(),
+            TransportCommand::SetMonitor(monitor) => {
+                if monitor != self.monitor {
+                    // Released on the *old* monitor, before the new one is
+                    // adopted: these pitches are sounding on the box we are
+                    // leaving, and an off sent to the box we are joining would
+                    // leave them there for good.
+                    self.release_thru();
+                    self.monitor = monitor;
+                }
+            }
+            TransportCommand::SetRecord { armed, target, quantize } => {
+                self.armed = armed;
+                self.record_target = target;
+                self.quantize = quantize;
+            }
             TransportCommand::SendNow(msgs) => {
                 // Through `scratch` and `send_now`, which is the same path a
                 // panic takes: one place that turns events into bytes on a
@@ -552,6 +631,10 @@ impl EngineThread {
                 self.send_now();
             }
             TransportCommand::Panic => {
+                // Thru's held pitches are not in the scheduler's active table —
+                // nothing scheduled them — so a panic that only asked the
+                // scheduler would leave exactly the notes a user's hands are on.
+                self.release_thru();
                 self.scratch.clear();
                 self.scheduler.panic(0.0, &mut self.scratch);
                 self.send_now();
@@ -625,6 +708,10 @@ impl EngineThread {
 
     /// Stop: release everything sounding, tell the boxes, and go idle.
     fn flush_stop(&mut self) {
+        // **Above the early return.** Thru is held outside the scheduler's
+        // active table, so a stop pressed while the transport was never running
+        // — which takes that return — still has to let go of the keyboard.
+        self.release_thru();
         if self.started_at.is_none() && self.scheduler.active_notes().is_empty() {
             return;
         }
@@ -652,6 +739,113 @@ impl EngineThread {
         self.started_at = None;
         self.state.playing.store(false, Ordering::Relaxed);
         self.state.active_notes.store(0, Ordering::Relaxed);
+    }
+
+    // --- recording, MIDI_RECORD_DESIGN.md §4.2 ------------------------------
+
+    /// Everything that arrived on the record input since the last pass: echoed
+    /// to the monitor, and — while armed and playing — placed on the armed
+    /// track's grid and sent back to the UI.
+    ///
+    /// Never blocks. A disconnected sender means no keyboard is open, which is
+    /// the ordinary case and not a condition worth reporting.
+    fn drain_live(&mut self) {
+        loop {
+            match self.live_rx.try_recv() {
+                Ok(event) => {
+                    self.thru(event.kind);
+                    self.place(event);
+                }
+                Err(TryRecvError::Empty) | Err(TryRecvError::Disconnected) => return,
+            }
+        }
+    }
+
+    /// Echo one note to the selected track's port and channel, **immediately**.
+    ///
+    /// Straight at the sink rather than into the queue, for exactly the reason
+    /// [`TransportCommand::SendNow`] gives: this is a person's hands, not the
+    /// sequencer, and a note that waited for a step boundary two bars off would
+    /// be unplayable. The incoming channel is already gone — `parse_live`
+    /// discarded it — so what goes out is the track's, which is what makes
+    /// "select a track, play the keyboard, hear that box" true.
+    fn thru(&mut self, kind: LiveKind) {
+        let Some((port, channel)) = self.monitor else {
+            return;
+        };
+        let msg = match kind {
+            LiveKind::NoteOn { pitch, velocity } => {
+                self.held_thru[pitch as usize] = true;
+                MidiMsg::NoteOn { channel, pitch, velocity }
+            }
+            LiveKind::NoteOff { pitch } => {
+                self.held_thru[pitch as usize] = false;
+                MidiMsg::NoteOff { channel, pitch }
+            }
+        };
+        self.bytes.clear();
+        msg.write_bytes(&mut self.bytes);
+        self.sink.send(port, &self.bytes);
+    }
+
+    /// Let go of every pitch thru is holding, on whatever monitor is set.
+    ///
+    /// Called from Stop, from Panic, and from a monitor change. Without it,
+    /// holding a chord and changing track leaves that chord ringing on the box
+    /// you left, with nothing in the app that could release it — the one class
+    /// of failure a user cannot fix from the UI.
+    fn release_thru(&mut self) {
+        let Some((port, channel)) = self.monitor else {
+            // Nothing could have been sent, so nothing can be sounding. The
+            // table is cleared anyway: a monitor that goes to `None` and comes
+            // back must not resurrect stale pitches.
+            self.held_thru = [false; 128];
+            return;
+        };
+        for pitch in 0..128u8 {
+            if !self.held_thru[pitch as usize] {
+                continue;
+            }
+            self.held_thru[pitch as usize] = false;
+            self.bytes.clear();
+            MidiMsg::NoteOff { channel, pitch }.write_bytes(&mut self.bytes);
+            self.sink.send(port, &self.bytes);
+        }
+    }
+
+    /// Convert one arrival into *this track, this step, this micro, this pass*
+    /// and send it back to the UI.
+    ///
+    /// Three conditions, all of them required: armed, playing, and a target
+    /// whose cursor exists. Arming alone captures nothing (decision 5), and a
+    /// target with no cursor is a track the sounding scene is not playing.
+    fn place(&mut self, event: LiveEvent) {
+        if !self.armed {
+            return;
+        }
+        let (Some(started_at), Some((device, track))) = (self.started_at, self.record_target)
+        else {
+            return;
+        };
+        // The arrival's own moment, on the engine's clock. `saturating_sub` for
+        // the key struck in the instant before `Start` re-based the clock: zero
+        // is the honest answer, and `place` puts it on step 0.
+        let at = event.at.saturating_duration_since(started_at).as_secs_f64();
+        let Some(placement) =
+            self.scheduler.place_live(&self.session, device, track, at, self.quantize)
+        else {
+            return;
+        };
+        // A closed receiver means the UI has rebuilt the engine around us and
+        // this thread is about to be joined. Nothing useful can be done with the
+        // event, and nothing here may block.
+        let _ = self.placed_tx.send(PlacedEvent {
+            kind: placed_kind(event.kind),
+            step: placement.step,
+            micro: placement.micro,
+            pass: placement.pass,
+            at,
+        });
     }
 
     /// Send everything in `scratch` immediately, deadlines ignored. Stop and
@@ -703,6 +897,11 @@ mod tests {
     /// the command handling and nothing about timing.
     fn engine_at(bpm: f64) -> EngineThread {
         let session = Arc::new(Session::default());
+        // Both recording ends are dropped immediately: nothing here plays a
+        // keyboard, and a dead channel is exactly what a session with no record
+        // input has.
+        let (_live_tx, live_rx) = std::sync::mpsc::channel();
+        let (placed_tx, _placed_rx) = std::sync::mpsc::channel();
         EngineThread {
             session: Arc::clone(&session),
             scheduler: Scheduler::new(bpm),
@@ -715,6 +914,13 @@ mod tests {
             bytes: Vec::new(),
             started_at: None,
             scheduled_to: 0.0,
+            live_rx,
+            placed_tx,
+            monitor: None,
+            held_thru: [false; 128],
+            armed: false,
+            record_target: None,
+            quantize: false,
         }
     }
 

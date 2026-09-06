@@ -211,6 +211,9 @@ pub fn ui(
             }
 
             ui.add_space(8.0);
+            changed |= record_input_row(ui, session, engine, &present_in);
+
+            ui.add_space(8.0);
             super::section_header(ui, "DATA TRANSFER", None);
 
             egui::Frame::new()
@@ -312,6 +315,78 @@ pub fn ui(
     (changed, close)
 }
 
+/// RECORD INPUT — MIDI_RECORD_DESIGN.md §5.3. One picker over every connected
+/// input, "none" first, writing `Session::record_input`.
+///
+/// **Session-level, and not a box's input.** `DeviceIo::input` is the end a
+/// SysEx dump comes back on and belongs to one device; this is the one port live
+/// recording listens to, with every channel merged. A keyboard is not a box in
+/// this session and must not have to be added as one to be played, which is why
+/// this row is here and not inside a device's group.
+///
+/// **Always visible, which is a small deviation from the design.** §5.3 puts the
+/// row "in the MIDI PORTS section", and that section is the `BOXES & MIDI PORTS`
+/// disclosure at the foot of this panel — collapsed by default, and the raw port
+/// lists in it are diagnostics for when auto-detect has failed. REC's own
+/// tooltip sends you here to pick a keyboard, so the row it sends you to has to
+/// be on screen when you arrive. One row is a cheap price for that.
+///
+/// The open failure is shown here in amber *and* forces the device strip open
+/// through [`status_strip`]'s fault rule, which is §5.3's "an unplugged keyboard
+/// opens the strip the way an unplugged box does".
+fn record_input_row(
+    ui: &mut Ui,
+    session: &mut Session,
+    engine: &EngineLink,
+    inputs: &[digi_midi::PortInfo],
+) -> bool {
+    super::section_header(ui, "RECORD INPUT", None);
+    let choices = devices::plain_port_choices(inputs);
+    let chosen = devices::port_picker(
+        ui,
+        "record-input",
+        "in",
+        &session.record_input,
+        &choices,
+    );
+    let changed = chosen != session.record_input;
+    if changed {
+        let what = match &chosen {
+            Some(port) => format!("Recording will listen to {}", port.name),
+            None => String::from("No record input — the keyboard is not being listened to"),
+        };
+        session.record_input = chosen;
+        crate::ui::console::post(ui.ctx(), what);
+    }
+
+    match engine.input_failure() {
+        Some(failure) => {
+            ui.label(
+                egui::RichText::new(format!("will not open — {failure}"))
+                    .size(10.5)
+                    .color(super::WARN_AMBER),
+            );
+        }
+        None if session.record_input.is_some() => {
+            ui.label(
+                egui::RichText::new(
+                    "Every channel is merged; thru plays the selected track's box.",
+                )
+                .size(10.5)
+                .color(super::TEXT_DIMMER),
+            );
+        }
+        None => {
+            ui.label(
+                egui::RichText::new("Pick a keyboard to record and play through.")
+                    .size(10.5)
+                    .color(super::TEXT_DIMMER),
+            );
+        }
+    }
+    changed
+}
+
 /// The connection status strip: replaces the old always-visible BOXES block
 /// with a dot per box and one line of names, and expands [`SetupPanel::devices_expanded`]
 /// itself — rather than only reporting a click for the caller to apply — because
@@ -341,7 +416,11 @@ fn status_strip(
 
     let statuses: Vec<(String, bool)> =
         session.devices.iter().map(|d| (d.name.clone(), devices::is_live(d, engine, outputs))).collect();
-    let any_fault = statuses.iter().any(|(_, live)| !live);
+    // **The record input counts as a fault too** — §5.3. An unplugged keyboard
+    // is the same class of problem as an unplugged box, and the strip is where
+    // this panel says something is wrong with the wiring.
+    let any_fault =
+        statuses.iter().any(|(_, live)| !live) || engine.input_failure().is_some();
     if any_fault {
         panel.devices_expanded = true;
     }

@@ -14,4 +14,5 @@ mod export;
 mod history;
 mod import;
 mod midifile;
+mod record;
 mod session;

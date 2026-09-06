@@ -34,6 +34,11 @@ pub fn ui(
     engine: &mut EngineLink,
     selection: &mut Selection,
     roll: &mut PianoRoll,
+    // Whether a take is open, so the roll can draw its playhead in the REC
+    // colour — MIDI_RECORD_DESIGN.md §5.1. Passed down rather than read off the
+    // engine here, because it is the `Recorder` that knows whether a take is
+    // actually running, not whether REC merely happens to be lit.
+    recording: bool,
 ) -> bool {
     let mut edited = false;
 
@@ -85,7 +90,7 @@ pub fn ui(
     // back costs nothing and keeps the roll ignorant of sessions.
     let mut harmony = session.harmony;
     match tracks::track_mut(session, *selection) {
-        Some(track) => edited |= roll.ui(ui, track, playhead, &mut harmony),
+        Some(track) => edited |= roll.ui(ui, track, playhead, &mut harmony, recording),
         None => {
             ui.weak("no track selected");
         }

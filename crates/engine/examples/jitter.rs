@@ -106,6 +106,12 @@ fn main() {
         // stay the safety class it advertises: clock and notes, nothing that
         // moves a knob on the box.
         Box::new(digi_engine::NoPLocks),
+        // No record input and nothing draining placed events: this example
+        // measures send timing, and recording adds neither a send nor a
+        // deadline. Both ends are dropped here, which is what a session with no
+        // keyboard looks like to the thread.
+        std::sync::mpsc::channel().1,
+        std::sync::mpsc::channel().0,
     );
 
     println!("Playing for {} s at {BPM} bpm on {} port(s)…", RUN_FOR.as_secs(), ports.len());

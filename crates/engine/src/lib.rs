@@ -30,6 +30,7 @@
 pub mod conditions;
 pub mod event;
 pub mod notes;
+pub mod record;
 pub mod rng;
 pub mod scheduler;
 pub mod sink;
@@ -39,6 +40,7 @@ pub mod transport;
 pub use conditions::{should_play, Cond, CondContext, CondHistory, CondKind, TrigOutcome};
 pub use event::{sort_events, MidiMsg, PortId, PortTable, ScheduledEvent};
 pub use notes::{ActiveNote, ActiveNotes};
+pub use record::{place, placed_kind, PlacedEvent, PlacedKind, Placement};
 pub use rng::{Rng, ScriptedRng, XorShift64};
 pub use scheduler::{NoPLocks, PLockMap, Scheduler, TrackCursor};
 pub use sink::MidirSink;
