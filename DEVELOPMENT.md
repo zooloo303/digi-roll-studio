@@ -279,6 +279,18 @@ you deliberately want one, and they are ordered by what they can do to it.
     stay two events.
   - `a4_param_check` — **sends channel-voice messages**, so the box makes sound
     and its parameters move. It stores nothing.
+  - `dt2_param_check` — **sends channel-voice messages** on one channel: both
+    halves of every `DT2_PARAMS` entry and of the track-level chart, so the
+    selected track's parameters move. It stores nothing and leaves each entry at
+    64. Each half is announced, starts on a keypress and **keeps sweeping until
+    a y/n comes back** — the first version alternated them on a timer and was
+    useless, because the person this is for is looking at the box and by the
+    time they look down it is already the other half. **The CC is only asked
+    about when the NRPN failed**, because a working NRPN is what the app already
+    sends. It began as `dt2_level_check`, which asked the same question about
+    one parameter and found the NRPN the DT2 ignores (`PLAN.md`, 2026-09-07);
+    the walk is that ask eleven more times, and two files holding one
+    interaction is lesson 5's shape.
   - `a4_sound_pool_probe` — **read-only.** Reads the project's 128 pool sounds
     (`0x63`) and the +Drive's bank A, and reports which sounds exist in both —
     which is how the version-5-to-version-6 conversion the preset load needs was
@@ -964,6 +976,16 @@ size for a file.
   its 31-byte header and says in its own body that the fixtures cannot fail it.
   A test whose weakness is documented inside it is worth more than one that
   quietly passes for the wrong reason.
+
+**The same lesson with paper instead of fixtures — 2026-09-07.** The DT2's VOL
+fader sent NRPN 1/100 and moved nothing on the box. Two witnesses backed that
+number: Elektron's own Appendix B and midi.guide. They are **one witness counted
+twice** — midi.guide's table is transcribed from the appendix — and a
+manufacturer's published MIDI chart is a claim about what the box was meant to
+implement, not a reading of what it does. CC 95, in the same run on the same
+channel, moved the fader. Ask of a set of agreeing witnesses what *kind* each
+one is before counting them: three captures that are all presets are one kind,
+and two documents that are one document are worse.
 
 ### 13. When a wrong guess costs hardware state, stop guessing and go and look
 

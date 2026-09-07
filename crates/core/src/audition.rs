@@ -265,9 +265,12 @@ mod tests {
     #[test]
     fn the_track_level_fader_resolves_to_each_boxs_own_number() {
         // The boxes share the CC and differ on the NRPN, which is the one shape
-        // of mistake this layer exists to make impossible.
+        // of mistake this layer exists to make impossible. The DT2's NRPN is
+        // `None` on purpose since 2026-09-07 — its appendix prints 1/100 and
+        // the box ignores it, so that fader rides CC 95 alone
+        // (`params::track_level_midi`).
         let dt2 = track_level_message("DT2", 64).expect("the DT2 has a chart");
-        assert_eq!((dt2.nrpn, dt2.cc), (Some((1, 100)), Some(95)));
+        assert_eq!((dt2.nrpn, dt2.cc), (None, Some(95)));
         let dn2 = track_level_message("DN2", 64).expect("the DN2 has a chart");
         assert_eq!((dn2.nrpn, dn2.cc), (Some((1, 110)), Some(95)));
         // Same axis as a lane's: 0–127, put in the top seven bits of the 14.

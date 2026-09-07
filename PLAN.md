@@ -4394,6 +4394,81 @@ expected. Still open: the kit's poly config lives in the unmapped 978-byte tail,
 so the app cannot yet say whether a destination kit will sound the chord or the
 root alone — the import line and the role's docs say so in words instead.
 
+### The DT2's VOL fader was sending a number the box ignores — 2026-09-07, DT2 0071
+
+**Reported as a question — "have I discovered a bug or is this user error?"** —
+with the DN2's and the A4's faders moving their box's screen and the DT2's
+moving nothing. It is a bug, and the whole of it is one entry in
+`params::track_level_midi`.
+
+`EngineLink::send_track_level` prefers the NRPN half of a chart over the CC half
+wherever a box has both, for the three reasons `plocks::CuratedPLocks` gives
+plus a fourth that this parameter is the example of: the two digis share CC 95
+and differ on the NRPN, so the NRPN is the one that cannot be sent to the wrong
+box by accident. The DT2's entry carried NRPN **1/100**, from Appendix B of its
+own manual, cross-checked against midi.guide. **The box ignores it.**
+
+**Swept on the hardware, one half at a time** —
+`app/examples/dt2_param_check.rs` (as `dt2_level_check`, which is what it was
+called for the hour it asked about one parameter), channel 2, Neil watching the
+DT2's screen:
+NRPN 1/100 moved nothing across an unbounded sweep, and CC 95 on the same
+channel in the same run moved the fader. So `track_level_midi("DT2")` now
+carries `nrpn: None` and that fader goes out as CC, falling through the CC
+branch that was already there — the same shape as `fx.overdrive` in
+`DT2_PARAMS`, which the appendix gives no NRPN either. The DN2's 1/110 and the
+A4's 1/100 are untouched: both have now been watched moving their own box.
+
+**Why the tests said nothing, and it is not lesson 4 this time.** Every level
+test asserted the app emitted NRPN 1/100 — correctly, and they were green from
+the day the feature shipped. What no test could assert is that **the box
+answers it**, and nothing ever had: the DT2 and DN2 charts were *read* out of
+two appendices on 2026-08-24, and only the A4's was ever played (the fourteen-
+entry sweep above, 2026-09-02). A green test proving the app sends what the
+manual says is worth exactly what the manual is worth.
+
+**Two witnesses agreed and were blind together** — Elektron's appendix and
+midi.guide, which is derived from it, so they are one witness counted twice.
+That is lesson 12's shape with paper instead of fixtures. Elektron's own release
+notes have form here: "Some NRPN parameters were missing" is a bug fix in DT2 OS
+1.10, so the published table and the implemented one have drifted on this box
+before.
+
+**What this left open, and it was closed the same day.** The DT2's eleven
+`DT2_PARAMS` entries came from the same appendix by the same method and had
+never been played either, so p-lock audition on a DT2 could have been silent in
+the same way wherever the CC would have worked. `dt2_level_check` was
+generalised into `app/examples/dt2_param_check.rs` to go and ask: it walks all
+eleven and then track level, whose CC 95 is the run's own control — a run where
+that moves nothing proves nothing about the eleven above it. It keeps the
+ask-until-answered shape, because the first version alternated the halves on a
+timer and was useless: the person is looking at the box, not the terminal. It
+asks about a CC **only when that entry's NRPN failed**, since a working NRPN is
+what the app already sends, and it prints the `params.rs` edits its answers earn
+rather than applying them.
+
+**All eleven answered — DT2 0071, 2026-09-07, one parameter at a time with Neil
+watching the screen.** The ten that carry an NRPN moved on it (cutoff, reso, env
+depth, pan, the three sends, the three LFO depths) and `fx.overdrive`, which the
+appendix gives no NRPN, moved on its CC. **No edit earned**, which is the result
+this was hoping for and the reason it had to be run anyway: the table was right
+before today and is right now, and those two photograph identically (§11 makes
+the same point about the A4's).
+
+Two things that are worth more than the headline:
+
+- **`filter.envDepth`'s NRPN was a guess, and the guess was right.** The DT2
+  appendix prints 1/23 for both Env. Depth and Env. Delay, which cannot both be
+  true; 1/26 was borrowed from the DN2 with a comment saying to confirm it
+  before trusting it. It moved FLTR ENV DEPTH on the box. The comment now says
+  so, and the appendix's 1/23 is the typo it looked like.
+- **Track level is the only wrong number in the whole DT2 chart.** One hole in a
+  good witness, not a bad witness — so the appendix keeps its standing, and the
+  next number read out of it still needs playing before it is believed. What the
+  run did **not** touch is the CC column of the other ten: the probe asks about
+  a CC only when the NRPN fails, and nothing in the app sends those CCs, so they
+  stay read-not-played and `DT2_PARAMS` says so.
+
 ### 10.5 What saving a kit will cost, when it comes
 
 Recorded now so v2 starts from evidence:

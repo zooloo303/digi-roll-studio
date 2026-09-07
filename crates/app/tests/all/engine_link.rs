@@ -621,11 +621,18 @@ fn nrpn_sent(log: &Log) -> Vec<(usize, u8, Vec<(u8, u8)>)> {
 }
 
 #[test]
-fn moving_a_tracks_level_sends_the_boxs_own_fader_on_that_tracks_channel() {
+fn moving_a_dt2_tracks_level_sends_cc_95_because_the_box_ignores_the_nrpn() {
     // The whole of the volume feature at the seam: a number in the session
-    // becomes NRPN 1/100 — the DT2's track level — on the port that track's
-    // notes go to, with the transport stopped, because stopped is when most
-    // mixing happens.
+    // becomes the DT2's track level on the port that track's notes go to, with
+    // the transport stopped, because stopped is when most mixing happens.
+    //
+    // **CC, not NRPN, and only on this box.** This asserted NRPN 1/100 until
+    // 2026-09-07, from the DT2's appendix, and shipped a VOL field that moved
+    // nothing on a DT2 while the DN2's and the A4's worked — the box ignores
+    // 1/100 (`app/examples/dt2_param_check`, swept both halves with Neil
+    // watching the screen), so `track_level_midi("DT2")` now carries no NRPN
+    // and this path falls through to the CC. A green test proved the app sent
+    // what the manual said; nobody had sent it to the box.
     let (log, factory) = recording();
     let mut engine = EngineLink::with_sinks(factory);
     let mut session = digi_core::two_box_session();
@@ -638,21 +645,22 @@ fn moving_a_tracks_level_sends_the_boxs_own_fader_on_that_tracks_channel() {
     std::thread::sleep(Duration::from_millis(50));
 
     let log = log.lock().expect("sink log");
+    assert!(nrpn_sent(&log).is_empty(), "no NRPN to a DT2 fader");
     assert_eq!(
-        nrpn_sent(&log),
+        log.sent,
         // Track 3 sits on channel 3 by `Track::new`'s 1:1 map, which is channel
-        // byte 2 on the wire. 99/98 = NRPN MSB 1, LSB 100; then 6/38 = 64 in the
-        // top seven bits of the 14, which is where a 0–127 axis puts it.
-        [(0, 2, vec![(99, 1), (98, 100), (6, 64), (38, 0)])],
-        "one NRPN, on the DT2's own number, on the track's channel"
+        // byte 2 on the wire: 0xb2, CC 95, value 64.
+        [(PortId(0), vec![0xb2, 95, 64])],
+        "one CC 95, on the track's channel"
     );
 }
 
 #[test]
 fn a_dn2_gets_its_own_level_number_not_the_dt2s() {
-    // 95 is the CC on both boxes and the NRPN is not: 1/100 on a DT2, 1/110 on
-    // a DN2. Sending one box's number to the other is the mistake this whole
-    // parameter layer is shaped to prevent.
+    // 95 is the CC on both boxes and the NRPN is not: 1/110 on a DN2, and on a
+    // DT2 nothing at all — its appendix's 1/100 is ignored by the box, so that
+    // fader goes out as CC. Sending one box's number to the other is the
+    // mistake this whole parameter layer is shaped to prevent.
     let (log, factory) = recording();
     let mut engine = EngineLink::with_sinks(factory);
     let mut session = digi_core::two_box_session();
@@ -716,9 +724,12 @@ fn a_level_follows_the_track_to_its_own_port_not_its_boxs() {
     std::thread::sleep(Duration::from_millis(50));
 
     let log = log.lock().expect("sink log");
-    let sent = nrpn_sent(&log);
-    assert_eq!(sent.len(), 1);
-    assert_eq!(sent[0].0, PortId(1).0, "the track's own port, not the box's");
+    // A DT2 fader is CC 95 (the box ignores the appendix's NRPN — see
+    // `moving_a_dt2_tracks_level_sends_cc_95_because_the_box_ignores_the_nrpn`),
+    // so what this watches is the port, which is the same either way.
+    assert_eq!(log.sent.len(), 1);
+    assert_eq!(log.sent[0].0, PortId(1), "the track's own port, not the box's");
+    assert_eq!(log.sent[0].1, vec![0xb3, 95, 10], "channel 4, CC 95, the level set above");
 }
 
 #[test]
@@ -912,7 +923,7 @@ fn leaving_song_mode_stops_the_walk_without_stopping_the_music() {
     engine.stop();
 }
 
-// --- thru and takes, MIDI_RECORD_DESIGN.md §4.2 ------------------------------
+// --- thru and takes, PLAN.md §12.4.2 ------------------------------
 //
 // Everything below drives a real engine thread against the recording sink, with
 // a keyboard that is a `Sender<LiveEvent>` this file pushes down. No hardware,

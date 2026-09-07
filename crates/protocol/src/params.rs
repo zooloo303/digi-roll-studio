@@ -201,6 +201,20 @@ impl Param {
 /// matching midi.guide's DT2 table value for value). Public, checkable, and
 /// confirmable on the box in seconds.
 ///
+/// **Confirmed on the box, 2026-09-07** (`app/examples/dt2_param_check`, DT2
+/// 0071, one parameter at a time with Neil watching the screen), after the
+/// track-level entry turned out to be ignored by the box and put the whole
+/// appendix in question. Every entry here answered: the ten with an NRPN moved
+/// on their NRPN, and `fx.overdrive`, which the appendix gives no NRPN, moved
+/// on its CC. The reading was right and only [`track_level_midi`]'s DT2 entry
+/// was not — which is worth knowing precisely because it means the appendix is
+/// a good witness with one hole in it, rather than a bad one.
+///
+/// **What that run did not touch: the CC column of the other ten.** The probe
+/// asks about a CC only when the NRPN fails, because the audition path sends
+/// the NRPN wherever there is one — so those ten CCs remain read-not-played,
+/// and nothing in the app sends them today.
+///
 /// The `plock` half is **measured on hardware** — digi-roll's Phase 0
 /// experiments of 2026-08-04, run on a DT2 at OS 1.15B (build 0070), one knob
 /// locked per capture and the paramId read back off the dump. The old NRPN-LSB
@@ -228,8 +242,10 @@ pub static DT2_PARAMS: &[Param] = &[
     },
     // The DT2 appendix prints NRPN 1/23 for both Env. Depth and Env. Delay,
     // which cannot both be right; the DN2 lists depth at 1/26 and delay at 1/23,
-    // so 1/26 is the likelier value here too. The CC (77) is unambiguous, and
-    // this is one to confirm on the box before trusting the NRPN.
+    // so 1/26 was written here as the likelier value with "confirm this on the
+    // box before trusting it" against it. **Confirmed 2026-09-07**: 1/26 moved
+    // FLTR ENV DEPTH on the box's own screen, so the borrowed number was the
+    // right one and the appendix's 1/23 is the typo it looked like.
     Param {
         name: "filter.envDepth", label: "FLTR ENV DEPTH", short: "ENV D", bipolar: true,
         midi: MidiMap { cc: Some(77), cc_lsb: None, nrpn: Some((1, 26)) },
@@ -751,15 +767,36 @@ pub fn a4_synth_plock_full_label(param_id: u8) -> Option<String> {
 /// The numbers are from the boxes' own charts (DT2 Appendix B, DN2 Appendix C,
 /// cross-checked against midi.guide, which is where the tables above came from
 /// too). **The two boxes agree on the CC and disagree on the NRPN**, which is
-/// exactly the trap this file is built around: 95 on both, but NRPN 1/100 on a
-/// DT2 and 1/110 on a DN2.
+/// exactly the trap this file is built around: 95 on both, but NRPN 1/110 on a
+/// DN2 and — on paper — 1/100 on a DT2.
+///
+/// **The DT2's NRPN is `None` because the box does not answer it.** Both the
+/// manual and midi.guide print 1/100 for DT2 track level; swept on the hardware
+/// on 2026-09-07 (`app/examples/dt2_param_check`, one half at a time with Neil
+/// watching the screen) it moved nothing, and CC 95 on the same channel in the
+/// same run moved the fader. So the entry records what the box does rather than
+/// what its appendix claims, and `send_track_level`'s NRPN-first preference
+/// falls through to the CC — the same shape as `fx.overdrive` in
+/// [`DT2_PARAMS`], which has no NRPN either. Documented-but-unimplemented is a
+/// thing this box has form for: Elektron's own release notes fix "some NRPN
+/// parameters were missing" in OS 1.10.
+///
+/// The DN2's 1/110 and the A4's 1/100 stay: both were watched moving their
+/// box's fader (the A4 in the 2026-09-02 sweep, the DN2 on 2026-09-07).
+///
+/// **It is the only wrong number in the DT2's chart.** The suspicion this
+/// raised about the other eleven entries was checked the same day and came back
+/// clean — see [`DT2_PARAMS`]. So this is one hole in a good appendix, not a
+/// reason to distrust it, and the next entry read out of a manual still needs
+/// playing before it is believed.
 ///
 /// **CC 7 is not this, on either box.** Channel Volume is absent from both
 /// appendices — an audio track does not answer it — so a fader sending 7 would
 /// move nothing at all. Worth writing down because 7 is the obvious guess.
 pub fn track_level_midi(device_kind: &str) -> Option<MidiMap> {
     match device_kind {
-        "DT2" => Some(MidiMap { cc: Some(95), cc_lsb: None, nrpn: Some((1, 100)) }),
+        // No NRPN: 1/100 is in the appendix and the box ignores it — see above.
+        "DT2" => Some(MidiMap { cc: Some(95), cc_lsb: None, nrpn: None }),
         "DN2" => Some(MidiMap { cc: Some(95), cc_lsb: None, nrpn: Some((1, 110)) }),
         // Not in the OS 1.0 appendix — TRACK CC/NRPN arrived in a later OS and
         // is documented in the Analog Keys OS 1.51C manual's Appendix D, which
@@ -1233,13 +1270,17 @@ lfo3.depth|LFO3 DEPTH|LFO3|true|||[1,72]|31|256|0|127|1|true|true"
     }
 
     #[test]
-    fn track_level_is_cc_95_on_both_boxes_and_a_different_nrpn_on_each() {
+    fn track_level_is_cc_95_on_both_boxes_and_nrpn_on_the_dn2_alone() {
         // The trap this file exists for, in one parameter: shared CC, different
         // NRPN. A single number copied from one appendix to the other would ride
         // the wrong thing on a DN2.
         assert_eq!(track_level_midi("DT2").unwrap().cc, Some(95));
         assert_eq!(track_level_midi("DN2").unwrap().cc, Some(95));
-        assert_eq!(track_level_midi("DT2").unwrap().nrpn, Some((1, 100)));
+        // **The DT2 has no NRPN here, and that is a hardware finding, not a
+        // gap in the reading.** Its appendix prints 1/100; the box ignored it
+        // on 2026-09-07 and answered CC 95 in the same run. Restoring the
+        // appendix's number here makes the VOL field dead on a DT2 again.
+        assert_eq!(track_level_midi("DT2").unwrap().nrpn, None);
         assert_eq!(track_level_midi("DN2").unwrap().nrpn, Some((1, 110)));
         // A box with no chart gets nothing, not a guess — same rule as
         // `param_table_for`'s empty table.
