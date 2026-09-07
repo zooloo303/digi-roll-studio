@@ -1,4 +1,4 @@
-//! What a live take does to a track — MIDI_RECORD_DESIGN.md §4.3.
+//! What a live take does to a track — PLAN.md §12.4.3.
 //!
 //! Every rule the design lists gets a test here, and every one of them runs
 //! without a thread, a port, a clock or an `Instant`. That is the whole reason

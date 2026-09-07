@@ -7,7 +7,7 @@
 // something to a DT2 or a DN2.
 //
 // Two parsers now live here, and the difference between them is the whole of
-// MIDI_IMPORT_DESIGN.md §0: [`score`] *analyses* a file into parts, tempo,
+// PLAN.md §11.0: [`score`] *analyses* a file into parts, tempo,
 // meter and markers without deciding anything, while [`midi_file_to_notes`] is
 // the old single-track import, kept as a thin wrapper over `score` so every
 // byte-level behaviour it had stays exactly as it was.
@@ -196,7 +196,7 @@ pub enum MidiFileError {
     Truncated,
     /// A type-2 file: independent sequences sharing no timeline. Importing one
     /// means picking a timeline at random, so it is refused rather than
-    /// guessed — MIDI_IMPORT_DESIGN.md §3.2.
+    /// guessed — PLAN.md §11.3.2.
     IndependentSequences,
 }
 
@@ -298,7 +298,7 @@ impl<'a> Reader<'a> {
 /// file's.
 ///
 /// Now a thin wrapper over [`score::score_file`] — the design doc's Stage 1,
-/// MIDI_IMPORT_DESIGN.md §3: the score does the parsing, and this fits the first
+/// PLAN.md §11.3: the score does the parsing, and this fits the first
 /// note-bearing MTrk's notes (all channels merged, as the pre-split code read
 /// them) as one segment of `max_steps`. **The fitting below is byte-identical
 /// to the standalone implementation it replaced** — same sort, same quantise,

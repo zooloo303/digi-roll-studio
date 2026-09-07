@@ -18,8 +18,8 @@ a box accepting a write and quietly substituting something else.
 
 ```sh
 cargo build --release
-cargo test -p digi_protocol --test all   # the dev loop: one crate, 345 tests, ~2s
-cargo test --workspace                   # before a commit; 1,855 tests, ~7s, no hardware
+cargo test -p digi_protocol --test all   # the dev loop: one crate, 348 tests, ~2s
+cargo test --workspace                   # before a commit; 2,127 tests, ~10s, no hardware
 cargo clippy --workspace --all-targets   # clean as of 2026-08-23; keep it that way
 cargo run -p digi_roll_studio
 ```
@@ -327,6 +327,13 @@ you deliberately want one, and they are ordered by what they can do to it.
   API requests — but it is the first thing here that talks to a box without being
   pressed, so it is worth knowing about before wondering who is holding a socket.
   The checkbox is at the bottom of BOXES.
+
+  **Since 2026-09-05 the app also opens the RECORD INPUT picked in Setup**, and
+  everything played on it is echoed to the selected track's port and channel —
+  armed or not, playing or stopped. That is channel-voice traffic and never
+  SysEx, and a take writes only the session (`PLAN.md` §12); but it means a
+  keyboard on the desk makes a box sound the moment a track is selected, and
+  that changing track while holding a chord is what releases it on the old one.
 
 **This list has to be complete or it is worse than absent**, and it has now been
 incomplete twice — eight A4 examples in one pass, twelve more in the next,

@@ -1,6 +1,6 @@
 // One input port held open for the notes somebody is playing.
 //
-// MIDI_RECORD_DESIGN.md §4.1. This is the whole of stage 1: a connection, a
+// PLAN.md §12.4.1. This is the whole of stage 1: a connection, a
 // parser, and a channel. It makes no decision about *when* a note happened
 // beyond stamping the moment it arrived, and none at all about where it lands —
 // that is the engine's job (§4.2) and the take's (§4.3).
@@ -26,11 +26,12 @@
 //
 // # Ignore flags, and a correction to the design
 //
-// MIDI_RECORD_DESIGN.md §3 says midir's *default* filters SysEx, time code and
+// The recording design as first written said midir's *default* filters SysEx, time code and
 // active sensing, and that `SysExInbox` sets the opposite. That is backwards:
 // every one of midir 0.11's seven backends initialises `ignore_flags` to
 // `Ignore::None`, so the default filters **nothing** and `SysExInbox`'s explicit
-// `Ignore::None` is a no-op kept for clarity. The filtering this file wants is
+// `Ignore::None` is a no-op kept for clarity (PLAN.md §12.3 now carries the
+// correction). The filtering this file wants is
 // therefore asked for, not inherited — see [`LiveInput::open`].
 
 use std::sync::mpsc::Sender;

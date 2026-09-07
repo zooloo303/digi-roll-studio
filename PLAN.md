@@ -32,7 +32,10 @@ heading that does not say so, **the entire Analog Four protocol log**: pattern
 layout, trig bytes, p-lock pool, parameter ids, scalings, kit and patch names.
 It ended up there because that is where the +Drive work already was. The title
 now says both, but the *number* cannot move — source comments cite `PLAN.md
-§10`, `§10.3`, `§10.5` and `§10.6 step 3`.
+§10`, `§10.3`, `§10.5` and `§10.6 step 3`. **§11 and §12 are the two
+2026-09-05 features' design documents folded in** — MIDI file import and live
+recording — each keeping its original sub-numbering because the source cites
+`§11.4.6` and `§12.4.2` the way it cites `§10.6`.
 
 ---
 
@@ -50,9 +53,9 @@ Audited 2026-08-13 against the JS original, line by line, and kept current since
 | `core/*` | The §2 session model. `Session → Device → Pattern → Track`, with the device table driving track count. |
 
 Thirty-four `.syx` captures live in `crates/protocol/tests/fixtures/` (1.8 MB),
-plus the 24 `.bin` preset files under `fixtures/drive/`. Ten of the `.syx` are
-the original DT2/DN2 set — condition and p-lock captures, fresh/swing patterns,
-the per-note chord — and **twenty-one are the Analog Four's**, one per question
+plus the 32 `.bin` preset files under `fixtures/drive/`. Thirteen of the `.syx` are
+the DT2/DN2 set — condition and p-lock captures, fresh/swing patterns, a tagged
+sound dump, the per-note chord — and **twenty-one are the Analog Four's**, one per question
 its lanes and p-lock pool were mapped one at a time by (§10).
 
 Every expected value in the *digi* suites was read out of the captures **by the
@@ -110,7 +113,7 @@ screen reading beside almost every offset.
   instances sharing the one shelf — both argued in the module header.
 - ~~**MIDI import reads only the first note-bearing track**, and cannot offset it.
   The reporting half is fixed; "first track wins" needs a track chooser.~~
-  **Closed 2026-09-05** (MIDI_IMPORT_DESIGN.md Phase B): the Edit panel scores
+  **Closed 2026-09-05** (§11.8, phase B): the Edit panel scores
   the file first; a single part that fits still imports in one click, and
   anything else opens a small chooser — which part, from which bar, for how
   many bars, with a 3/2-scale suggestion when the part reads as triplets.
@@ -118,12 +121,13 @@ screen reading beside almost every offset.
   from nothing, because pasted notes land at the playhead and the playhead cannot
   be moved. The playhead is the prerequisite, and its own open question is what a
   drag means under polymeter.
-- **`generator::default_parts()` ships bass, chords and lead and no drum voice**,
+- ~~**`generator::default_parts()` ships bass, chords and lead and no drum voice**,
   so hearing drums at all means adding every voice by hand each time. Raised by
   Neil on 2026-08-19, the day Phase 7's exit criterion was met, and parked rather
-  than guessed at: **how many voices, which tracks and which box are all open**.
-  Ask before picking it up — the answer decides whether the default set assumes a
-  two-box desk.
+  than guessed at: **how many voices, which tracks and which box are all open**.~~
+  **Closed 2026-08-20** — the default set is six parts, bass, chords and lead
+  on tracks 1–3 and kick, snare and closed hat on 4–6 — and this bullet
+  outlived it by seventeen days.
 - **"Read the kit the box has loaded *right now*" is a wire question, not a UI
   one.** The Setup panel's picker asks for a *stored* slot, which is the honest
   thing this protocol supports. ~~There is no working-buffer dump request
@@ -156,7 +160,7 @@ screen reading beside almost every offset.
   them and drops them; an export writes none. A pattern that leans on them comes
   back different, and the import report is the only warning.
 - ~~**Live MIDI recording is built and has never met a keyboard.**~~ Added
-  2026-09-05 (`MIDI_RECORD_DESIGN.md` phases A–D) and **played on hardware the
+  2026-09-05 (§12, phases A–D) and **played on hardware the
   same day, onto a DT2 and an A4 — Neil's words, "works perfectly"**. A record
   input chosen in Setup, thru to the selected track's box, REC and QUANT on the
   transport bar, `R` on the keyboard, and a take that lands notes on the armed
@@ -166,7 +170,7 @@ screen reading beside almost every offset.
   E**, which is left open here rather than folded into "works": a recorded
   pattern written to a DT2 with `safe_write` and fetched back byte-exact, a
   recorded triad confirmed on an A4's own screen as root plus NO2–NO4, and phase
-  B's spy-driver measurement of the added thru latency, which §4.2 wants a real
+  B's spy-driver measurement of the added thru latency, which §12.4.2 wants a real
   number for instead of the 5 ms `IDLE_POLL` bound. None of the three is
   load-bearing for playing into the app; all three are the difference between a
   feature that works and one that is known to.
@@ -174,10 +178,11 @@ screen reading beside almost every offset.
 **Honest summary:** a verified protocol foundation; a sequencer that has driven
 two real boxes in sync; read, write and restore all proven on hardware from the
 app's own buttons on the digis, and a whole-pattern round trip proven on the A4;
-a session that saves and reopens; and installers for macOS and Windows that
-people have installed and run. What is missing is surface, not seams — and the
-refusals, which are the half of every path this project keeps having to be
-reminded is unverified.
+a session that saves and reopens and keeps a crash copy; a keyboard recorded
+into it and a MIDI file imported as a song; and downloads for macOS, Windows
+and Linux that people have installed and run. What is missing is surface, not
+seams — and the refusals, which are the half of every path this project keeps
+having to be reminded is unverified.
 
 **Banks are cut rather than outstanding**, decided 2026-08-18.
 
@@ -506,8 +511,8 @@ one straight to the selected track's port and channel — outside the queue, for
 and, while a take is running, converts the arrival into *this track, this step,
 this micro, this pass* against that track's own `origin_at` and SCALE. That
 placement goes back to the UI on a second `mpsc`, which is one heap node per
-note and the one place this thread knowingly allocates; `MIDI_RECORD_DESIGN.md`
-§4.2 names the fixed-capacity ring that replaces it if `JitterStats` ever moves.
+note and the one place this thread knowingly allocates; §12.4.2
+names the fixed-capacity ring that replaces it if `JitterStats` ever moves.
 The rules about what a take *does* with a placed event are on the UI thread,
 because that is the thread that owns the model.
 
@@ -706,7 +711,7 @@ The elements:
   "from the top" and "from where the cursors are" are a distinction one key
   cannot carry.
 
-  **REC and QUANT** (2026-09-05, `MIDI_RECORD_DESIGN.md` §5.1) sit at either end
+  **REC and QUANT** (2026-09-05, §12.5.1) sit at either end
   of the bar's middle: REC after CONTINUE as an outline that fills amber when
   armed — the bar's rule is that *filled cyan means a thing you can press*, and
   armed-REC is a state — and QUANT beside FILL, which is the same kind of thing
@@ -870,6 +875,25 @@ counts. It is now asserted before a port is opened. The other three share a
 shape too — each was an assumption about the *box* that the probe encoded as if
 it were an assumption about the *format*, and the box is the thing the probe
 exists to ask.
+
+**v0.3.x to v0.5.2 (2026-09-02 to 2026-09-06)**, written down after the fact,
+which is the habit v0.1.3 corrected and this stretch fell back into:
+
+- **v0.3.2–v0.3.6** — Linux on CI as a tarball and an Arch package (lessons 20
+  and 21), chords carried to the A4 as ARP NO2–NO4 with a Chord lead role, the
+  transport on the spacebar, a console along the window's floor, octave and
+  semitone transposes, Rollers as a genre, and the crash copy.
+- **v0.4.0 (2026-09-04) is MVP1** — song mode run on hardware with no issues
+  and the A4 preset paging list closed, which emptied the "left before MVP1"
+  list.
+- **v0.5.0 (2026-09-05) is live recording**, §12, and the same day brought
+  **MIDI file import** as analyse-fit-map, §11. Both were designed in the
+  morning and built in the afternoon; recording was played on a DT2 and an A4
+  before the day ended and the import has not met a desk.
+- **v0.5.1** — A4 preset loads off any pattern, after A02 loads timed out on
+  a working-kit index read as zero.
+- **v0.5.2 (2026-09-06) is the ghost layer**, §5 — parked on 2026-08-18 over
+  polymeter and un-parked when a user asked for it.
 
 **The decisions worth carrying forward**, each of which changed the shape of the
 thing rather than a line of it:
@@ -1041,7 +1065,7 @@ re-run on them.
   track's box, and takes recorded onto a DT2 track and an A4 track. Neil's words
   were "works perfectly", and this entry is deliberately no wider than that
   sentence: what was **driven** is playing and recording, and the three things
-  `MIDI_RECORD_DESIGN.md` phase E also asks for were not — the byte-exact
+  §12.7 phase E also asks for were not — the byte-exact
   write-back of a recorded pattern, the A4's own screen showing a recorded triad
   as root plus NO2–NO4, and the spy-driver latency number. It closes the part of
   this feature that no test could ever have closed, which is that the timing is
@@ -1131,7 +1155,11 @@ the failing variable regardless of size, and the checksum is crc32 seeded with
 
 - **A DT2 on Windows.** The WinMM path has met a DN2 (above) and no DT2, so the
   larger of the two payloads has only ever gone out over CoreMIDI. See §8.
-- **Linux**, beyond the observation that the chunking is correct for ALSA.
+- ~~**Linux**, beyond the observation that the chunking is correct for ALSA.~~
+  **Half closed 2026-09-02**: the Arch package was installed and run, and a
+  DN2 was auto-connected over ALSA and named its OS build. **No write has been
+  run from a Linux build**, and the portable tarball has been installed but
+  not yet run against a box.
 - **`copy_track`** — the **box-to-box** copy has no caller, so nothing can drive
   it. The in-app whole-track copy is a different function (`core::track_clip`,
   bound to Shift+C/Shift+V) and does work; §1 has the distinction.
@@ -4603,3 +4631,772 @@ stored slot, not what the box is playing — so writing a +Drive preset into it
 would make a saved session assert a fetch that never happened. A track that
 knows what was auditioned onto it wants a field of its own, and that is a
 session-format change with nothing yet riding on it.
+
+---
+
+## 11. MIDI file import — analyse, fit, then map
+
+Designed and agreed with Neil 2026-09-05; phases A–D built the same day, in
+one commit. This section is the design document folded in (it lived as
+`MIDI_IMPORT_DESIGN.md` until 2026-09-06), trimmed of the codebase tour an
+implementer no longer needs and extended with what was actually built. Its
+sub-numbering follows the original's, because source comments cite it that
+way — `§11.4.6` here is what those files called `§4.6`.
+
+### 11.0 The problem in one paragraph
+
+A Standard MIDI File is a linear timeline of (track, channel) parts, of any
+length, in any meter. The Elektron world is a grid: a slot holds at most 128
+steps (64 on the A4), a step holds one trig, a scene holds one slot per box,
+and a song holds at most 99 rows. So an import is not a codec. It is three
+jobs, which the old `midi_file_to_notes` collapsed into one:
+
+1. **Analyse** the file into parts and facts about them. Pure, no decisions.
+2. **Fit** the timeline onto the grid: slice into pattern-sized segments,
+   dedupe repeats, allocate slots, produce scenes and song rows. Pure; every
+   constraint lives here.
+3. **Map** parts onto destinations. The user decides; this is the only stage
+   with a dialog.
+
+Then one commit, one history step, session only. **No hardware is touched by
+an import.** Getting the result onto boxes stays with the existing sync path
+and the open item about syncing a song's slots to a box.
+
+### 11.1 Vocabulary
+
+| word | meaning |
+|---|---|
+| **part** | one (MTrk index, MIDI channel) pair with at least one note. The unit of mapping. |
+| **score** | the parsed file: parts, tempo map, time-signature map, markers. |
+| **segment** | a bar-aligned slice of the timeline that becomes one pattern per destination box, one scene, one song row. |
+| **plan** | the fully resolved result of fitting a score under a mapping: patterns, scenes, rows, report. Pure data, applied in one step. |
+| **destination** | `(DeviceId, track index)` on the desk. |
+
+### 11.2 Facts the design was bound by
+
+Most of the original's list described code that can be read; these are the
+ones that are rules rather than descriptions:
+
+- `edit_ops::BAR_STEPS = 16` and `MAX_STEPS = 128` are 4/4 assumptions. The
+  import computes steps per bar from the file's time signature (§11.3.3) and
+  treats `MAX_STEPS` as a global ceiling only; the real ceiling is
+  `DeviceModel::max_steps` per destination box.
+- `DeviceModel` is a data table. New per-box facts go there as fields
+  (§11.6), not as `match` arms — "track count comes from `DeviceModel`,
+  never from a constant".
+- `ui::generate::apply_plan` is the precedent for "build a pure plan, then
+  write it onto the session as ordinary state that history covers as one
+  step". The import follows it exactly.
+- The export writes 96 TPQN, 24 ticks per 16th. Tests build fixtures by
+  exporting and by hand-assembling type-0 bytes; no hardware, ever.
+
+### 11.3 Stage 1 — analyse: `core::midifile::score`
+
+`midi_file_to_notes` **stays, as a thin wrapper**: score the file, take the
+first part, fit it as a single segment of `max_steps`, return the same
+`Imported`. Every pre-existing test stayed green unchanged, and one asserts
+the wrapper is byte-identical to the old implementation on every old input.
+
+**Types.** `Score { division, tempo, meters, markers, parts, end_tick }`;
+`Part { mtrk, channel, name, program, notes: Vec<RawNote>, stats, cc,
+sustain_events, pitch_bend_events }`; `PartStats` carries note count, pitch
+range, first and last bar, `max_simultaneous`, `off_grid_ratio`,
+`looks_like_drums` (channel 10 or a GM percussion program) and
+`looks_like_triplets` (more than half the notes off-grid and sitting near
+thirds of a step).
+
+**Parsing rules (§11.3.2).**
+
+- Type 0 and type 1 accepted. **Type 2 is refused** — its tracks share no
+  timeline. SMPTE division refused as before. Zero notes is `Ok(Score)` with
+  empty `parts`; the callers word the message.
+- Split by (MTrk, channel). Type-0 files carry a whole arrangement in one
+  MTrk split by channel; DAWs export type-1 tracks holding several channels.
+  Splitting on both is the only honest unit. Merging is a mapping choice,
+  never a parse default.
+- Note pairing keeps the old `open`-list semantics: in-place replace on a
+  repeated note-on, never-released notes get one 16th. Velocity 0 is a
+  note-off.
+- A track-name meta belongs to the MTrk; every part split out of it inherits
+  the name, with " ch N" appended when the MTrk yields more than one part.
+- Tempo: every change recorded, **only the first ever offered** to the
+  session (§11.5.5); the rest are counted as `tempo_changes_dropped`. The
+  engine has one clock (§2's ROW TEMPO argument).
+- Meter: every change with its tick; default 4/4 at tick 0. Markers and cue
+  points both become markers; empty text dropped.
+
+**Grid arithmetic (§11.3.3), shared by stages 1 and 2.** `per16 = division / 4`.
+`steps_per_bar(meter) = num × 16 / den` — 3/4 → 12, 6/8 → 12, 7/8 → 14,
+5/4 → 20; for den = 32 it can be fractional, rounded **up** with
+`report.meter_approximated` set. Bar boundaries come from one function,
+`bar_starts(score)`, used everywhere; a meter change always starts a new
+bar. Tick → step: `f = (tick − origin) / per16`, `step = js_round(f)` (the
+export oracle's rounding, kept), `micro = clamp_micro(f − step)`. Length is
+`js_round((off − on) / per16).max(1)` then `snap_len_fine` against the room
+left in the track.
+
+**Tests (§11.3.4)** are hand-built byte fixtures in the module: two-channel
+type-0 → two parts; multi-channel type-1 → "… ch 1"/"… ch 10"; 3/4 and 6/8 →
+12 steps per bar; a mid-file meter change; markers; type 2 refused;
+truncation refused; the tempo list; drums on channel 10; `max_simultaneous`
+on a chord; `off_grid_ratio` on a swung export; and the wrapper parity above.
+
+### 11.4 Stage 2 — fit: `core::midi_import`
+
+Pure functions from `(Score, Mapping, Options, &Session)` to `ImportPlan`.
+Nothing here writes to a session; `apply_import` (§11.5.6) does.
+
+**Inputs (§11.4.1).** `Options { pattern_bars, trim_leading_silence,
+start_slot: BTreeMap<DeviceId, PatternRef>, overwrite_occupied,
+label_rows_from_markers }`. `Mapping` is one `PartMapping` per part: `Skip`,
+`Track { device, track, overflow, scale }`, or `Drums { device, tracks:
+Vec<(pitch, track)> }`. `Overflow` is `KeepLowest | KeepHighest | SplitTo {
+device, track }`.
+
+**Segments (§11.4.2).**
+
+- `origin_tick` is tick 0, or with `trim_leading_silence` the start of the
+  bar holding the first note of any **mapped** part.
+- Default `pattern_bars` (`default_pattern_bars`): the largest of 8, 4, 2, 1
+  such that `pattern_bars × max(steps_per_bar over the meters in use) ≤
+  min(max_steps over destination boxes)`. A DT2 alone in 4/4 gets 8 bars; a
+  desk with an A4 gets 4; 3/4 on a digi still gets 8 (96 steps). The dialog
+  shows the value and lets the user lower it.
+- Cut a segment every `pattern_bars` bars **and** at every meter change; stop
+  after the bar holding `end_tick`.
+- Per segment, per destination box: a fresh blank `Pattern`, named
+  `"{file stem} {n}"`, swing 50, and **every track in it — mapped or not —
+  gets `length_steps = segment_steps`**. `Session::scene_boundary_steps` takes
+  the longest track across the scene, so with every track at the segment
+  length one segment is exactly one scene cycle.
+- A note whose `off` crosses the segment end is clamped at it and counted
+  (`clamped_at_boundary`). Notes are never carried into the next segment.
+- The last segment's `length_steps` is rounded up to whole bars of actual
+  content, at least one bar, not padded to `pattern_bars` — a 90-bar song
+  does not end with six bars of silence.
+
+**Dedupe and repeats (§11.4.3) — the part that makes this usable.** A 90-bar
+song is 12 eight-bar segments naively, and most are identical. Each
+`(segment, box)` gets a **canonical form** — every track's notes sorted by
+`(step, pitch)`, each as `(step, micro × 384, pitch, length byte,
+velocity)`, plus `length_steps` per track, ids excluded (the same trick as
+`ui::generate::music_of`) — compared by equality in a `BTreeMap`. Identical
+forms share one slot, allocated in first-appearance order. A scene is the
+tuple of slots across boxes; identical **consecutive** scenes collapse into
+one row with `repeats` incremented, identical non-consecutive scenes reuse the
+scene rather than creating a second one pointing at the same slots. Segments
+empty for every box still occupy a row (silence is music) and share one blank
+pattern per box. Pinned: an 8-bar loop repeated four times is one pattern per
+box, one scene, one row, `repeats = 4`; ABAB is two patterns, two scenes,
+four rows.
+
+**Slot allocation (§11.4.4).** A slot is **blank** when `pattern.source` is
+`None` and every track has no notes and no p-lock lanes —
+`Pattern::is_blank()`. Fill forward from `start_slot` taking blank slots
+only; with `overwrite_occupied` take every slot in order and list what each
+replaces (name, note count) in `report.replacing`. Running out of slots, rows
+(`song::MAX_ROWS`) or drum tracks **refuses the whole plan before anything is
+placed** — `PlanError::{NoFreeSlots, TooManyRows, NotEnoughTracks}`, each
+carrying the numbers. Partial imports are not offered.
+
+**Drums fan out (§11.4.5).** A GM drum part is one channel with many pitches;
+on a DT2 each drum is its own track. `PartMapping::Drums` places every hit of
+pitch *p* on the track mapped for *p*. The default fan-out ranks pitches by
+hit count, takes as many as the box has free tracks, and names each
+destination from the GM map (`gm_drum_name`: 36 Kick, 38 Snare, 42 Closed
+Hat, 46 Open Hat, 39 Clap, toms, crashes, rides, cowbell, tambourine, shaker,
+clave; anything else "Perc {p}"); unranked pitches are dropped and counted.
+On a **sample track** the pitch would transpose the sample, so every placed
+note takes `DRUM_TRIGGER_PITCH` (60), **relocated from the generator into
+`core::midi_import`** so both crates read one number; on a DN2 or A4 the
+pitch is kept because their drum sounds are pitched by design. Two hits of
+one pitch on one step keep the later one, counted as `same_step_duplicates`.
+
+**Polyphony (§11.4.6).** One step holds one trig, and a trig **stores** at
+most four notes on every box this app knows — `spec.trig.max_notes` is 4 for
+both digis and the A4 carries a root plus NO2–NO4 (§10, "Chords reach the
+A4"). The cap is read from `DeviceModel::notes_per_trig` (§11.6), never as a
+literal. What a DT2 sample track *sounds* when handed a four-note trig is a
+hardware question the import does not need answered: the storage cap is the
+constraint. Over the cap, `KeepLowest`/`KeepHighest` drop and count
+(`notes_over_polyphony`); `SplitTo` moves the overflow onto a second track in
+the same pattern, itself subject to the cap. `prob`/`fill`/`cond` stay
+`None`, so notes sharing a step already agree under `adopt_step_trig`.
+
+**Timing (§11.4.7).** Off-grid notes become micro-timing; nothing is
+quantised flat. A part that `looks_like_triplets` gets `ThreeHalves`
+**suggested** — at which a 16th-triplet is exactly one step and the fit uses
+`per16 × 2/3` — never applied silently, because the same ratio can be a loose
+human take. A 3/2 track wraps at `segment_steps × 1.5` steps to cover the
+same time, so `max_steps` is checked against that and the suggestion is
+withheld if it does not fit. Velocity through `clamp_velocity`, length
+through `snap_len_fine`.
+
+**Output (§11.4.8).** `ImportPlan { patterns: Vec<(DeviceId, PatternRef,
+Pattern)>, scenes, rows: Vec<(scene, label, repeats)>, tempo_bpm,
+report }`. `ImportReport` counts parts mapped and skipped, notes placed,
+segments, unique patterns per box, rows, and every kind of drop by name —
+boundary clamps, polyphony, drum pitches, same-step duplicates, tempo
+changes, pitch bend, CC (all of it, until §11.7 lands) — plus
+`meter_approximated` and `replacing`. Row labels: the marker at the
+segment's start tick, else the previous row's label, else `"Row {n}"`;
+collapsed repeats keep the first label.
+
+### 11.5 Stage 3 — map, dialog, apply
+
+**Two gestures, one engine (§11.5.1).**
+
+- **Into this track** — the Edit panel's IMPORT. Score the file; if it has
+  exactly one part and fits `max_steps`, behave exactly as before, one click
+  and no dialog. Otherwise a small chooser: which part (name, channel, notes,
+  range), from which bar, for how many bars (capped to `max_steps /
+  steps_per_bar`), with the 3/2 suggestion when triplets are detected. One
+  part, one destination, one segment. This is the phase that closed §1's
+  first-track item, and it was prompted by a real fault: a ten-track
+  arrangement reported `no notes found` for a file holding ~690 notes,
+  because its first note-bearing track was a bass that did not enter until
+  step 139. That file now opens the chooser with its window on the bar the
+  bass enters.
+- **As a song** — new, `IMPORT MIDI FILE…` in the SONG panel and the SCENES
+  popup, sharing one dialog (`ui::midi_import`).
+
+Both keep the Edit panel's replace semantics where they land on a track:
+notes, `length_steps`, clear `plocks`, clear `source`, clear the roll's
+selection.
+
+**The song dialog (§11.5.2)** follows the v2 panel rules: file name, tempo
+with a "set session tempo" checkbox, meters, bars, marker count on top; one
+row per part (name, channel, notes, range, poly, off-grid % with a "3/2?"
+chip, CC count greyed until §11.7, destination, policy) in the middle, where
+the destination is `Skip`, every `(box, track)` as the TRACKS grid labels
+them, or `Drums → {box}` with an inline pitch → track sub-table; an options
+row (pattern bars, start slot per box, trim leading silence, overwrite
+occupied); and a live summary recomputed from `fit` on every change, because
+`fit` is pure and fast and a summary that can lag the controls is a summary
+that lies. IMPORT is disabled while the plan errors, with the `PlanError` in
+the summary's place. Overwriting occupied slots gets the amber destructive
+treatment and the `replacing` list.
+
+**Auto-mapping (§11.5.3)**, applied when the dialog opens, every result
+editable: (1) drum-like parts → the first sample-based box, as `Drums`;
+(2) a part name containing a destination track's name, either direction,
+case-insensitive, through a small synonym list (kick/bd/bass drum, snare/sd,
+hat/hh, clap/cp, bass, lead, pad, chord, keys/piano) — kit-fetched track
+names make this catch the common case for free; (3) polyphonic parts → a box
+with `notes_per_trig > 1`, first free track; (4) mono parts with `pitch_hi <
+55` → a synth box, as bass; (5) everything else → first free track anywhere,
+else `Skip`. "Free" means not taken by an earlier rule in this pass; notes
+already on a destination track do not block it, because the plan writes into
+**fresh** patterns in fresh slots, never the current one.
+
+**What the dialog never does (§11.5.4).** Merge two parts onto one track
+silently — the user may map two parts to one destination, and then the
+summary says "2 parts merged on DN2 T3" and the fit unions the notes before
+the polyphony pass. Clamp pitch. Invent `prob`/`fill`/`cond`. Change tempo
+without the checkbox. Touch a box.
+
+**Tempo (§11.5.5).** `Score.tempo[0]` is offered; on by default only when no
+track anywhere in the session has a note. Applied by the same path the
+transport uses for a tempo edit, inside the same history step.
+
+**Apply (§11.5.6).** `apply_import(session, plan, apply_tempo)` in one
+history step, `generate.rs` style: write every planned pattern into its slot
+replacing the `Arc<Pattern>` whole; create scenes with `add_scene(name,
+Some(current_scene))` so boxes not in the import keep their slot rather than
+snapping to A01, then `set_slot_in_scene` per destination box; append rows
+and set `label`/`repeats`; apply tempo if asked; leave `current_scene` where
+it was; return the first new scene and row and the counts for the console. A
+song with zero rows before the import becomes the imported rows.
+
+**Undo honesty, found in the building.** `history::Content` holds patterns
+only, so one Cmd+Z after an import restores the imported *patterns* — the
+half that overwriting a slot can lose — and leaves the scenes and rows, the
+same way a removed row is not undoable in the SONG panel. The design's "one
+undo entry" is therefore true of the patterns and not of the whole import,
+and `ui::midi_import`'s header says so.
+
+### 11.6 `DeviceModel` additions
+
+`notes_per_trig: u8`, 4 for all three entries, with a test asserting each
+digi entry equals its `Spec`'s `max_notes` so the two tables cannot drift.
+No `root_note` field: the sample-track trigger pitch is `DRUM_TRIGGER_PITCH`
+(§11.4.5), relocated rather than duplicated.
+
+### 11.7 Deferred, but designed for
+
+None of these block v1; each hangs off types above. **All still untouched
+as of 2026-09-06.**
+
+- **CC → p-lock lanes.** Map each CC through `param_table_for(kind)` by
+  `MidiMap.cc`; one `PLockLane` per matched CC, sampling the last value at or
+  before each **trig's** step (trigless locks are not modelled; values on
+  trig-less steps are dropped and counted). `Part.cc` already collects the
+  counts.
+- **Sustain pedal.** Extend each note's `off` to the next CC64 ≤ 63 when CC64
+  was ≥ 64 at its `off`. Piano exports need this or every chord is a stab.
+- **Swing detection.** Median micro of odd 16ths consistently positive with
+  even ones on-grid → offer the pattern swing byte (`50 + round(ratio)`,
+  capped 80) and zero those micros. Offered, never automatic.
+- **Loop compression.** A track whose segment is an exact repetition of its
+  first *k* bars can take `length_steps = k × steps_per_bar` — polymeter for
+  free. Interacts with scene-cycle derivation; wait until §11.4.2's boundary
+  rule has been proven on a screen.
+- **Sync the imported song to the boxes.** Already an open item; the plan's
+  `patterns` list is exactly the set of slots that needs writing.
+
+### 11.8 Build order, and what was built
+
+Five phases, each meant to be one PR-sized change with its own tests.
+**A–D landed together on 2026-09-05** (commit "Implement MIDI file import —
+analyse, fit, then map"):
+
+- **A — Score.** Built; every existing test unchanged and green, §11.3.4's
+  tests added.
+- **B — Into this track, with a chooser.** Built; the destructive-note
+  `const` and its pinning test updated; §1's item struck with the date.
+- **C — Fit.** Built, with `Pattern::is_blank`, `DeviceModel::notes_per_trig`
+  and `DRUM_TRIGGER_PITCH` relocated.
+- **D — Song import.** The dialog, auto-mapping, `apply_import`, the history
+  step, the console report, and the SONG/SCENES entry points are built and
+  tested headless. **D's acceptance has not been run**: it asks for a real
+  DAW export committed under `crates/core/tests/fixtures/midi/` the way the
+  `.syx` captures are, imported into scenes and rows, played from the SONG
+  panel on a DT2+DN2 desk, undone, and survived through a save/reopen. No
+  such fixture is committed and no import has been played on a desk. §9 has
+  no entry for this feature for that reason.
+- **E — §11.7's items**, untouched.
+
+### 11.9 Decisions Neil owns
+
+Both taken as the design proposed: "Into this track" is a separate Edit-panel
+chooser rather than the song dialog with one row, because the Edit panel
+gesture is a two-field question and should stay one; and on a mixed desk the
+default pattern length follows the **tightest** box (4 bars with an A4
+present) rather than letting the digis take 8-bar patterns with the A4
+cycling twice, which would need the scene-cycle rule settled first.
+
+### 11.10 Rules carried over
+
+From §7 and the old import's own comments, binding here: never merge parts
+silently; never clamp pitch (the roll grows a row); never invent trig
+conditions; report what was dropped, in the console and in the dialog,
+before the button is pressed; a refusal names the reason and the number; the
+session file must round-trip an imported song unchanged; and nothing in this
+feature sends a byte to a box.
+
+---
+
+## 12. Live recording — capture, place, then take
+
+Designed and agreed with Neil 2026-09-05; **phases A–D built and played on
+hardware the same day** — a DT2 and an A4, Neil's words "works perfectly".
+This section is the design document folded in (it lived as
+`MIDI_RECORD_DESIGN.md` until 2026-09-06); sub-numbering follows the
+original's for the same reason §11's does, so `§12.4.2` here is what the
+source comments called `§4.2`. §12.11 is the record of where the built thing
+differs from the design, and two of those differences are ones the design
+could not have compiled as written.
+
+Before this, the app opened a MIDI input for exactly two things — the
+identity handshake and SysEx dumps — and nothing anywhere listened for a
+note. This adds the third: play a connected keyboard and have the notes land
+in the selected track of the roll, in time, while the pattern loops. It
+follows §11 in shape because that shape worked.
+
+### 12.0 The problem in one paragraph
+
+A keyboard produces note-on and note-off at wall-clock moments. The model
+wants a `Note` at a whole step of one track's grid, with a micro offset, a
+length and a velocity — and *which* step depends on where that track's cursor
+is, which under polymeter and SCALE is not where the transport bar's readout
+is. So recording is three jobs, on three threads, and the design is mostly
+about which job goes where:
+
+1. **Capture**: an input port open on a driver thread, stamping each message
+   with the moment it arrived. Dumb and fast. (`midi::live_input`.)
+2. **Place and monitor**: the engine thread — the only thread that knows what
+   time it is and where every cursor stands — echoes each note straight to
+   the selected track's box so it can be heard, and, while a take is running,
+   converts each arrival into *this track, this step, this micro, this pass*.
+   (`engine::record`, pure arithmetic in one file.)
+3. **Take**: the UI thread — the only thread that owns the model — pairs ons
+   with offs, applies the overdub rule and the polyphony cap, writes notes
+   into the track, and closes the take as one history step. (`core::record`
+   for the rules, `app::record` for the glue.)
+
+Nothing in this feature writes a byte of SysEx. The only thing a box receives
+is the notes you play, on the channel the selected track already plays on.
+
+### 12.1 Vocabulary
+
+| word | meaning |
+|---|---|
+| **record input** | the one input port the recorder listens to. Session-level, chosen in Setup. Not a box's bound input, which stays for SysEx. |
+| **armed** | REC is lit. Nothing is captured until the transport is also running. |
+| **take** | the span from the first captured note-on while armed and playing to the moment STOP is pressed (or REC is switched off). One history step. |
+| **pass** | one trip through the armed track's `length_steps`. A take usually spans several; overdub means every pass adds. |
+| **thru** | echoing a played note to the selected track's port and channel, always, armed or not, playing or stopped. |
+| **placed event** | a note-on or note-off after the engine has converted its arrival time to `(step, micro, pass)` on the armed track. |
+| **live event** | a raw note-on/off as it came off the port, stamped with an `Instant`. |
+
+### 12.2 Decisions taken, 2026-09-05
+
+Neil's answers, in the order they were asked:
+
+1. **Source: one chosen input port in Setup**, all channels merged. The
+   incoming channel is ignored on the way in; thru rewrites it to the track's.
+2. **Thru always on**, to the selected track's port and channel, playing or
+   stopped. Selecting a track is how you choose what the keyboard sounds.
+3. **Overdub, looping like the box's LIVE REC.** Every pass adds notes. A new
+   note on an occupied `(step, pitch)` replaces the old one. One history
+   step per take.
+4. **As played, with a QUANTIZE toggle.** Micro-timing is kept; the toggle
+   snaps new notes to the step and their lengths to whole steps while on.
+5. **REC arms, PLAY runs it, STOP ends the take.** REC while stopped also
+   starts the transport from the top. No count-in.
+6. **Polyphony overflow: keep the first four, drop the rest, count it in the
+   console.** The same rule as §11.4.6. On an A4 track the four are written
+   as root plus NO2–NO4 by the existing chord path.
+7. **Notes only.** Velocity and held length. CC, aftertouch, pitch bend and
+   the sustain pedal are ignored, on capture *and* on thru, until §12.8.
+
+### 12.3 Facts the design was bound by
+
+The ones that are rules rather than descriptions of code:
+
+- **Placement uses the track's cursor, never the transport readout.**
+  `TrackCursor { next_step, origin, origin_at }` gives each track its own
+  position; `TransportState::position_millisteps` is the global readout,
+  scaled by the UI for display, and after a scene switch it and a cursor
+  disagree.
+- **Ignore midir's timestamp and stamp `Instant::now()` in the callback.**
+  The `u64` is microseconds on a per-backend epoch — CoreMIDI host time,
+  ALSA queue, WinMM milliseconds since `midiInStart` — and is not comparable
+  to the engine's `Instant` without a calibration nobody wants to maintain.
+- **midir's default `Ignore` filters nothing.** The design said the default
+  filtered SysEx, time code and active sensing and that `SysExInbox` set the
+  opposite; that is backwards. All seven of midir 0.11's backends initialise
+  `ignore_flags` to `Ignore::None`, so `SysExInbox`'s explicit `Ignore::None`
+  is a no-op and `LiveInput::open` has to ask for `Ignore::All` — which
+  matters on a desk where an Elektron box shares the cable and emits active
+  sensing several times a second. Corrected 2026-09-05 in the building.
+- **The engine never touches `midir`.** `PortSink` is a trait and the tests
+  drive `EngineLink` against a recording sink; thru is testable the same way,
+  and the input side got the mirror, `InputFactory` (§12.11).
+- **The engine allocates as little as it can on its thread.** A placed event
+  sent back over an `mpsc` allocates one node per note; §12.4.2 accepts that
+  and names the fixed-capacity ring that replaces it if the jitter stats
+  ever say so.
+- **Anything recording adds to the engine has to be remembered by
+  `EngineLink`** across rebuilds, as `send_clock`, `fill`, `scene` and
+  `song_mode` already are.
+- **Port resolution for a control the user is turning is spelled once.**
+  Thru resolves its target with the same function `send_track_level` uses,
+  not a copy (`DEVELOPMENT.md` lesson 5) — `EngineLink::resolve_track_port`.
+- **The shell commits a history step every frame the pointer is up**, which
+  would cut a take into one step per frame; §12.5.4 changes that guard.
+- **Thru cannot rely on the UI thread at all** — while stopped there may be
+  no frame for seconds — which is the whole reason it lives on the engine
+  thread.
+- **`●` U+25CF is a tofu box** on the scene bar and is not on `ui/mod.rs`'s
+  confirmed glyph list. REC is the word `REC`, no dot.
+- `project::FORMAT_VERSION` stayed at 1 when `song` was added and stays at 1
+  here; `record_input` is a `#[serde(default)]` field on `Session`.
+- No JS oracle: `js/midi.js` never listened to an input. The suites say so.
+
+### 12.4 Stage by stage
+
+#### 12.4.1 Capture — `midi::live_input`
+
+`LiveEvent { at: Instant, kind: LiveKind }`, `LiveKind::{NoteOn { pitch,
+velocity }, NoteOff { pitch }}`. `parse_live(bytes)` is pure: velocity 0 is a
+note-off (MIDI 1.0 §4.2), the channel nibble is read and discarded (decision
+1), anything else returns `None` (decision 7). `LiveInput::open(binding, tx)`
+resolves the port id first and name second, as every other binding does, and
+forwards every parsed message down `tx`; a closed receiver is not an error,
+because the engine that owned it has been rebuilt and `EngineLink` reopens.
+The callback does nothing but `parse_live`, `Instant::now()` and `tx.send`.
+Drivers deliver whole channel messages on all three backends, so there is no
+running-status reassembly to write.
+
+#### 12.4.2 Place and monitor — `engine`
+
+Two commands: `SetMonitor(Option<(PortId, u8)>)` — where thru goes, re-sent
+by the UI whenever the selection moves — and `SetRecord { armed, target:
+Option<(DeviceId, usize)>, quantize }`, re-sent on every change and
+remembered by `EngineLink`. `Transport::spawn` takes a `live_rx` and a
+`placed_tx`; each pass of `run`, before `send_due`, the thread drains
+`live_rx`:
+
+- **Thru, every event, every state.** With a monitor set, the message goes
+  out as a note on the monitor channel to the monitor port *immediately*
+  through the sink — never queued behind scheduled events, for the reason
+  `SendNow` gives: these are a person's hands, not the sequencer. A 128-slot
+  table of held thru pitches is kept so that `Stop`, `Panic` and a monitor
+  change release them; without it, changing track while holding a chord
+  leaves it ringing on the old box.
+- **Placement, only while armed, playing and the target has a cursor.**
+  `record::place(origin_at, step_secs, length_steps, t, quantize)` is pure:
+  `elapsed = (t − origin_at) / step_secs`, `abs = elapsed.round()`, `micro =
+  elapsed − abs` (0 under quantize), `step = abs % length`, `pass = abs /
+  length`. A hit just late of the last step rounds onto step 0 of the next
+  pass with a negative micro, which is what the box does. **Swing is not
+  subtracted**: LIVE REC on the box records against the straight grid and
+  swing is applied on playback, and the scheduler already does that half.
+  The `Scheduler` gained one method that looks up the target cursor and the
+  track's `scale`/`length_steps` and calls `place`.
+- The placed event goes down `placed_tx` — one heap node per note-on and one
+  per note-off; a fast player makes perhaps twenty a second. If `JitterStats`
+  ever moves because of it, the replacement is a fixed-capacity ring in
+  `TransportState`: designed for, not built.
+
+**Latency.** The thread wakes at least every `IDLE_POLL` (5 ms), so thru adds
+at most that plus one USB hop. That is a bound, not a measurement: the
+spy-driver capture of keyboard-in to box-out that phase B's acceptance asked
+for **has not been taken** (§12.7). If it disappoints, the fix is a shorter
+poll only while a `LiveInput` is open; sending thru from the driver callback
+through a second connection to the same port is **rejected**, because two
+writers on one port can interleave with a running four-message NRPN.
+
+#### 12.4.3 The take — `core::record`
+
+Pure rules over placed events, owning no threads and no egui. `TakeOptions {
+notes_per_trig, max_steps, quantize, step_secs }`; `Take` holds open notes by
+pitch and a `TakeReport { placed, replaced, dropped_full, passes,
+dropped_no_target }`. `push(ev, track, opts) -> bool` and `close(self,
+track) -> TakeReport`. The rules, each pinned in `core/tests/all/record.rs`:
+
+- **Provisional note on key-down.** A note-on inserts a one-step `Note` at
+  once so the roll shows it while the key is down; the note-off sets its
+  length from the two `at`s, snapped by `snap_len_fine` (whole steps under
+  quantize), floored at `LEN_MIN`, capped at the track's `length_steps`.
+- **Overdub replace**: a note-on whose `step` and `pitch` match an existing
+  note replaces its velocity, micro and, on release, length. Counted.
+- **Cap**: notes whose `step.floor()` equals the new step are counted; at
+  `notes_per_trig` the arrival is dropped and `dropped_full` counts it.
+  Replacement is checked first, so re-playing a note on a full step is a
+  replace, not a drop.
+- **Step trig state**: a note joining a step that already has one calls
+  `adopt_step_trig`, exactly as the roll does.
+- Velocity through `clamp_velocity`; micro through `clamp_micro`, so a −0.5
+  rounds to a value the box can hold.
+- **A note-off with no held note** — key down before the take started, or the
+  take started mid-hold — is ignored.
+- **STOP with keys still down**: every held note keeps its provisional length.
+- Passes are reported as `max(pass) + 1`. Nothing here reads the pointer, the
+  selection or the engine.
+
+#### 12.4.4 Glue — `app::record::Recorder`
+
+Owns the `Receiver<PlacedEvent>`, the open `Take`, the armed flag and
+QUANTIZE, and is ticked once per frame from the shell **after the keys and
+before the workspace draws**, so REC-while-stopped can start the transport
+this frame and the roll shows this frame's notes:
+
+1. Drain placed events. On the first with no take open: resolve the selected
+   track, `history.begin(before)`, open a `Take`. Then `push` each; set
+   `edited`.
+2. If the target track has no port, post once per take: "REC: DT2 T7 is
+   routed nowhere — recording anyway, but you will not hear it."
+3. A take ends when STOP is pressed, REC is switched off, the selection moves,
+   or the scene sounding changes — `close`, `history.commit`, and the report
+   to the console: `REC: 23 notes onto DT2 T3 over 2 passes · 3 replaced · 1
+   dropped (step 5 full)`. **A take with nothing placed is not a take**: no
+   history step, no line.
+4. Every frame, re-send `SetMonitor` when the resolved `(port, channel)` of
+   the selection differs from the last one sent, and `SetRecord` when armed,
+   target or quantize differ. Cheap, and it is what makes "select a track,
+   play the keyboard, hear that box" hold without anyone remembering to tell
+   the engine.
+
+`EngineLink` carries `armed`, `record_target`, `quantize` and `monitor`,
+re-sent after every rebuild alongside `fill` and `scene`; opens a `LiveInput`
+against `session.record_input` on every rebuild; and `reroute` compares the
+record input too, so a replugged keyboard comes back the way a replugged box
+does.
+
+### 12.5 UI
+
+#### 12.5.1 Transport bar
+
+- **REC**, after CONTINUE: an outline button that fills in the amber
+  destructive treatment when armed — the bar's one colour rule is *filled
+  cyan means a thing you can press*, and armed-REC is a state, not a press.
+  Tooltip: "Arm recording onto the selected track — or press R. Play the
+  keyboard; STOP ends the take." Pressed while stopped it arms and starts the
+  transport. Disabled, with the reason in its tooltip, when no record input is
+  set, when the record input will not open, when nothing is selected, and in
+  song mode (§12.9).
+- **QUANT**, beside FILL: the same pill, the same lit/unlit treatment. The
+  tooltip names what it snaps — new notes to the step, their lengths to whole
+  steps; existing notes are never touched.
+- The position readout is unchanged. While a take is open the roll's playhead
+  is drawn in the REC colour, so the state is visible over the notes and not
+  only in the corner.
+
+#### 12.5.2 Key
+
+`R` toggles armed, read in `transport::shortcuts` beside Space under the same
+two rules — first press of a hold only, `matches_exact` so chords stay free,
+not while a field has the keyboard, not while a modal is waiting. Per the
+verify-the-platform-sends-the-event lesson, the acceptance was the key working
+in the running app, not a synthetic `Event::Key` in a test.
+
+#### 12.5.3 Setup
+
+A **RECORD INPUT** row: one picker over `list_inputs()`, target
+`session.record_input: Option<PortRef>`, none first. The status strip's "a
+port will not open" rule extends to it, so an unplugged keyboard forces the
+strip open the way an unplugged box does; `EngineLink::failures` carries the
+open error text and the console gets it once. Where the row sits differs from
+the design — see §12.11.
+
+#### 12.5.4 The shell
+
+Two lines in `main.rs`: the per-frame commit becomes `if !pointer.any_down()
+&& !recorder.take_open() { history.commit(..) }` — a take holds the step open
+the way a drag does — and `recorder.tick(..)` runs after `transport::shortcuts`
+and before the panels draw.
+
+### 12.6 Where things live
+
+| crate | new | changed |
+|---|---|---|
+| `midi` | `live_input.rs`: `LiveEvent`, `LiveKind`, `parse_live`, `LiveInput` | `lib.rs` re-exports |
+| `engine` | `record.rs`: `place`, and `PlacedEvent` re-exported from `core` | `transport.rs`: two commands, `live_rx`/`placed_tx`, thru and the held table in `run`, release on Stop/Panic; `scheduler.rs`: target lookup calling `place` |
+| `core` | `record.rs`: `Take`, `TakeOptions`, `TakeReport`, `PlacedEvent`, `PlacedKind` | `session.rs`: `record_input: Option<PortRef>` (serde default) |
+| `app` | `record.rs`: `Recorder` | `engine.rs`: remembered fields, `LiveInput` lifecycle, `InputFactory`, `reroute`, `resolve_track_port`; `ui/transport.rs`: REC, QUANT, `R` via `key_tap`; `ui/setup.rs`: RECORD INPUT; `ui/devices.rs`: `port_picker` split out; `ui/pianoroll.rs`: playhead colour; `main.rs`: §12.5.4 |
+
+### 12.7 Build order, and what is left
+
+Five phases; **A–D built 2026-09-05**, each with its tests, clippy clean.
+
+- **A — Capture.** `midi::live_input` with `parse_live` tests. The design's
+  temporary `DRS_RECORD_INPUT` env hook was **never built** — the same change
+  that would have added it added the Setup picker that replaces it, and a
+  throwaway created and deleted in one commit is not a checkpoint.
+- **B — Thru.** `SetMonitor`, the held table, release on Stop/Panic/monitor
+  change; `engine_link.rs` shows a note-on arriving as `0x90|ch` on the
+  selected track's port with the channel rewritten and the matching note-off
+  on Stop. On the desk: heard, 2026-09-05. **Not done:** the spy-driver
+  capture of the added latency.
+- **C — Placement.** `engine::record::place`, the scheduler method,
+  `SetRecord`, `Session.record_input` and the Setup picker.
+  `engine/tests/all/record.rs` pins nearest-step rounding, the late hit on
+  step 0 of the next pass with negative micro, 2x SCALE, a 64-step track
+  against a 128-step one on one clock, placement after a `commit_scene` moved
+  `origin_at`, and quantize zeroing micro. Save/reopen keeps the record input.
+- **D — The take.** Every §12.4.3 rule tested; `Recorder` steps 1–3; REC,
+  QUANT and `R`; the shell's commit guard; the playhead colour. On the desk:
+  arm, play, hear it back on the next pass, STOP — done 2026-09-05, one Cmd+Z
+  removing the whole take included in what was played.
+- **E — On the box. Not done**, and the whole of what is outstanding:
+  - a recorded pattern written to a DT2 with `safe_write`, one trig's micro
+    read off the box's screen against the roll's value, and the pattern
+    fetched back and matched to the byte, as the `.syx` suites do;
+  - a triad recorded onto an A4 track and the box's own screen showing the
+    root with NO2–NO4 set — the chord path is hardware-verified (§10,
+    "Chords reach the A4"); what is unverified is a *recorded* chord reaching
+    it;
+  - the latency number above;
+  - the three disabled-REC tooltips (no record input, song mode, nothing
+    selected), which have not been on a screen — each a sentence against the
+    right edge of a 320px column.
+
+### 12.8 Deferred, but designed for
+
+- **CC to p-lock lanes**, and CC thru: `parse_live` gets a `Control` kind, the
+  take maps a controller through `params::param_table_for` to a lane at the
+  placed step, and thru forwards it unchanged.
+- **Sustain pedal** holding note-offs until CC 64 falls — a `held_by_pedal`
+  flag in `Take`.
+- **A channel filter** on the record input, for a split controller.
+- **Song-mode takes**, once "which pattern is under this track" during a row
+  change has an answer the take can follow.
+- **A count-in**, if the position readout alone turns out not to be enough.
+- **A ring buffer for placed events**, if the jitter stats move.
+- **Step recording** while stopped — place at the caret. Blocked on the
+  playhead work §1 names under Paste.
+
+### 12.9 Decisions Neil owns — all four taken as the design proposed
+
+1. **STOP disarms.** STOP ends the take *and* switches REC off, so a stray key
+   after stopping does not land in the next PLAY. The box leaves REC lit; one
+   press re-arms.
+2. **Song mode**: REC is disabled while walking the song, with a tooltip. A
+   take could instead follow the row walk and split at each row (§12.8).
+3. **Selection change mid-take** closes the take and opens a new one on the
+   new track — two history steps.
+4. **Held-note display**: a key going down inserts a provisional one-step note
+   so the roll shows a held chord as a chord.
+
+### 12.10 Rules carried over
+
+From §7 and this section: recording writes no SysEx and touches no slot on a
+box — the only bytes a box receives are the notes you play, on the channel
+that track already uses; never clamp pitch (the roll grows a row, as the
+import does); never invent trig conditions; a dropped note is counted and
+named in the console before the take ends; one take is one history step; the
+session file must round-trip a recorded track and the record input unchanged;
+and no test anywhere in this feature needs a box or a keyboard.
+
+### 12.11 What was built, and where it differs — 2026-09-05
+
+**63 new tests**, none needing hardware: `midi::live_input` (7, in-module),
+`engine::record` (13 in-module + 9 in `engine/tests/all/record.rs`),
+`core/tests/all/record.rs` (22), `app/tests/all/record.rs` (6),
+`app/tests/all/engine_link.rs` (8 more), `app/tests/all/transport_space.rs`
+(5 more, for `R`), `core/tests/all/session.rs` (2, the record input in the
+file).
+
+**Two things the design could not compile as written:**
+
+1. **`PlacedEvent` lives in `core::record`, not `engine::record`.** The design
+   had `core::record::Take::push` taking an `engine` type whose `kind` was a
+   `midi` type — and `core` depends on neither. So the placed event moved
+   down to the crate that consumes it, `engine::record` re-exports it so the
+   design's path still resolves, and the note kind exists twice: `LiveKind`
+   on the wire side and `PlacedKind` on the model side, converted by
+   `engine::record::placed_kind` — a free function rather than a `From`
+   impl, because both types are foreign to `engine` and the orphan rule
+   forbids one.
+2. **`TakeOptions` has a fourth field, `step_secs`.** A held length is
+   seconds and a `Note::len` is steps; `core` has no tempo and no SCALE to
+   convert between them, so the caller hands it over.
+   `app::record::take_options` computes it from `session.tempo_bpm` and the
+   armed track's own `scale`, the same `time::track_step_seconds` the
+   scheduler dates that track's events with.
+
+**Smaller deviations, each with its reason:**
+
+- The **RECORD INPUT row is always visible**, directly under the device block
+  and above DATA TRANSFER, not inside the collapsed `BOXES & MIDI PORTS`
+  disclosure the design named. REC's own tooltip sends you to this row to
+  pick a keyboard, and a row you are sent to has to be on screen when you
+  arrive.
+- **`space_tap` became `key_tap(ctx, session, key)`** — `R` wants Space's two
+  rules for the same reasons, so there is one function rather than two that
+  can drift. One special case: `Key::name()` gives `"Space"` for the spacebar
+  and the platform pushes `" "` beside it.
+- **`devices::picker` was split**, its combo-box half becoming
+  `devices::port_picker`, shared with the RECORD INPUT row, so the
+  `.truncate()` rule that keeps Setup 320px wide on ALSA exists once
+  (`DEVELOPMENT.md` lessons 5 and 20).
+- **`EngineLink` gained an `InputFactory`**, the mirror of `SinkFactory`, so
+  nothing in the suite needs a keyboard plugged into the machine running it.
+  The handle it returns is opaque — dropping it closes the port — so a test
+  hands back the `Sender` it means to play into.
+- **`Recorder::finish` reports `false`** rather than an edit: the notes were
+  written on the frames they arrived on, closing a take moves nothing, and
+  saying it did would cost a whole-session snapshot down the channel for a
+  button release.
+
+**On the desk — 2026-09-05, DT2 0071 / A4 0195.** A keyboard on the record
+input, thru heard on the selected track's box, takes recorded onto a DT2
+track and an A4 track; "works perfectly". That closes the on-the-desk
+acceptances of phases B and D, and the only claim in this feature no test
+could ever have made — that the notes land where they were played, to an
+ear. It is recorded as a session of playing rather than an itemised check,
+which is the weaker of the two and is what it was. The DN2 was on the desk
+and was not recorded onto. §9's entry for it is deliberately no wider than
+that.

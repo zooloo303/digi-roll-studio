@@ -47,7 +47,7 @@ pub fn midir_sinks() -> SinkFactory {
     })
 }
 
-/// Opens the record input — MIDI_RECORD_DESIGN.md §5.3.
+/// Opens the record input — PLAN.md §12.5.3.
 ///
 /// Injected for [`SinkFactory`]'s reason and one more of its own: a test that
 /// drove this through `midir` would need a keyboard plugged into the machine
@@ -97,7 +97,7 @@ pub struct EngineLink {
     song_row: usize,
     rebuilds: u64,
 
-    // --- recording, MIDI_RECORD_DESIGN.md §4.4 ------------------------------
+    // --- recording, PLAN.md §12.4.4 ------------------------------
     open_input: InputFactory,
     /// The open record input. Opaque and held only to keep the port open, the
     /// same contract `SysExInbox`'s connection has; dropped and reopened on
@@ -419,7 +419,7 @@ impl EngineLink {
 
     // ------------------------------------------------------------- recording
 
-    /// Point thru at a track, or at nothing — MIDI_RECORD_DESIGN.md §4.2.
+    /// Point thru at a track, or at nothing — PLAN.md §12.4.2.
     ///
     /// Cheap to call every frame, and it is: the resolved pair is compared
     /// against the last one sent and only a difference costs a command. That is

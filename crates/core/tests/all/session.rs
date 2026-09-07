@@ -1459,7 +1459,7 @@ fn a_song_round_trips_through_the_project_file() {
 }
 
 /// The record input survives a save and an open, and a project written before
-/// it existed still loads — MIDI_RECORD_DESIGN.md §10 and §3's note that
+/// it existed still loads — PLAN.md §12.10 and §12.3's note that
 /// `FORMAT_VERSION` stays at 1.
 #[test]
 fn the_record_input_round_trips_and_a_file_without_one_still_loads() {

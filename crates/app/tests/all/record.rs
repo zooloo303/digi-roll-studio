@@ -1,4 +1,4 @@
-//! A take, end to end — MIDI_RECORD_DESIGN.md §4.4 and §5.4.
+//! A take, end to end — PLAN.md §12.4.4 and §5.4.
 //!
 //! `core/tests/all/record.rs` owns the rules and `engine/tests/all/record.rs`
 //! owns the placement. What only this file can say is that the three stages are

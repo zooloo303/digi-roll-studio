@@ -832,7 +832,7 @@ impl PianoRoll {
         if let Some(step) = playhead {
             let x = grid.x_of_step(step);
             // **The REC colour while a take is open** —
-            // MIDI_RECORD_DESIGN.md §5.1. The state has to be visible *over the
+            // PLAN.md §12.5.1. The state has to be visible *over the
             // notes* and not only in the corner of the transport bar: while
             // recording you are looking at the grid, not at a 40px button two
             // feet away. Amber is the same treatment REC itself wears.

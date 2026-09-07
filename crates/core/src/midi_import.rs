@@ -1,10 +1,11 @@
-// Stage 2 of the MIDI import design — **fit**, MIDI_IMPORT_DESIGN.md §4.
+// Stage 2 of the MIDI import design — **fit**, PLAN.md §11.4.
 //
 // Pure functions from `(Score, Mapping, Options, &Session)` to `ImportPlan`.
-// Nothing here writes to a session; `apply` (§5.6, Phase D) does. The score
+// Nothing here writes to a session; `apply_import` (§11.5.6, phase D) does. The score
 // comes from `midifile::score` (Stage 1), which answers what the file holds;
 // this module decides where it lands: segments, dedupe, slots, drum fan-out,
-// polyphony, timing. The section citations below are all §4.x of the design.
+// polyphony, timing. The bare §4.x citations below are §11.4.x of PLAN.md, the
+// design's own numbering kept under the folded-in section.
 
 use std::collections::BTreeMap;
 
@@ -462,16 +463,17 @@ pub fn fit(
     file_stem: &str,
     session: &Session,
 ) -> Result<ImportPlan, PlanError> {
-    let mut report = ImportReport::default();
-
     // ---- §4.8 report facts that cost nothing to collect up front ----
-    report.tempo_changes_dropped = score.tempo.len().saturating_sub(1);
+    let mut report = ImportReport {
+        tempo_changes_dropped: score.tempo.len().saturating_sub(1),
+        meter_approximated: score
+            .meters
+            .iter()
+            .any(|&(_, m)| (f64::from(m.num) * 16.0 / f64::from(m.den).max(1.0)).fract() != 0.0),
+        ..ImportReport::default()
+    };
     let tempo_bpm = score.tempo.first().map(|&(_, bpm)| bpm);
     let per16 = f64::from(score.division) / 4.0;
-    report.meter_approximated = score
-        .meters
-        .iter()
-        .any(|&(_, m)| (f64::from(m.num) * 16.0 / f64::from(m.den).max(1.0)).fract() != 0.0);
 
     // ---- destination boxes, in device order ----
     let mut destinations: Vec<DeviceId> = Vec::new();

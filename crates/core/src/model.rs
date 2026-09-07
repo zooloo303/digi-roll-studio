@@ -517,7 +517,7 @@ impl Pattern {
 
     /// Whether this slot is untouched: never fetched (`source` is `None`) and
     /// every track holds no notes and no p-lock lanes. The MIDI import's slot
-    /// allocator (MIDI_IMPORT_DESIGN.md §4.4) fills forward taking blank slots
+    /// allocator (PLAN.md §11.4.4) fills forward taking blank slots
     /// only, so this is the definition of "free" it refuses to overwrite
     /// without being told to.
     pub fn is_blank(&self) -> bool {

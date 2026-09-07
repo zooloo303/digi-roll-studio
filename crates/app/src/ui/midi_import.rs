@@ -1,4 +1,4 @@
-// The "Import MIDI file — as a song" dialog: Stage 3 of MIDI_IMPORT_DESIGN.md
+// The "Import MIDI file — as a song" dialog: Stage 3 of PLAN.md §11
 // §5, the second of §5.1's two gestures over the one engine.
 //
 // The Edit panel's IMPORT answers "into this track"; this dialog answers "as a

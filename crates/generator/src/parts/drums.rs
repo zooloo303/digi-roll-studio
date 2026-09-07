@@ -31,7 +31,7 @@ use super::{len_bounds, GeneratedPart, NoteSpec};
 /// MIDI 60 is C5 here, not C4).
 ///
 /// The constant lives in `digi_core::midi_import` since the MIDI import's
-/// drum fan-out (MIDI_IMPORT_DESIGN.md §4.5) needed the same number — one
+/// drum fan-out (PLAN.md §11.4.5) needed the same number — one
 /// home, read by both crates, rather than two copies agreeing by
 /// coincidence. This re-export keeps every existing reference compiling.
 pub use digi_core::midi_import::DRUM_TRIGGER_PITCH;

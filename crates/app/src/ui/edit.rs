@@ -170,7 +170,7 @@ pub enum Status {
     Failed(String),
 }
 
-/// A MIDI file waiting on the chooser — Phase B of MIDI_IMPORT_DESIGN.md §5.1,
+/// A MIDI file waiting on the chooser — phase B of PLAN.md §11.5.1,
 /// the "Into this track" gesture's second half. The file has been read and
 /// scored; what the track is about to get is the one part, from-bar and bar
 /// count the user picks here. Replaces the old behaviour of silently taking
@@ -334,7 +334,7 @@ impl EditPanel {
                 return false;
             }
         };
-        // Phase B of MIDI_IMPORT_DESIGN.md §5.1: score the file first, then
+        // phase B of PLAN.md §11.5.1: score the file first, then
         // decide whether one click is enough. A single part that fits goes
         // straight in exactly as before — no dialog for the case that never
         // had a question to answer.
@@ -1829,7 +1829,7 @@ fn part_label(part: &digi_core::midifile::Part) -> String {
 /// How many bars from `start_bar` fit on the destination track at `scale`:
 /// the file's bars until the timeline ends, capped to `max_steps / steps per
 /// bar` for the meter at `start_bar` — the chooser's bar count never exceeds
-/// this, per MIDI_IMPORT_DESIGN.md §5.1.
+/// this, per PLAN.md §11.5.1.
 fn max_bars(
     bars: &[(u64, digi_core::midifile::Meter)],
     start_bar: usize,
@@ -2424,7 +2424,7 @@ mod tests {
         }
     }
 
-    // --- Phase B: the chooser (MIDI_IMPORT_DESIGN.md §5.1) ----------------------
+    // --- Phase B: the chooser (PLAN.md §11.5.1) ----------------------
 
     /// A VLQ, written out here rather than reused from the module — a fixture
     /// shares nothing with the code under test.

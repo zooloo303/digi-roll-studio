@@ -1,4 +1,4 @@
-// The glue between the engine's placed events and the model — MIDI_RECORD_DESIGN.md §4.4.
+// The glue between the engine's placed events and the model — PLAN.md §12.4.4.
 //
 // Stage 3 of three. The rules are all in `core::record`, the arithmetic is all
 // in `engine::record`, and what is left here is the part that needs to know

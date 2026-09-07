@@ -1,4 +1,4 @@
-// Stage 1 of the MIDI import design — **analyse**, MIDI_IMPORT_DESIGN.md §3.
+// Stage 1 of the MIDI import design — **analyse**, PLAN.md §11.3.
 //
 // `score_file` reads a whole Standard MIDI File into a [`Score`]: every part
 // (one per (MTrk, channel) pair that holds a note), the tempo map, the time-
@@ -533,7 +533,7 @@ fn text_of(bytes: &[u8]) -> String {
 
 #[cfg(test)]
 mod tests {
-    //! Hand-built byte fixtures, per MIDI_IMPORT_DESIGN.md §3.4. No files, no
+    //! Hand-built byte fixtures, per PLAN.md §11.3.4. No files, no
     //! hardware — and a test that shares the code under test cannot fail it,
     //! so every fixture writes its own VLQs.
 

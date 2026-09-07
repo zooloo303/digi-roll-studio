@@ -220,7 +220,7 @@ pub struct Session {
     /// no note, and `history::Content` snapshots patterns only.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub generator: Option<serde_json::Value>,
-    /// The one input port live recording listens to — MIDI_RECORD_DESIGN.md
+    /// The one input port live recording listens to — PLAN.md §12
     /// decision 1, and §5.3's picker in Setup.
     ///
     /// **Not a box's bound input.** `DeviceIo::input` is the end a SysEx dump

@@ -392,7 +392,7 @@ fn a_midi_file_with_no_notes_is_refused_rather_than_emptying_the_track() {
 #[test]
 fn a_file_whose_notes_all_land_past_the_limit_now_asks_where_to_start() {
     // The fault a hardware session found, in miniature — and the one Phase B
-    // of MIDI_IMPORT_DESIGN.md exists to answer. A ten-track Star Wars
+    // of PLAN.md §11 exists to answer. A ten-track Star Wars
     // arrangement reported `no notes found` for a file holding ~690 notes:
     // the first note-bearing track was a bass that does not enter until step
     // 139, a box holds 128, so every one of its notes was dropped as out of

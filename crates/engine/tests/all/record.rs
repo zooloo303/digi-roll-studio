@@ -1,4 +1,4 @@
-//! Where a played note lands — MIDI_RECORD_DESIGN.md §4.2, through the
+//! Where a played note lands — PLAN.md §12.4.2, through the
 //! scheduler.
 //!
 //! `engine::record`'s own unit tests pin the arithmetic in isolation: nearest

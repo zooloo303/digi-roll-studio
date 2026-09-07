@@ -84,7 +84,7 @@ pub enum TransportCommand {
     /// Move the walk to a row. Ignored in pattern mode.
     JumpToSongRow(usize),
     /// Where thru goes: the selected track's resolved port and channel, or
-    /// `None` to go quiet — MIDI_RECORD_DESIGN.md §4.2.
+    /// `None` to go quiet — PLAN.md §12.4.2.
     ///
     /// Re-sent by the UI whenever the selection moves, and remembered by
     /// `EngineLink` across rebuilds, because a rebuild is a new thread that
@@ -315,7 +315,7 @@ impl Transport {
     /// [`NoPLocks`] to play a session's notes and none of its lanes.
     ///
     /// `live_rx` and `placed_tx` are recording's two ends of this thread
-    /// (MIDI_RECORD_DESIGN.md §4.2): notes played on the record input come *in*
+    /// (PLAN.md §12.4.2): notes played on the record input come *in*
     /// on the first, and the ones that fell inside a take go *out* on the second
     /// with a step, a micro and a pass attached. Both are plain `mpsc`s and both
     /// are allowed to be dead — a session with no keyboard has a `live_rx` that
@@ -400,7 +400,7 @@ struct EngineThread {
     started_at: Option<Instant>,
     scheduled_to: f64,
 
-    // --- recording, MIDI_RECORD_DESIGN.md §4.2 ------------------------------
+    // --- recording, PLAN.md §12.4.2 ------------------------------
     /// Notes off the record input, stamped by the driver callback.
     live_rx: Receiver<LiveEvent>,
     /// The same notes, placed on the armed track's grid. One heap node per
@@ -741,7 +741,7 @@ impl EngineThread {
         self.state.active_notes.store(0, Ordering::Relaxed);
     }
 
-    // --- recording, MIDI_RECORD_DESIGN.md §4.2 ------------------------------
+    // --- recording, PLAN.md §12.4.2 ------------------------------
 
     /// Everything that arrived on the record input since the last pass: echoed
     /// to the monitor, and — while armed and playing — placed on the armed

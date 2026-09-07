@@ -184,7 +184,7 @@ pub struct DeviceModel {
     /// How many notes one trig stores. The digis' `spec.trig.max_notes` is 4;
     /// the A4's chord path is a root plus NO2–NO4 (hardware-verified
     /// 2026-09-02), which is the same four. The MIDI import's polyphony pass
-    /// (MIDI_IMPORT_DESIGN.md §4.6) reads the cap from here, never as a
+    /// (PLAN.md §11.4.6) reads the cap from here, never as a
     /// literal — per the model's own rule, new per-box facts are fields, not
     /// `match` arms. `notes_per_trig_matches_the_spec` pins the digi entries
     /// against their specs so the two tables cannot drift.
@@ -643,7 +643,7 @@ mod model_key {
 mod tests {
     use super::*;
 
-    // MIDI_IMPORT_DESIGN.md §6: the field and the spec are two tables that
+    // PLAN.md §11.6: the field and the spec are two tables that
     // must never drift — the import's polyphony cap reads `notes_per_trig`,
     // the wire encoder reads `spec.trig.max_notes`, and a trig that disagrees
     // with itself drops notes on write.

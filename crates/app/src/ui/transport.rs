@@ -99,9 +99,9 @@ pub fn ui(
     session: &mut Session,
     setup_open: &mut bool,
     // The shell's song-import dialog state, handed down to the scene popup's
-    // IMPORT MIDI FILE… button (MIDI_IMPORT_DESIGN.md §5.1).
+    // IMPORT MIDI FILE… button (PLAN.md §11.5.1).
     import: &mut MidiImportPanel,
-    // REC and QUANT, and the track REC would record onto — MIDI_RECORD_DESIGN.md
+    // REC and QUANT, and the track REC would record onto — PLAN.md §12
     // §5.1. The bar owns neither piece of state: `Recorder` does, because a take
     // outlives any one frame of this widget.
     recorder: &mut Recorder,
@@ -283,7 +283,7 @@ fn can_record(engine: &EngineLink, session: &Session, selection: Selection) -> b
 /// Whether a plain, unmodified press of `key` arrived this frame, taking the
 /// whole keypress out of the queue.
 ///
-/// Written for the spacebar and generalised for `R` (MIDI_RECORD_DESIGN.md
+/// Written for the spacebar and generalised for `R` (PLAN.md §12
 /// §5.2), which wants exactly the same two rules — first press of a hold, and
 /// modifiers matched exactly — for exactly the same reasons. One function
 /// rather than two, so a future transport key cannot get one rule and not the
@@ -417,7 +417,7 @@ fn transport_zone(
     record_button(ui, engine, session, recorder, selection);
 }
 
-/// REC — MIDI_RECORD_DESIGN.md §5.1.
+/// REC — PLAN.md §12.5.1.
 ///
 /// **An outline that fills amber when armed, and never cyan.** The bar's one
 /// colour rule is *filled cyan means a thing you can press*, and armed-REC is a
@@ -611,7 +611,7 @@ fn clock_zone(ui: &mut Ui, engine: &mut EngineLink, recorder: &mut Recorder) {
         engine.set_fill(!fill);
     }
 
-    // QUANT — MIDI_RECORD_DESIGN.md §5.1. Same widget and same lit/unlit
+    // QUANT — PLAN.md §12.5.1. Same widget and same lit/unlit
     // treatment as FILL, because it is the same kind of thing: a standing
     // setting that changes what the next thing you do means.
     let quantize = recorder.quantize();

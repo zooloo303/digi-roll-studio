@@ -84,7 +84,7 @@ pub struct SongPanel {
     /// is the tallest thing in the panel, and two boxes' worth would push the row
     /// list off the bottom.
     mutes_open: Option<DeviceId>,
-    /// The "Import MIDI file — as a song" dialog's state (MIDI_IMPORT_DESIGN.md
+    /// The "Import MIDI file — as a song" dialog's state (PLAN.md §11
     /// §5.2). Held here because this panel is §5.1's primary entry point for the
     /// gesture, and shared with the SCENES popup through [`Self::import_mut`] —
     /// two doors into the one dialog, never two dialogs.

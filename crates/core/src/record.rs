@@ -1,6 +1,6 @@
 // The rules a live take follows, and nothing else.
 //
-// MIDI_RECORD_DESIGN.md §4.3. This is stage 3 of the three the design splits
+// PLAN.md §12.4.3. This is stage 3 of the three the design splits
 // recording into, and it is the only one with an opinion about music: pairing
 // note-ons with note-offs, the overdub rule, the polyphony cap, and what a
 // release does to a length. It owns no thread, opens no port, reads no pointer

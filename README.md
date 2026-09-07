@@ -48,11 +48,19 @@ ask an unclaimed Elektron-looking port who it is. That is read-only — two API
 requests — but it is worth knowing about before wondering what is holding a
 socket. The checkbox is at the bottom of BOXES.
 
+A **RECORD INPUT** picked in Setup is the other port the app opens by itself.
+Whatever you play on it is echoed to the selected track's box, armed or not,
+so a keyboard on the desk sounds a box the moment a track is selected. That is
+notes, never SysEx, and recording a take changes only the session.
+
 ---
 
 ## Status
 
-**MVP1** — reached 2026-09-04. Still beta software that writes to hardware; the five write rules above are the reason that is a sentence and not a warning label.
+**MVP1** — reached 2026-09-04, and **v0.5.2** as of 2026-09-06, which added
+live recording, MIDI file import and the ghost layer on top of it. Still beta
+software that writes to hardware; the five write rules above are the reason that
+is a sentence and not a warning label.
 
 | | |
 |---|---|
@@ -74,11 +82,15 @@ socket. The checkbox is at the bottom of BOXES.
 | +Drive writes | the file-write trio (`0x57`/`0x58`/`0x59`) is implemented in `digi_midi` and hardware-verified for a **single chunk**, behind a second allowlist disjoint from the read one. **The app itself never calls it** — the only caller is one example, so nothing you can press writes a file to a +Drive. Above 16 KiB is refused rather than guessed, so no whole project has been written back. `0x5A` Move, `0x5B` Copy and `0x5C` **Delete** are implemented nowhere in this workspace and nothing can reach them |
 | Copy-track | the in-app whole-track copy works — Shift+C/Shift+V in the TRACKS grid, re-reading the source at paste time so it survives a scene change. Clicking a cell and pressing Delete clears that track — trigs and p-lock lanes, undoable, with the track's own name, channel, port, length and scale left alone. Shift+Up/Shift+Down transposes the selected track an octave and Alt+Up/Alt+Down a semitone — the whole track, moved whole or refused, never clamped or dropped — with the same four moves on buttons in the Edit panel. The **box-to-box** copy, which translates p-lock lanes between two boxes' payloads by parameter name, is ported and still has **no caller** |
 | Song mode | rows of scenes with play count, length, mute and an END row, plus the `LST` trig condition it makes answerable. **Run on hardware 2026-09-04, no issues** — the §9 ledger entry is closed. Per-row tempo is deliberately not built: the session has one clock |
+| Live recording | a keyboard on the RECORD INPUT plays through to the selected track's box; REC arms, PLAY runs the take, STOP ends it as one undo step. Notes land on the armed track's own grid under polymeter and SCALE, overdubbing every pass like the box's LIVE REC, with QUANT to snap and a four-note cap per step. **Played on a DT2 and an A4 the day it was built**, 2026-09-05. Not yet done: a recorded pattern written back and fetched byte-exact, a recorded triad read off the A4's screen, and a measured thru latency — `PLAN.md` §12 |
+| MIDI file import | two gestures over one engine. Into this track: a single-part file that fits imports in one click, anything else asks which part, from which bar, for how many bars. As a song: from the SONG and SCENES panels, a Standard MIDI File is scored into parts, fitted onto bar-aligned pattern segments with identical segments deduplicated into repeats, auto-mapped onto the desk's tracks (drums fanned out one pitch per DT2 track), and applied as fresh patterns, scenes and rows in one step. **Nothing about an import touches a box.** Built and tested headless 2026-09-05; the song import has not been played on a desk and no DAW export is committed as a fixture — `PLAN.md` §11 |
 | Platforms | macOS, Windows and Linux all build, test and package on CI, and all three have been **installed and launched from their own artefact**. On Windows a DN2 was auto-connected and written to; a DT2 has not met a Windows build. On Linux (Arch/Omarchy, from the `.pkg.tar.zst`) a DN2 was auto-connected over ALSA and named its OS build — **no write has been run from a Linux build**, and the portable tarball has been installed but not yet run against a box |
 
-**What is left before MVP1:** nothing on the list. Crash-safety landed
-2026-09-03 (the crash copy above), and packaging is done: both installers are
-built, and each has been installed and run on its own platform.
+**What is open** is in `PLAN.md` §1 under "Still open", and the shape of it is
+the same throughout: the happy paths have met a box and the refusals mostly have
+not. The box-to-box copy has no caller, paste waits on a movable playhead, a
+song cannot yet be synced to a box's own song slots, and the two 2026-09-05
+features each owe a hardware pass (`PLAN.md` §11.8 and §12.7).
 
 ---
 
@@ -90,7 +102,7 @@ uses `midir` rather than `rtmidi`.
 
 ```sh
 cargo build --release
-cargo test --workspace          # 1,855 tests, no system dependencies
+cargo test --workspace          # 2,127 tests, no system dependencies
 cargo run -p digi_roll_studio   # the app
 ```
 
@@ -116,9 +128,9 @@ is the only one of the four that can declare the libraries eframe and wgpu
 
 **Hardware is never part of the dev loop.** The protocol suites read `.syx`
 captures from `crates/protocol/tests/fixtures/` — 34 real dumps, 1.8 MB,
-committed so the tests run anywhere. Ten are DT2/DN2 and **twenty-one are the
+committed so the tests run anywhere. Thirteen are DT2/DN2 and **twenty-one are the
 Analog Four's**, one per question its lanes and p-lock pool were mapped one at a
-time by; 24 `.bin` preset files sit under `fixtures/drive/`. The examples that
+time by; 32 `.bin` preset files sit under `fixtures/drive/`. The examples that
 *do* talk to a box are listed in [`DEVELOPMENT.md`](DEVELOPMENT.md) by safety
 class, most of them read-only — and that list is checked against the examples
 directory by a command in the same section, because it has been incomplete
@@ -126,11 +138,11 @@ twice.
 
 ## Workspace
 
-- `crates/core` — session/device/pattern/track model, edit ops, import/export, project file
+- `crates/core` — session/device/pattern/track model, edit ops, import/export, project file; the MIDI-file scorer and the import fitter, and the rules of a recorded take
 - `crates/protocol` — SysEx seven-bit, Elektron protocol, pattern structs, byte lanes (trig conditions, p-locks, swing), safe-write, copy-track and the backup stash; the gen-1 Analog Four format in its own `a4_*` modules rather than behind a generation flag; the +Drive file API and preset/sound decoding
 - `crates/generator` — seeded pattern generator
-- `crates/midi` — port enumeration and I/O, on `midir`
-- `crates/engine` — transport, clock, scheduling
+- `crates/midi` — port enumeration and I/O, on `midir`; the live input a keyboard is recorded from
+- `crates/engine` — transport, clock, scheduling; thru and note placement for recording
 - `crates/app` — egui UI
 
 ## Documents
@@ -139,11 +151,13 @@ twice.
   not up for renegotiation. Source comments cite it by section (`PLAN.md §7 rule
   3`); those numbers are stable. Its §9 and §10 are four fifths of it and are a
   **hardware ledger** rather than a plan — what has touched a box, and every
-  Analog Four offset with the screen reading that graded it.
+  Analog Four offset with the screen reading that graded it. §11 and §12 are
+  the MIDI-import and live-recording designs, folded in with what was built
+  and what each still owes.
 - **[`DEVELOPMENT.md`](DEVELOPMENT.md)** — how it was built, the hardware examples
   by safety class, your boxes' own MIDI settings that this app cannot reach, and
-  eighteen lessons that each escaped a green test suite at least once.
-- **[`packaging/README.md`](packaging/README.md)** — how the two downloads are
+  twenty-one lessons that each escaped a green test suite at least once.
+- **[`packaging/README.md`](packaging/README.md)** — how the four downloads are
   built, why the asset filenames are load-bearing, and the three Windows-only
   things that never show up in a `cargo run`.
 - **[`CREDITS.md`](CREDITS.md)** — elk-herd, digi-roll, and the third-party

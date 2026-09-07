@@ -35,7 +35,7 @@ pub fn ui(
     selection: &mut Selection,
     roll: &mut PianoRoll,
     // Whether a take is open, so the roll can draw its playhead in the REC
-    // colour — MIDI_RECORD_DESIGN.md §5.1. Passed down rather than read off the
+    // colour — PLAN.md §12.5.1. Passed down rather than read off the
     // engine here, because it is the `Recorder` that knows whether a take is
     // actually running, not whether REC merely happens to be lit.
     recording: bool,

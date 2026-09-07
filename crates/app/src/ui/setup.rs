@@ -315,7 +315,7 @@ pub fn ui(
     (changed, close)
 }
 
-/// RECORD INPUT — MIDI_RECORD_DESIGN.md §5.3. One picker over every connected
+/// RECORD INPUT — PLAN.md §12.5.3. One picker over every connected
 /// input, "none" first, writing `Session::record_input`.
 ///
 /// **Session-level, and not a box's input.** `DeviceIo::input` is the end a

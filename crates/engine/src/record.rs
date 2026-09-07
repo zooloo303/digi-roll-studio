@@ -1,6 +1,6 @@
 //! Where a note that has just been played lands on the armed track's grid.
 //!
-//! MIDI_RECORD_DESIGN.md §4.2, the pure half. The engine thread is the only
+//! PLAN.md §12.4.2, the pure half. The engine thread is the only
 //! thread that knows what time it is *and* where every cursor stands, so it is
 //! the only place this arithmetic can be done — but the arithmetic itself needs
 //! neither, which is why it is a free function here rather than a method on

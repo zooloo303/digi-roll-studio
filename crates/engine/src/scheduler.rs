@@ -504,7 +504,7 @@ impl Scheduler {
     }
 
     /// Where a note played at `t` lands on one track's grid — the scheduler's
-    /// half of MIDI_RECORD_DESIGN.md §4.2.
+    /// half of PLAN.md §12.4.2.
     ///
     /// All this does is find the three facts [`crate::record::place`] needs and
     /// that only a scheduler holds: **the cursor's `origin_at`**, so placement
