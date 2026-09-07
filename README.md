@@ -57,8 +57,9 @@ notes, never SysEx, and recording a take changes only the session.
 
 ## Status
 
-**MVP1** — reached 2026-09-04, and **v0.5.2** as of 2026-09-06, which added
-live recording, MIDI file import and the ghost layer on top of it. Still beta
+**MVP1** — reached 2026-09-04, and **v0.5.3** as of 2026-09-07, which added
+live recording, MIDI file import and the ghost layer on top of it, and then
+fixed a DT2 volume fader that had been sending a number the box ignores. Still beta
 software that writes to hardware; the five write rules above are the reason that
 is a sentence and not a warning label.
 

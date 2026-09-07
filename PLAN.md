@@ -876,7 +876,7 @@ shape too — each was an assumption about the *box* that the probe encoded as i
 it were an assumption about the *format*, and the box is the thing the probe
 exists to ask.
 
-**v0.3.x to v0.5.2 (2026-09-02 to 2026-09-06)**, written down after the fact,
+**v0.3.x to v0.5.3 (2026-09-02 to 2026-09-07)**, written down after the fact,
 which is the habit v0.1.3 corrected and this stretch fell back into:
 
 - **v0.3.2–v0.3.6** — Linux on CI as a tarball and an Arch package (lessons 20
@@ -894,6 +894,11 @@ which is the habit v0.1.3 corrected and this stretch fell back into:
   a working-kit index read as zero.
 - **v0.5.2 (2026-09-06) is the ghost layer**, §5 — parked on 2026-08-18 over
   polymeter and un-parked when a user asked for it.
+- **v0.5.3 (2026-09-07)** — the DT2's VOL fader, which was sending NRPN 1/100
+  because the box's own appendix says so, and the box ignores it. Reported as a
+  question about whether it was even a bug. The other eleven entries read out of
+  that appendix were then played on the box for the first time, and all eleven
+  answered.
 
 **The decisions worth carrying forward**, each of which changed the shape of the
 thing rather than a line of it:
