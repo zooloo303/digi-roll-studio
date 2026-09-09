@@ -76,16 +76,22 @@ use crate::trig_cond::{apply_track_prob, apply_track_trig_settings, trig_setting
 /// box, edited in the app, written back, and verified byte-identical. The
 /// trig-field controlled experiment was not repeated — the format is unchanged,
 /// and that pass is what these two inherit from the builds above them.
+///
+/// 0079 (DT2 1.16), 0059 (DN2 1.11), and 0201 (A4 1.55D) were verified on
+/// 2026-09-09: track 1 of A16 in throwaway projects, notes/chord, velocity,
+/// length, micro-timing, condition and filter p-lock; the digis also track PROB.
+/// Full write/readback and subsequent restore were byte-identical on all three.
+/// DN2 requires pattern and kit v4 support. See PLAN.md's September OS entry.
 pub const WRITE_ALLOWED_BUILDS: &[(&str, &[&str])] = &[
-    ("digitakt2", &["0070", "0071"]), // 1.15B, verified 2026-08-01; 1.15C, 2026-08-21
-    ("digitone2", &["0049", "0050"]), // 1.10D, verified 2026-08-01; 1.10E, 2026-08-21
+    ("digitakt2", &["0070", "0071", "0079"]), // 1.15B, 1.15C, 1.16
+    ("digitone2", &["0049", "0050", "0059"]), // 1.10D, 1.10E, 1.11
     // 1.55B. The gen-1 write cycle on this build: a pattern sent and displayed
     // 2026-08-30, four authored trig states shown as predicted 2026-08-31, and
     // the same day a `0x64` fetch of A16 carried exactly the trigs the probe
     // wrote — send, re-read and compare, at trig rather than byte granularity.
     // The full byte-for-byte verify is what `a4_safe_write_tracks` runs on
     // every write, so the first send through it completes this row's evidence.
-    ("analogfour", &["0195"]),
+    ("analogfour", &["0195", "0201"]), // 1.55B, 1.55D
 ];
 
 /// How many mismatching offsets the verify step reports. The JS default is 64;
@@ -1621,9 +1627,9 @@ mod tests {
         assert_eq!(
             WRITE_ALLOWED_BUILDS,
             &[
-                ("digitakt2", &["0070", "0071"][..]),
-                ("digitone2", &["0049", "0050"][..]),
-                ("analogfour", &["0195"][..]),
+                ("digitakt2", &["0070", "0071", "0079"][..]),
+                ("digitone2", &["0049", "0050", "0059"][..]),
+                ("analogfour", &["0195", "0201"][..]),
             ]
         );
     }

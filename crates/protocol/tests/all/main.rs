@@ -17,6 +17,7 @@ mod copy_track;
 mod dn2;
 mod drive_preset;
 mod dt2;
+mod firmware_2026_09;
 mod plocks;
 mod roundtrip;
 mod safe_write;

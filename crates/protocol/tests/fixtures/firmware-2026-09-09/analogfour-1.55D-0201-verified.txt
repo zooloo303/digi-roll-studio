@@ -1,0 +1,2 @@
+DeviceIdentity { product_id: 4, supported_ids: [1, 2, 3, 4, 6, 7, 9, 80, 82, 81, 83, 84, 85, 86, 87, 88, 89, 90, 91, 92, 93, 94], name: "Analog Four", slug: "analogfour", family: Some(6), build: "0201", version: "1.55D" }
+Slot A16 track 1: write/readback and restore byte-identical

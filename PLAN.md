@@ -999,6 +999,58 @@ These are not up for renegotiation in the port.
 
 ## 9. Verification status
 
+### September OS compatibility — firmware 2026-09-09
+
+Read-only identities and original SysEx captures from the updated desk:
+
+| Device | OS | Build | Pattern / kit structs |
+|---|---|---|---|
+| Digitakt II | 1.16 | 0079 | 4 / 4, existing decoder accepts both |
+| Digitone II | 1.11 | 0059 | 4 / 4, newly accepted alongside 3 / 3 |
+| Analog Four MKI | 1.55D | 0201 | 9 / 11, existing decoders accept both |
+
+`crates/protocol/tests/fixtures/firmware-2026-09-09/` keeps identities,
+A01/A16 replies, A4 kit 0, and one +Drive preset from each box.
+`capture_firmware` sends read requests only and saves the original replies
+before decoding. All replies passed checksum and byte-count validation.
+
+The DN2 v4 blank A16 pattern differs from the old `dn2-fresh-A01.syx`
+pattern at exactly three offsets: 3 (struct version), 88812 (an existing
+setting), and 88816 (kit slot). All sixteen 1187-byte tracks, the trig pool,
+and the p-lock pool are byte-identical. Its kit remains 10752 bytes, with
+359-byte sound containers starting at offset 60. Both the occupied A01 and
+blank A16 decode with the existing offsets after accepting version 4.
+
+The downloaded Elektron release notes dated September 9 list Outbox 8
+configuration support and a low-tempo MIDI transmission fix for both digis;
+the A4 notes also list an MKII LED colour fix and scope Outbox support to
+MKII. This change does not add an Outbox configuration editor. Tests preserve
+the entire kit and all data after the p-lock-pool start when editing notes,
+including settings DRS does not interpret.
+
+**Write verification completed, 2026-09-09, 22:17–22:18 UTC.** Neil confirmed
+A16 in throwaway projects on all three devices. `verify_firmware` wrote track 1
+through the normal safe-write flow, then restored its fresh pre-write backup.
+Both operations passed full-payload byte comparison on every device, with zero
+dropped notes, warnings, or mismatches. All three builds are now allowlisted.
+
+The digis received three notes (a C/E chord at step 1, G at step 5), differing
+velocities and lengths, one micro-timing tick, 75% trig probability, 2:4
+condition, track PROB 80, and filter-cutoff p-lock 64. The A4 received two root
+trigs, C/E/G arp-note offsets on the first, velocity 100, length byte 14, one
+micro-timing tick, condition byte 0, and filter-1-cutoff p-lock 64. These are
+wire-format checks; audibility and Outbox 8 hardware were not tested.
+
+The fixture directory also keeps each post-write readback (the pre-restore
+backup) and verification record. Original backups and the restore's backup
+stash remain under `local/firmware-2026-09-09/verify-{dt2,dn2,a4}/`.
+
+**User acceptance completed, 2026-09-09.** Neil tested importing patterns,
+writing to the boxes, and sending presets with the updated build and reported
+"no issues found whatsoever" and "this is good to go". This adds app-level
+acceptance of those workflows to the automated write/readback evidence above.
+The September OS compatibility update is accepted and ready for release.
+
 **Hardware is never part of the dev loop** (§7 rule 5). `cargo test --workspace`
 needs no system dependencies and no box. This section is the separate register of
 what has actually met hardware, because a green suite cannot say. Every

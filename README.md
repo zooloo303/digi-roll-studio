@@ -20,6 +20,11 @@ The protocol work this stands on is ported from
 is the de-facto public documentation of Elektron's SysEx protocol. Without it
 there is nothing here. See [`CREDITS.md`](CREDITS.md) for what came from where.
 
+Hardware-verified OS support includes **Digitakt II 1.16 (0079)**,
+**Digitone II 1.11 (0059)**, and **Analog Four 1.55D (0201)**. Pattern writes
+and restores passed full readback comparison on all three on 2026-09-09.
+Previously supported builds remain supported.
+
 ---
 
 ## ⚠ This app writes to your boxes
@@ -57,9 +62,10 @@ notes, never SysEx, and recording a take changes only the session.
 
 ## Status
 
-**MVP1** — reached 2026-09-04, and **v0.5.3** as of 2026-09-07, which added
-live recording, MIDI file import and the ghost layer on top of it, and then
-fixed a DT2 volume fader that had been sending a number the box ignores. Still beta
+**MVP1** — reached 2026-09-04, and **v0.5.4** as of 2026-09-09, which adds
+support for Digitakt II OS 1.16, Digitone II OS 1.11, and Analog Four OS 1.55D.
+Pattern imports, writes, and preset sends were tested on the updated devices.
+Still beta
 software that writes to hardware; the five write rules above are the reason that
 is a sentence and not a warning label.
 

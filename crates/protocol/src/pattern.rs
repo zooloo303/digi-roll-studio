@@ -259,18 +259,20 @@ pub fn dt2_spec() -> Spec {
 }
 pub fn dn2_spec() -> Spec {
     let mut kits = HashMap::new();
-    kits.insert(
-        3,
-        KitSpec {
+    // OS 1.11 (build 0059) increments both struct versions to 4 without
+    // moving the pattern lanes or the 359-byte sounds in its 10752-byte kit.
+    // Captures and hardware verification: PLAN.md, firmware 2026-09-09.
+    for version in [3, 4] {
+        kits.insert(version, KitSpec {
             size: 10752,
             sounds_offset: 60,
             sound_size: 359,
             midi_mask_offset: None,
-        },
-    );
+        });
+    }
     Spec {
         device: "DN2",
-        pattern_versions: vec![3],
+        pattern_versions: vec![3, 4],
         pattern: PatternSpec {
             size: 89088,
             tracks_offset: 4,
