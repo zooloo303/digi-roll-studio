@@ -194,3 +194,45 @@ fn the_pattern_level_fields_are_inside_the_shared_region() {
         assert!(offset < st::PATTERN_BYTES, "{offset} is past the pattern region");
     }
 }
+
+/// The four condition points that were read off the box, each in a different
+/// part of the menu. They fix where the three regions begin and end.
+#[test]
+fn the_condition_bytes_read_what_the_box_showed() {
+    use digi_protocol::syntakt_pattern::SyntaktCond as C;
+    for (name, want) in [
+        ("cond-50.bin", C::Probability(50)),
+        ("cond-ratio.bin", C::Ratio { a: 1, b: 2 }),
+        ("cond-pre.bin", C::Logic { name: "PRE", negated: false }),
+        ("cond-100.bin", C::Probability(100)),
+    ] {
+        let d = dump(&format!("stride-H01/{name}"));
+        assert_eq!(st::step_condition(&d, 6, 4), Some(want), "{name}");
+    }
+}
+
+/// A step with no condition reads `ff`, the same "unset" the other lanes use —
+/// and the trig is still a trig.
+#[test]
+fn a_trig_without_a_condition_reads_none() {
+    let d = dump("stride-H01/cond-before.bin");
+    assert_eq!(d[4 + 983 * 6 + st::CONDITION_LANE + 4], st::NO_LOCK);
+    assert_eq!(st::step_condition(&d, 6, 4), None);
+    assert!(st::plays_note(&d, 6, 4), "the trig is still there");
+}
+
+/// The lane is the A4's, the table is not. Recorded because the two facts
+/// arrive together and it would be easy to carry the second across with the
+/// first: this box's logic block has five pairs where the A4 has four, which is
+/// what moves the ratios two later.
+#[test]
+fn the_condition_lane_is_the_a4s_but_the_table_is_not() {
+    use digi_protocol::a4_pattern as a4;
+    assert_eq!(st::CONDITION_LANE, a4::CONDITION_LANE);
+    assert_eq!(st::CONDITION_LOGIC.len(), 5);
+    // The A4 puts 1:2 at 30; this box puts it at 32, which is measured.
+    assert_eq!(digi_protocol::a4_conditions::from_byte(30), Some(
+        digi_protocol::a4_conditions::A4Cond::Ratio(1, 2)
+    ));
+    assert_eq!(st::CONDITION_RATIO_BASE, 32);
+}

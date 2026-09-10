@@ -214,16 +214,57 @@ is 64 steps.
 
 Files: `tempo-130.bin` → `tempo-100.bin` → `swing-60.bin`.
 
+## Trig conditions: the A4's lane, but not the A4's table
+
+Predicted at block `+384` from the A4 and measured there: a condition set on
+track 7 step 5 moved offset 6290 and nothing else. `0xFF` is "no condition",
+the same sentinel the note, velocity and length lanes use.
+
+Four points, one in each region of the menu and both ends of the ladder:
+
+| box showed | byte |
+|---|---|
+| 50% | 10 |
+| 100% | 21 |
+| PRE | 24 |
+| 1:2 | 32 |
+
+Which fixes the shape:
+
+    0..21   probability, Elektron's 22-entry ladder
+    22..31  five logic pairs, each followed by its negation
+    32..    ratios, grouped by denominator
+
+**The A4 puts `1:2` at 30, and this box puts it at 32.** The gap is two, and
+what fills it is a fifth logic pair: the A4 has FILL, PRE, NEI and 1ST, and this
+box has LST as well — the one the digis have and the A4 does not. `PRE` at 24
+is what separates that reading from "the ladder is 24 long", which would have
+put `PRE` at 26.
+
+So this box borrows its *lane* from the A4 and its *menu* from neither: it is
+the A4's single-lane scheme, where the digis keep probability in a lane of its
+own, carrying a logic block the A4 does not have.
+
+### What is measured and what is inferred
+
+The four points above fix where each region starts and ends. They do **not**
+fix the interior: the percentages between 1 and 100 are Elektron's ladder taken
+from the A4, the order of the logic pairs after `PRE` is inferred from the same
+place, and the ratio grouping is inferred. Anything decoded from those is a
+reading, not a measurement, and `condition()` says so in its doc comment.
+
+Files: `cond-before.bin`, `cond-50.bin`, `cond-ratio.bin`, `cond-pre.bin`,
+`cond-100.bin`.
+
 ## Not established
 
-The meaning of the individual bits in `0x0381`, and of the `0x0010` an empty
-even-numbered step carries. Anything above step 16, or beyond the four lanes and
-the three defaults. What the remaining ~600 bytes of a track block hold. p-lock
-allocation, which has never been observed on this box. The tempo and swing
-conversions. Which of `0x60` and `0x65` is the stored slot and which the working
-state — the two differ in a fixed 156 bytes and one note edit moved a single
-byte in the `0x65` kit region, which is not enough to call it.
+p-lock allocation, which has never been observed on this box: the 80 records of
+130 bytes are there, all `FF FF` and 128 zeros, and nothing has been seen to
+claim one. The seven further 64-byte lanes between the condition lane and the
+defaults block. What the individual bits of `0x0381` mean, and the `0x0010` an
+empty even step carries. Which of `0x60` and `0x65` is the stored slot and which
+the working state. Whether a project tempo overrides the pattern's.
 
-No decoder is implemented, no write path exists, and there is no firmware
+No encoder is implemented, no write path exists, and there is no firmware
 allowlist entry for this box. Nothing here was written to the Syntakt: every
 edit above was made by hand on the box itself.

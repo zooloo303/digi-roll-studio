@@ -246,3 +246,85 @@ pub fn swing_percent(payload: &[u8]) -> Option<u8> {
 pub fn pattern_length_steps(payload: &[u8]) -> Option<u8> {
     payload.get(PATTERN_LENGTH).copied()
 }
+
+// --- Trig conditions ---------------------------------------------------------
+
+/// Block-relative offset of the trig-condition lane, one byte per step.
+///
+/// The same offset the A4 keeps its conditions at, predicted from that and then
+/// measured. The **table is not the A4's**, though — see [`condition`].
+pub const CONDITION_LANE: usize = 384;
+
+/// Entries in the probability ladder, `0`..=`21`. Both ends measured: 50% reads
+/// 10 and 100% reads 21.
+pub const CONDITION_LOGIC_BASE: u8 = 22;
+/// Where the ratios begin. Measured: `1:2` reads 32.
+pub const CONDITION_RATIO_BASE: u8 = 32;
+
+/// What a trig condition says.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SyntaktCond {
+    /// Plays this often, as a percentage off Elektron's ladder.
+    Probability(u8),
+    /// `FILL`, `PRE`, `NEI`, `1ST`, `LST`, and their negations.
+    Logic { name: &'static str, negated: bool },
+    /// `A:B` — plays on pass A of every B.
+    Ratio { a: u8, b: u8 },
+}
+
+/// The five logic pairs, in menu order. Each is followed by its negation, which
+/// is the order every Elektron box lists them in.
+///
+/// **Five, where the A4 has four.** That extra pair is what makes the ratios
+/// start two later here than there, and `LST` is the one the A4 does not have.
+pub const CONDITION_LOGIC: [&str; 5] = ["FILL", "PRE", "NEI", "1ST", "LST"];
+
+/// Read one condition byte. `None` for [`NO_LOCK`] and for anything past the
+/// menu.
+///
+/// # What is measured and what is not
+///
+/// Four points were read off the box: `50%` → 10, `100%` → 21, `PRE` → 24 and
+/// `1:2` → 32. Those fix **the shape** — where each of the three regions starts
+/// and ends — and they were chosen to, one per region plus both ends of the
+/// ladder.
+///
+/// What they do not fix is the interior. The percentages between 1 and 100 are
+/// [`crate::a4_conditions::PERCENTAGES`], Elektron's ladder, which the two
+/// measured points sit on exactly but which is *taken* from the A4 rather than
+/// measured here. The order of the logic pairs after `PRE`, and the grouping of
+/// the ratios, are the same kind of inference. A caller that needs one of those
+/// exactly should measure it before trusting it.
+pub fn condition(byte: u8) -> Option<SyntaktCond> {
+    use crate::a4_conditions::PERCENTAGES;
+    if byte == NO_LOCK {
+        return None;
+    }
+    if byte < CONDITION_LOGIC_BASE {
+        return Some(SyntaktCond::Probability(PERCENTAGES[byte as usize]));
+    }
+    if byte < CONDITION_RATIO_BASE {
+        let i = byte - CONDITION_LOGIC_BASE;
+        return Some(SyntaktCond::Logic {
+            name: CONDITION_LOGIC[(i / 2) as usize],
+            negated: i % 2 == 1,
+        });
+    }
+    // Ratios grouped by denominator: 1:2, 2:2, 1:3, 2:3, 3:3, … 8:8.
+    let mut n = byte - CONDITION_RATIO_BASE;
+    for b in 2..=8u8 {
+        if n < b {
+            return Some(SyntaktCond::Ratio { a: n + 1, b });
+        }
+        n -= b;
+    }
+    None
+}
+
+/// The condition on one step, if it carries one.
+pub fn step_condition(payload: &[u8], track: usize, step: usize) -> Option<SyntaktCond> {
+    if track >= NUM_BLOCKS || step >= NUM_STEPS {
+        return None;
+    }
+    condition(*payload.get(block(track) + CONDITION_LANE + step)?)
+}
