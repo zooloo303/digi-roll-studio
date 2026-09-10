@@ -256,11 +256,56 @@ reading, not a measurement, and `condition()` says so in its doc comment.
 Files: `cond-before.bin`, `cond-50.bin`, `cond-ratio.bin`, `cond-pre.bin`,
 `cond-100.bin`.
 
+## The p-lock pool, and how it allocates
+
+80 records of 130 bytes at `12783`, ending at `23183`. A record is a two-byte
+header and 64 big-endian 16-bit values — one per step, `FFFF` where that step
+has no lock. Free records are `FF FF` followed by 128 zeros.
+
+**The header is (paramId, track).** Two lanes were already in this pattern
+before anything was asked of it, both keyed to track byte `0b`, and every step
+they lock is a subset of track 12's trigs. A header whose second byte were
+anything else could not have that property.
+
+**A value is the display number × 256.** Measured three ways: two lanes already
+present read 17.0 and 19.0 exactly, a third reads 43.164 — `2B 2A`, where the
+low byte carries resolution finer than the screen shows — and a lock set to 127
+during the session read `7F 00`. That is the digis' law exactly, including the
+fine low byte that made a DN2 filter frequency read 63.16.
+
+### Allocation keeps the pool sorted by paramId
+
+This is where the box differs from the digis, and it matters to anything that
+writes.
+
+A lock on FLTR RESO, track 7, step 5 was added to a pattern already holding
+lanes for paramIds 19 and 47. The new lane did **not** take the lowest free
+record. It was inserted at record 1, and the lane that was there — paramId 47 —
+moved down to record 2:
+
+| record | before | after |
+|---|---|---|
+| 0 | paramId 19, track 12 | unchanged |
+| 1 | paramId 47, track 12 | **paramId 29, track 7** |
+| 2 | free | **paramId 47, track 12** |
+
+19, 29, 47. The digis claim the lowest free lane including holes and free a lane
+in place without compacting; this box keeps the pool ordered and shifts to make
+room. A writer that assumed the digi behaviour would corrupt an existing lane.
+
+### One paramId, named
+
+`29` is FLTR RESO on the track this was set on. **One mapping is not a table**,
+and paramIds are per-box and per-machine elsewhere in this app — 74 is overdrive
+on a DT2 and filter frequency on a DN2 — so nothing should be read into 19 and
+47 without turning those knobs and watching.
+
+Files: `plock-before.bin`, `plock-after.bin`.
+
 ## Not established
 
-p-lock allocation, which has never been observed on this box: the 80 records of
-130 bytes are there, all `FF FF` and 128 zeros, and nothing has been seen to
-claim one. The seven further 64-byte lanes between the condition lane and the
+Which parameter each paramId names, beyond the one measured. The seven further
+64-byte lanes between the condition lane and the
 defaults block. What the individual bits of `0x0381` mean, and the `0x0010` an
 empty even step carries. Which of `0x60` and `0x65` is the stored slot and which
 the working state. Whether a project tempo overrides the pattern's.
