@@ -341,3 +341,37 @@ fn removing_a_trig_leaves_what_an_empty_step_holds() {
     // ours to clear.
     assert_eq!(copy[base + 15 * 2 + 1] & st::TRIG_POSITIONAL, st::TRIG_POSITIONAL);
 }
+
+/// **The outbound framing, checked against the box's own.**
+///
+/// A store on these boxes is an unsolicited dump *response*, so the message
+/// this app would send to write a pattern has the same shape as the one the box
+/// sends when asked for it. The captures keep both halves — the raw `.syx` the
+/// box produced and the payload unpacked from it — so whether
+/// `build_dump_message` produces what a Syntakt produces is answerable at rest,
+/// with nothing connected and nothing sent.
+///
+/// This is worth having before any write is attempted. `DEVELOPMENT.md` lesson
+/// 13 is an Analog Four whose whole SysEx API went down until a power cycle
+/// because it was handed a body it could not parse, six times over two days.
+/// Framing is exactly that class of unknown, and this removes it from the list
+/// without touching hardware.
+#[test]
+fn the_message_this_app_would_send_matches_the_one_the_box_sent() {
+    use digi_protocol::protocol::{build_dump_message, FAMILY_SYNTAKT};
+
+    for (request, dump_type, index, stem) in [
+        (0x60u8, 0x50u8, 0u8, "req-60-idx-00"),
+        (0x61, 0x51, 0, "req-61-idx-00"),
+        (0x62, 0x52, 0, "req-62-idx-00"),
+    ] {
+        let raw = dump(&format!("{stem}.syx"));
+        let payload = dump(&format!("{stem}.bin"));
+        let built = build_dump_message(FAMILY_SYNTAKT, dump_type, index, &payload);
+        assert_eq!(
+            built, raw,
+            "request {request:#04x}: the framing this app builds is not the framing the box \
+             produced for the same payload"
+        );
+    }
+}
