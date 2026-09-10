@@ -139,19 +139,52 @@ because the byte is **signed**, and `ff` there is simply −1. A fresh trig read
 
 Files: `micro-neg.bin`, `micro-pos.bin`.
 
+## Velocity is raw, and so are the defaults
+
+| box showed | byte |
+|---|---|
+| 100 — the track default, read while the lane was `ff` | 100 |
+| 64 | 64 |
+
+The velocity lane holds the displayed number, unscaled.
+
+There was a false alarm on the way: an edit aimed at 1 came back as 5, which
+looked like a non-linear mapping until the next point landed on 64 exactly. The
+encoder had settled on 5, so **the byte was right and the intended value was
+not**. A dump reports the box's state when it was asked, not what the screen
+said a moment earlier; when a lane disagrees with what someone meant to set, the
+lane is the more reliable witness.
+
+That also finishes the defaults block. All three of `+960`, `+961` and `+962`
+have now been read off the display of an unlocked step and matched:
+
+| offset | track 7 | shows as |
+|---|---|---|
+| +960 | 62 | D5, the default note |
+| +961 | 100 | the default velocity |
+| +962 | 14 | 1/16, the default length |
+
+## Every per-step field now decodes
+
+| field | lane | encoding |
+|---|---|---|
+| pitch | +128 | raw MIDI note, `ff` = no lock |
+| velocity | +192 | raw, `ff` = no lock |
+| length | +256 | gen-2 `length_byte_to_steps`, `ff` = no lock |
+| micro | +320 | signed byte, 24 ticks to a step, no sentinel |
+
+Three of the four reuse the DT2/DN2 conversions unchanged.
+
 ## Not established
 
-Whether `ff` means "inherit a default" and where that default lives. The
-meaning of the individual bits in `0x0381`, and of the `0x0010` on even steps.
-Anything above step 16 or beyond the four lanes. p-lock allocation. The
-tempo, swing, length and micro conversions. No write path or firmware allowlist
-entry exists for this box, and none is proposed.
+The meaning of the individual bits in `0x0381`, and of the `0x0010` an empty
+even-numbered step carries. Anything above step 16, or beyond the four lanes and
+the three defaults. What the remaining ~600 bytes of a track block hold. p-lock
+allocation, which has never been observed on this box. The tempo and swing
+conversions. Which of `0x60` and `0x65` is the stored slot and which the working
+state — the two differ in a fixed 156 bytes and one note edit moved a single
+byte in the `0x65` kit region, which is not enough to call it.
 
-## One loose end, recorded rather than explained
-
-Before the live slot was found, a note edit on the box changed exactly one byte
-in `0x65` — 24035, `ff → 06`, inside the kit region — while `0x60` and `0x61`
-did not move. A second note edit of one semitone changed nothing at all, and the
-no-edit control changed nothing. One byte moving once and then not again is not
-enough to call it anything, and it is written down here only so the next session
-does not re-derive it as new.
+No decoder is implemented, no write path exists, and there is no firmware
+allowlist entry for this box. Nothing here was written to the Syntakt: every
+edit above was made by hand on the box itself.
