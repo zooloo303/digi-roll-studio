@@ -23,5 +23,6 @@ mod roundtrip;
 mod safe_write;
 mod sound;
 mod swing;
+mod syntakt;
 mod trig_cond;
 mod trig_write;
