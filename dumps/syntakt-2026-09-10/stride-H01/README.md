@@ -175,6 +175,45 @@ have now been read off the display of an unlocked step and matched:
 
 Three of the four reuse the DT2/DN2 conversions unchanged.
 
+## Tempo and swing
+
+Both sit near the end of the pattern region. **Swing was set as the
+pattern's swing**, stated by the person turning the knob, so that one is a
+pattern-level field on the box's own terms and not merely by where it landed.
+Tempo is recorded more carefully: it is *carried in the pattern dump*, which
+is where it was read, and whether the box also keeps a project tempo that
+overrides it was not tested.
+
+**Tempo is BPM × 120**, at `23199` as a big-endian 32-bit value:
+
+| box showed | value |
+|---|---|
+| 130.0 | 15600 |
+| 100.0 | 12000 |
+
+Only the low two bytes have ever moved — 65535/120 is 546 BPM, so the top half
+has nothing to say — but the field is recorded as it was first measured, and
+`23201` as a 16-bit value would read the same in every capture so far.
+120 units to the BPM is a twelfth of the 0.1 the screen shows, which is what
+makes the display's decimal place representable.
+
+**Swing is the offset from straight, not the percentage**, one byte at `23207`:
+
+| box showed | byte |
+|---|---|
+| 50% (straight) | 0 |
+| 60% | 10 |
+
+That is the digis' convention exactly — `pattern_settings` on a DT2 or DN2
+stores `0` for 50% and `30` for 80%. So swing needs no conversion of its own
+either.
+
+**Pattern length is a raw step count**, one byte at `23204`. The donated pair
+recorded `10 → 20`, which is 16 → 32; this capture reads `40`, and the pattern
+is 64 steps.
+
+Files: `tempo-130.bin` → `tempo-100.bin` → `swing-60.bin`.
+
 ## Not established
 
 The meaning of the individual bits in `0x0381`, and of the `0x0010` an empty

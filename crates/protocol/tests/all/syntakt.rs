@@ -158,3 +158,39 @@ fn indices_off_the_end_are_none_rather_than_a_panic() {
     assert!(st::defaults(&d, st::NUM_BLOCKS).is_none());
     assert!(st::track_notes(&d, st::NUM_BLOCKS).is_empty());
 }
+
+/// Tempo, swing and pattern length, each against what the box displayed.
+#[test]
+fn the_pattern_level_fields_read_what_the_box_showed() {
+    let at_130 = dump("stride-H01/tempo-130.bin");
+    let at_100 = dump("stride-H01/tempo-100.bin");
+    assert_eq!(st::tempo_bpm(&at_130), Some(130.0));
+    assert_eq!(st::tempo_bpm(&at_100), Some(100.0));
+
+    // Straight before the edit, 60% after — the digis' convention, where the
+    // byte is the offset from 50 rather than the percentage itself.
+    assert_eq!(st::swing_percent(&at_100), Some(50));
+    assert_eq!(st::swing_percent(&dump("stride-H01/swing-60.bin")), Some(60));
+
+    // A raw step count. The donated pair recorded 16 → 32 here; this pattern
+    // is 64 steps long.
+    assert_eq!(st::pattern_length_steps(&at_100), Some(64));
+}
+
+/// Swing is the same field the digis have, so it needs no conversion of its
+/// own — and a decoder that treated the byte as a percentage would report 0%.
+#[test]
+fn a_swing_byte_is_an_offset_and_not_a_percentage() {
+    let straight = dump("stride-H01/tempo-100.bin");
+    assert_eq!(straight[st::SWING], 0);
+    assert_eq!(st::swing_percent(&straight), Some(st::SWING_STRAIGHT_PERCENT));
+}
+
+/// The pattern-level fields sit inside the region both requests share, so they
+/// read the same whichever dump they came from.
+#[test]
+fn the_pattern_level_fields_are_inside_the_shared_region() {
+    for offset in [st::TEMPO + 3, st::PATTERN_LENGTH, st::SWING] {
+        assert!(offset < st::PATTERN_BYTES, "{offset} is past the pattern region");
+    }
+}

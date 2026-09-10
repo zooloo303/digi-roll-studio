@@ -206,3 +206,43 @@ pub fn track_notes(payload: &[u8], track: usize) -> Vec<SyntaktNote> {
 pub fn trig_count(payload: &[u8], track: usize) -> usize {
     (0..NUM_STEPS).filter(|&s| plays_note(payload, track, s)).count()
 }
+
+// --- Pattern-level fields ----------------------------------------------------
+
+/// Where the tempo sits, as a big-endian 32-bit value.
+///
+/// Only the low half has ever moved — 65535/120 is 546 BPM, so the top half has
+/// nothing to say — but this is the offset the field was first measured at and
+/// a 16-bit read at 23201 would agree with every capture so far.
+pub const TEMPO: usize = 23_199;
+/// Units of the tempo field to one BPM. Measured at two points: the box showed
+/// 130.0 for 15600 and 100.0 for 12000.
+///
+/// A twelfth of the 0.1 the screen shows, which is what makes the display's
+/// decimal place representable.
+pub const TEMPO_UNITS_PER_BPM: u32 = 120;
+
+/// Where the pattern's length sits, as a raw step count.
+pub const PATTERN_LENGTH: usize = 23_204;
+
+/// Where swing sits: **the offset from straight, not the percentage.**
+pub const SWING: usize = 23_207;
+/// What a swing byte of zero means. The digis store swing the same way.
+pub const SWING_STRAIGHT_PERCENT: u8 = 50;
+
+/// The pattern's tempo in BPM.
+pub fn tempo_bpm(payload: &[u8]) -> Option<f64> {
+    let b = payload.get(TEMPO..TEMPO + 4)?;
+    let raw = u32::from_be_bytes([b[0], b[1], b[2], b[3]]);
+    Some(f64::from(raw) / f64::from(TEMPO_UNITS_PER_BPM))
+}
+
+/// The pattern's swing as the box shows it, in percent.
+pub fn swing_percent(payload: &[u8]) -> Option<u8> {
+    Some(SWING_STRAIGHT_PERCENT + payload.get(SWING)?)
+}
+
+/// How many steps the pattern runs before it wraps.
+pub fn pattern_length_steps(payload: &[u8]) -> Option<u8> {
+    payload.get(PATTERN_LENGTH).copied()
+}
