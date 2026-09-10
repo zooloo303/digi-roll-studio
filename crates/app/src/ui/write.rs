@@ -1061,6 +1061,16 @@ pub fn plan(
         return Err(blocker(device, present).unwrap_or_else(|| "that box has no ports".into()));
     };
 
+    // See `ui::sync`: a fetch-only box would be stopped by the missing `Spec`
+    // below anyway, but with a reason that is wrong for this one.
+    if !device.model.can_send_patterns() {
+        return Err(format!(
+            "{} is fetch-only here — its format is mapped but no write to it has been \
+             verified on hardware",
+            device.model.display
+        ));
+    }
+
     // The two formats plan through their own `core` seam and meet again at
     // `PlannedWrite`; everything below the match is shared.
     let (spec, write, warnings) = match device.model.pattern_route() {

@@ -244,6 +244,23 @@ pub fn plan_box(
         });
         return plan;
     };
+    // **Refused by intent, not by accident.** A read-only box has no gen-2
+    // `Spec` either, so the check below would already have stopped it — with
+    // "no pattern format", which for the Syntakt is not true and would send
+    // somebody looking for a mapping that exists. Ask the question that is
+    // actually being asked, and say the actual answer.
+    if !device.model.can_send_patterns() {
+        plan.blocked.push(Blocked {
+            device: id,
+            name: device.name.clone(),
+            why: format!(
+                "{} is fetch-only here — its format is mapped but no write to it has been \
+                 verified on hardware",
+                device.model.display
+            ),
+        });
+        return plan;
+    }
     let gen1 = device.model.pattern_route() == PatternRoute::RequestGen1;
     let spec = device.model.spec();
     if !gen1 && spec.is_none() {

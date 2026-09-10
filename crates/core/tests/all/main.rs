@@ -9,6 +9,7 @@
 //! measurements behind this.
 
 mod chords;
+mod device;
 mod edit_ops;
 mod export;
 mod history;
