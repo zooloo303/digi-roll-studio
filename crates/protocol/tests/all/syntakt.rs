@@ -236,3 +236,108 @@ fn the_condition_lane_is_the_a4s_but_the_table_is_not() {
     ));
     assert_eq!(st::CONDITION_RATIO_BASE, 32);
 }
+
+// --- The round trip ----------------------------------------------------------
+
+/// Every capture in the folder, so a new one joins the proof by existing.
+fn every_capture() -> Vec<(String, Vec<u8>)> {
+    let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../dumps/syntakt-2026-09-10");
+    let mut out = Vec::new();
+    for base in [dir.clone(), dir.join("stride-H01")] {
+        let mut entries: Vec<_> = std::fs::read_dir(&base)
+            .unwrap_or_else(|e| panic!("reading {}: {e}", base.display()))
+            .filter_map(Result::ok)
+            .map(|e| e.path())
+            .filter(|p| p.extension().is_some_and(|x| x == "bin"))
+            .collect();
+        entries.sort();
+        for path in entries {
+            let bytes = std::fs::read(&path).expect("reading a capture");
+            if st::looks_like_pattern(&bytes) {
+                out.push((path.file_name().unwrap().to_string_lossy().into_owned(), bytes));
+            }
+        }
+    }
+    assert!(out.len() >= 12, "expected the captured patterns, found {}", out.len());
+    out
+}
+
+/// **The property everything else waits on.** Decode a captured pattern, write
+/// the result straight back, and get the same bytes.
+///
+/// This is what has to hold before a write path is worth attempting, and it is
+/// stronger than it looks: the decoder resolves `ff` to the track default, so a
+/// writer that stored what it read would turn every inherited value into a lock
+/// and move hundreds of bytes. It also proves the trig words survive — the
+/// positional bit, and the `0x10` one track carries in byte 0 that nobody here
+/// has explained — because they are OR-ed and masked rather than assigned.
+#[test]
+fn decoding_a_pattern_and_writing_it_back_changes_nothing() {
+    for (name, original) in every_capture() {
+        for track in 0..st::NUM_BLOCKS {
+            let mut copy = original.clone();
+            let notes = st::track_notes(&original, track);
+            assert!(st::set_track_notes(&mut copy, track, &notes), "{name} block {track}");
+            let moved: Vec<usize> =
+                (0..original.len()).filter(|&i| copy[i] != original[i]).collect();
+            assert!(
+                moved.is_empty(),
+                "{name} block {track}: writing back moved {} bytes, first at {:?}",
+                moved.len(),
+                &moved[..moved.len().min(6)]
+            );
+        }
+    }
+}
+
+/// The same round trip with every block written in one pass, so a writer that
+/// was faithful per block but stepped on its neighbours is caught too.
+#[test]
+fn writing_every_block_back_at_once_changes_nothing() {
+    for (name, original) in every_capture() {
+        let mut copy = original.clone();
+        for track in 0..st::NUM_BLOCKS {
+            let notes = st::track_notes(&original, track);
+            st::set_track_notes(&mut copy, track, &notes);
+        }
+        assert_eq!(copy, original, "{name}: a full rewrite is not byte-identical");
+    }
+}
+
+/// A write that changes one thing changes **only** that thing. The rule the
+/// digis' encoder is held to, and the one that makes an unexplained byte safe
+/// to carry rather than dangerous.
+#[test]
+fn changing_one_note_moves_exactly_one_byte() {
+    let original = dump("stride-H01/plock-after.bin");
+    let mut copy = original.clone();
+    let mut notes = st::track_notes(&original, 6);
+    notes[0].note = 72;
+    notes[0].locked.note = true;
+    assert!(st::set_track_notes(&mut copy, 6, &notes));
+
+    let moved: Vec<usize> = (0..original.len()).filter(|&i| copy[i] != original[i]).collect();
+    assert_eq!(moved, vec![4 + 983 * 6 + st::NOTE_LANE + 4], "one byte, the note lane's");
+    assert_eq!(copy[moved[0]], 72);
+}
+
+/// Removing a trig leaves the bytes an empty step was measured to hold, and
+/// leaves the positional bit alone.
+#[test]
+fn removing_a_trig_leaves_what_an_empty_step_holds() {
+    let original = dump("stride-H01/plock-after.bin");
+    let mut copy = original.clone();
+    let kept: Vec<_> = st::track_notes(&original, 6).into_iter().filter(|n| n.step != 15).collect();
+    assert!(st::set_track_notes(&mut copy, 6, &kept));
+
+    let base = 4 + 983 * 6;
+    assert!(!st::plays_note(&copy, 6, 15));
+    for lane in [st::NOTE_LANE, st::VELOCITY_LANE, st::LENGTH_LANE, st::CONDITION_LANE] {
+        assert_eq!(copy[base + lane + 15], st::EMPTY_LANE, "lane +{lane}");
+    }
+    assert_eq!(copy[base + st::MICRO_LANE + 15], st::EMPTY_MICRO);
+    // Step 16 is even, so its word carries the positional bit — which is not
+    // ours to clear.
+    assert_eq!(copy[base + 15 * 2 + 1] & st::TRIG_POSITIONAL, st::TRIG_POSITIONAL);
+}

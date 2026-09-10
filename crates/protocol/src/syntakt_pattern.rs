@@ -73,6 +73,23 @@ pub const DEFAULT_LENGTH: usize = 962;
 /// is the sign.
 pub const NO_LOCK: u8 = 0xFF;
 
+/// What a trig-on sets in trig word byte 0. Measured: every lit step in the
+/// captured pattern carries these bits and no unlit one does.
+pub const TRIG_ON_BYTE0: u8 = 0x03;
+/// What a trig-on sets in trig word byte 1.
+///
+/// **Set, not assigned.** An empty even step already carries
+/// [`TRIG_POSITIONAL`], and a trig placed on one reads `91` where the same trig
+/// on an odd step reads `81` — so the box ORs, and so does this module.
+pub const TRIG_ON_BYTE1: u8 = 0x81;
+
+/// What every lane but micro holds on a step with no trig. Measured across 730
+/// such steps with no exception.
+pub const EMPTY_LANE: u8 = NO_LOCK;
+/// What the micro lane holds on a step with no trig. Zero, not [`NO_LOCK`],
+/// because that lane is signed.
+pub const EMPTY_MICRO: u8 = 0x00;
+
 /// Trig word byte 1, bit 0: this step plays a note.
 ///
 /// Measured across a whole pattern: every step the box lit read `81` or `91` in
@@ -106,6 +123,10 @@ pub struct SyntaktNote {
     pub length_byte: u8,
     /// Signed micro-timing, in [`MICRO_TICKS_PER_STEP`]ths of a step.
     pub micro_ticks: i8,
+    /// The condition lane's byte, raw. [`NO_LOCK`] where the step has none.
+    /// Kept raw rather than decoded so a note can be written back unchanged
+    /// even where [`condition`] would not name it.
+    pub condition_byte: u8,
     /// Whether each of the three lockable lanes carried a lock, rather than
     /// falling back to the track's default. Kept because "this trig is at the
     /// default" and "this trig is locked to the same value as the default" are
@@ -192,6 +213,7 @@ pub fn track_notes(payload: &[u8], track: usize) -> Vec<SyntaktNote> {
                 velocity: if velocity_byte == NO_LOCK { default_velocity } else { velocity_byte },
                 length_byte: if length_byte == NO_LOCK { default_length } else { length_byte },
                 micro_ticks: micro_byte as i8,
+                condition_byte: lane(payload, track, CONDITION_LANE, step)?,
                 locked: Locks {
                     note: note_byte != NO_LOCK,
                     velocity: velocity_byte != NO_LOCK,
@@ -327,4 +349,64 @@ pub fn step_condition(payload: &[u8], track: usize, step: usize) -> Option<Synta
         return None;
     }
     condition(*payload.get(block(track) + CONDITION_LANE + step)?)
+}
+
+// --- Writing back ------------------------------------------------------------
+
+/// Write one block's notes into `payload`, leaving every other byte alone.
+///
+/// # This is not yet a write path, and it is the thing one would be built on
+///
+/// There is no `safe_write` route for this box, no firmware allowlist entry,
+/// and nothing here sends anything anywhere. What this is for is the property
+/// that has to hold *before* any of that is worth attempting: decode a captured
+/// pattern, write the result straight back, and get the same bytes. A test does
+/// exactly that over every capture and every block.
+///
+/// **The bits it does not understand, it does not touch.** A trig is OR-ed on
+/// and masked off by [`TRIG_ON_BYTE0`] and [`TRIG_ON_BYTE1`] alone, so
+/// [`TRIG_POSITIONAL`] survives, and so does the `0x10` that one track's trig
+/// words carry in byte 0 for reasons nobody here knows. That is deliberate:
+/// reproducing a byte is not the same as understanding it, and only one of the
+/// two is needed to give it back unchanged.
+///
+/// A step with no note gets the values an empty step was measured to hold —
+/// [`EMPTY_LANE`] in four lanes and [`EMPTY_MICRO`] in micro — so a note
+/// removed here leaves the same bytes behind that the box leaves.
+///
+/// Returns whether anything was written; `false` means the indices or the slice
+/// were out of range and nothing was touched.
+pub fn set_track_notes(payload: &mut [u8], track: usize, notes: &[SyntaktNote]) -> bool {
+    if track >= NUM_BLOCKS || payload.len() < BLOCK_BASE + BLOCK_STRIDE * (track + 1) {
+        return false;
+    }
+    let base = block(track);
+    for step in 0..NUM_STEPS {
+        let found = notes.iter().find(|n| n.step == step);
+        let word = base + TRIG_LANE + step * 2;
+        match found {
+            Some(n) => {
+                payload[word] |= TRIG_ON_BYTE0;
+                payload[word + 1] |= TRIG_ON_BYTE1;
+                payload[base + NOTE_LANE + step] =
+                    if n.locked.note { n.note } else { NO_LOCK };
+                payload[base + VELOCITY_LANE + step] =
+                    if n.locked.velocity { n.velocity } else { NO_LOCK };
+                payload[base + LENGTH_LANE + step] =
+                    if n.locked.length { n.length_byte } else { NO_LOCK };
+                payload[base + MICRO_LANE + step] = n.micro_ticks as u8;
+                payload[base + CONDITION_LANE + step] = n.condition_byte;
+            }
+            None => {
+                payload[word] &= !TRIG_ON_BYTE0;
+                payload[word + 1] &= !TRIG_ON_BYTE1;
+                payload[base + NOTE_LANE + step] = EMPTY_LANE;
+                payload[base + VELOCITY_LANE + step] = EMPTY_LANE;
+                payload[base + LENGTH_LANE + step] = EMPTY_LANE;
+                payload[base + MICRO_LANE + step] = EMPTY_MICRO;
+                payload[base + CONDITION_LANE + step] = EMPTY_LANE;
+            }
+        }
+    }
+    true
 }
