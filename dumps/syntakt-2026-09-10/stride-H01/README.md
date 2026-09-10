@@ -63,6 +63,37 @@ A freshly made trig reads `ff` in the pitch, velocity and length lanes and `00`
 in micro — the same "still `ff` after trig creation" the donated notes recorded,
 now seen on a different track and step.
 
+## Pitch, and what  means
+
+ →  is a **note lock** on the trig at track 7 step 5,
+set by holding the trig and turning NOTE. The box displayed **D5 before and E5
+after**. Exactly one byte moved:
+
+    6034  ff -> 40    block 7 +132  =  pitch, step 5
+
+which is the address the arithmetic above predicts, and  is 64 — **E5 in
+the octave numbering the boxes use, where MIDI 60 is C5**. So the pitch lane
+holds a raw MIDI note number, and this is the second lane the formula has been
+checked against.
+
+** means "no lock, take the track's default".** The evidence is that the box
+displayed D5 for that step *while the lane byte was * — the note it played
+came from somewhere else. And that somewhere is measured too:
+
+| | block +960 | note |
+|---|---|---|
+| track 1 |  | 61 = C#5 |
+| track 7 |  | 62 = D5 |
+
+Track 7's default reads D5, which is exactly what the box showed for the
+unlocked step. The earlier notes called  at 964–966 "candidate
+defaults, never resolved into notes"; those are block offsets 960–962 of track
+1, so **+960 is the track's default note**, in the same raw MIDI as the lane.
+
+ and  are very likely the default velocity and length — they sit in
+the lane order, and read  on track 1 against  on track 7 — but
+**neither has been tested with an edit** and neither is claimed here.
+
 ## Not established
 
 Whether `ff` means "inherit a default" and where that default lives. The
