@@ -32,6 +32,12 @@
 //   cargo run -p digi_roll_studio --example syntakt_probe
 //   cargo run -p digi_roll_studio --example syntakt_probe -- --out captures/base
 //   cargo run -p digi_roll_studio --example syntakt_probe -- --family 16 --index 0
+//   cargo run -p digi_roll_studio --example syntakt_probe -- --only 60,61,65 --out captures/before
+//
+// `--only` is what a *pair* wants. A capture pair is one edit and one variable,
+// so the two halves have to be taken the same way; sweeping the whole range
+// between them spends about a second per timing-out opcode and asks the box
+// fifteen questions when three would do.
 
 use digi_midi::{list_inputs, list_outputs, ElektronDevice, PortBinding};
 
@@ -49,8 +55,27 @@ fn main() {
         .and_then(|s| u8::from_str_radix(s.trim_start_matches("0x"), 16).ok())
         .unwrap_or(0x16);
     let index = arg("--index").and_then(|s| s.parse::<u8>().ok()).unwrap_or(0);
+    // `--indices 0-15` sweeps slots instead of one. Which pattern a box is
+    // actually sitting on is not something a dump request can ask, and reading
+    // the wrong slot looks exactly like a box that ignores every edit — so
+    // finding the live one by taking a slot sweep either side of a single edit
+    // is cheaper than asking someone to read a display correctly.
+    let indices: Vec<u8> = match arg("--indices") {
+        Some(range) => {
+            let (lo, hi) = range.split_once('-').unwrap_or((range.as_str(), range.as_str()));
+            let lo: u8 = lo.trim().parse().unwrap_or(0);
+            let hi: u8 = hi.trim().parse().unwrap_or(lo);
+            (lo..=hi).collect()
+        }
+        None => vec![index],
+    };
     let fragment = arg("--port").unwrap_or_else(|| "Syntakt".to_string());
     let out = arg("--out");
+    let only: Option<Vec<u8>> = arg("--only").map(|list| {
+        list.split(',')
+            .filter_map(|t| u8::from_str_radix(t.trim().trim_start_matches("0x"), 16).ok())
+            .collect()
+    });
 
     let inputs = list_inputs().expect("MIDI would not start");
     let outputs = list_outputs().expect("MIDI would not start");
@@ -73,20 +98,31 @@ fn main() {
         "{} — product {}, build {}, version {}, sweeping family {family:#04x} index {index}",
         identity.name, identity.product_id, identity.build, identity.version
     );
-    println!("{:>5}  {:>5}  {:>8}  {}", "req", "resp", "bytes", "leading bytes");
+    // The reply's index byte is printed because it is the box answering "which
+    // slot is this?", and a stored-slot request echoes what was asked while a
+    // working-state request names whatever is loaded. Reading a pattern the box
+    // is not editing looks exactly like a box that ignores edits.
+    println!("{:>5}  {:>5}  {:>4}  {:>8}  {}", "req", "resp", "idx", "bytes", "leading bytes");
 
     if let Some(dir) = &out {
         std::fs::create_dir_all(dir).expect("could not make the output directory");
     }
 
-    for request in REQUESTS {
+    let wanted: Vec<u8> = match &only {
+        Some(list) => list.clone(),
+        None => REQUESTS.collect(),
+    };
+    for (request, index) in
+        wanted.iter().copied().flat_map(|r| indices.iter().copied().map(move |i| (r, i)))
+    {
         match device.fetch_dump(family, request, index) {
             Ok(reply) => {
                 let head: Vec<String> =
                     reply.payload.iter().take(16).map(|b| format!("{b:02x}")).collect();
                 println!(
-                    "{request:>5x}  {:>5x}  {:>8}  {}",
+                    "{request:>5x}  {:>5x}  {:>4}  {:>8}  {}",
                     reply.dump_type,
+                    reply.index,
                     reply.payload.len(),
                     head.join(" ")
                 );
@@ -103,7 +139,7 @@ fn main() {
                         .expect("could not write the payload");
                 }
             }
-            Err(e) => println!("{request:>5x}  {:>5}  {:>8}  {e}", "-", "-"),
+            Err(e) => println!("{request:>5x}  {:>5}  {:>4}  {:>8}  {e}", "-", "-", "-"),
         }
     }
 
