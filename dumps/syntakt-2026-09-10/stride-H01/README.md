@@ -94,6 +94,28 @@ defaults, never resolved into notes"; those are block offsets 960–962 of track
 the lane order, and read `67 0d` on track 1 against `64 0e` on track 7 — but
 **neither has been tested with an edit** and neither is claimed here.
 
+## Length is the gen-2 scale, unchanged
+
+Three locks on the same trig (track 7, step 5), each one edit apart:
+
+| box showed | byte | `length_byte_to_steps` |
+|---|---|---|
+| 1/16 — the track default, read while the lane was `ff` | 14 | 1 step |
+| 1/8 | 30 | 2 steps |
+| 1/32 | 6 | 0.5 steps |
+
+A step at SCALE 1x is a sixteenth, so all three land **exactly** on the scale
+`protocol::pattern::length_byte_to_steps` already implements for the DT2 and
+DN2 — including the part that makes it worth checking. That function is
+piecewise: below 14 it is a flat 1/16-step ladder from 0.125, and from 14 up it
+doubles every sixteen values. Two points inside one branch would have fitted
+half a dozen curves; 1/32 was chosen to land in the *other* branch, and byte 6
+is what it predicts.
+
+So **the Syntakt's length encoding is the gen-2 one**, and the existing
+conversion can be reused rather than re-derived. Files: `len-before.bin` →
+`len-after.bin` → `len32.bin`.
+
 ## Not established
 
 Whether `ff` means "inherit a default" and where that default lives. The
