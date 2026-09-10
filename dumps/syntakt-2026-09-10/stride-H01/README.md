@@ -302,13 +302,40 @@ on a DT2 and filter frequency on a DN2 — so nothing should be read into 19 and
 
 Files: `plock-before.bin`, `plock-after.bin`.
 
+## Where a write would go, and what `0x65` is not
+
+`0x60` and `0x61` are **slot-addressed and live**. Asking either for the slot the
+box is sitting on returns that pattern with every unsaved edit in it, and the
+two agree on all 23552 bytes of the pattern region. That is what made the whole
+session work: `0x61` at slot 112 caught every knob turn as it happened.
+
+So the pattern is edited in RAM and the slot request returns it, which is how
+these boxes have always behaved. **There is no stored-versus-working choice to
+make about where a write goes** — the destination is the slot.
+
+`0x65` is not the working state, which is what it looked like before it was
+asked properly:
+
+- It **does not take a slot.** It answers for index 0 and times out for 112.
+- What it answers with is **A01's pattern**, not the loaded one: 41 bytes from
+  the stored A01 against 582 from H01.
+- The 41 are all in the tail of a track block — `+980`, `+981`, `+982` read
+  `00 00 00` in `0x60` and `3f 3f 3f` here, in all thirteen blocks, plus `+974`
+  in two of them. No trig word and no lane differs.
+- Its kit differs from the stored A01 kit by 115 bytes.
+
+What it *is* remains unresolved, and the earlier note guessing "stored slot
+versus working state" from a 156-byte diff is superseded: that diff is a handful
+of per-track tail bytes and a kit, taken while the box was sitting on a
+different pattern entirely.
+
 ## Not established
 
 Which parameter each paramId names, beyond the one measured. The seven further
 64-byte lanes between the condition lane and the
 defaults block. What the individual bits of `0x0381` mean, and the `0x0010` an
-empty even step carries. Which of `0x60` and `0x65` is the stored slot and which
-the working state. Whether a project tempo overrides the pattern's.
+empty even step carries. What `0x65` is — not the working state, but not
+identified either. Whether a project tempo overrides the pattern's.
 
 No encoder is implemented, no write path exists, and there is no firmware
 allowlist entry for this box. Nothing here was written to the Syntakt: every
