@@ -116,6 +116,29 @@ So **the Syntakt's length encoding is the gen-2 one**, and the existing
 conversion can be reused rather than re-derived. Files: `len-before.bin` →
 `len-after.bin` → `len32.bin`.
 
+## Micro-timing is a signed byte, 24 ticks to a step
+
+Two locks on the same trig, opposite directions, same magnitude:
+
+| box showed | byte | as signed |
+|---|---|---|
+| nothing (a fresh trig) | `00` | 0 |
+| −1/48 | `f8` | −8 |
+| +1/48 | `08` | +8 |
+
+A bar is sixteen steps at SCALE 1x, so 1/48 of a bar is a third of a step, and a
+third of a step reading 8 puts **24 ticks in a step** — the same resolution the
+DT2 and DN2 use. Negative is earlier, positive is later, and the two directions
+are symmetric.
+
+**This is why the earlier notes warned that micro's `ff` "must not be treated as
+the same sentinel as the other fields".** The pitch, velocity and length lanes
+use `ff` for *no lock, take the track default*; micro has no such sentinel
+because the byte is **signed**, and `ff` there is simply −1. A fresh trig reads
+`00`, not `ff`, which is the same distinction seen from the other side.
+
+Files: `micro-neg.bin`, `micro-pos.bin`.
+
 ## Not established
 
 Whether `ff` means "inherit a default" and where that default lives. The
