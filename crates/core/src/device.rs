@@ -75,15 +75,35 @@ pub enum PatternRoute {
     /// answers dump requests"). The box still *can* push a dump from its own
     /// front panel; what died is the claim that this was the only way in.
     RequestGen1,
+    /// **Request and reply, gen-2 framing, bespoke layout.** The app sends a
+    /// `0x60` and the box answers `0x50` — the pattern *with its kit* — which
+    /// `protocol::syntakt_pattern` reads and there is no `Spec` for. The write
+    /// back is that same `0x50`, through `safe_write::syntakt_safe_write_tracks`
+    /// on the same re-fetch, backup, confirm, verify ceremony as the other two.
+    /// The Syntakt.
+    ///
+    /// **Three things separate this from [`Request`](PatternRoute::Request)**,
+    /// all measured on 2026-09-11 and all in `dumps/syntakt-2026-09-11/`: this
+    /// box stores nothing of the `0x51` that carries a pattern alone, so a write
+    /// reaches sounds whether it wants to or not; the destination is the
+    /// message's index byte rather than the slot armed in SYSEX RECEIVE, which
+    /// is the opposite of what SYXGRID measured on a Digitone II; and a frame
+    /// delivered in one call stores nothing, silently, while pieces of 16 KB or
+    /// under store every byte.
+    RequestSyntakt,
     /// **Request and reply, and nothing goes back.** The app can fetch a
     /// pattern and read it; there is no send.
     ///
     /// This exists because "we can read this box" and "we may write to it" are
     /// different claims, and until this variant the type could not tell them
     /// apart — a model had to say [`Request`](PatternRoute::Request) to be
-    /// fetchable, which also put it in every send picker. The Syntakt is
-    /// mapped well enough to read and has **no hardware-verified write and no
-    /// firmware allowlist entry**, so it needs the first without the second.
+    /// fetchable, which also put it in every send picker.
+    ///
+    /// **No box is on this route today.** The Syntakt was, from 2026-09-10 until
+    /// the write was verified on 2026-09-11, which is exactly the deliberate act
+    /// the next paragraph asks for. The variant stays because the next
+    /// unmapped-write box needs it and because the reason it exists has not
+    /// changed.
     ///
     /// Promoting a box out of this variant is a deliberate act that should
     /// follow a verified write, not a tidy-up.
@@ -112,7 +132,7 @@ impl PatternRoute {
         match self {
             Self::LiveOnly => "live only",
             Self::RequestReadOnly => "fetch only",
-            Self::Request | Self::RequestGen1 => "fetch + write",
+            Self::Request | Self::RequestGen1 | Self::RequestSyntakt => "fetch + write",
         }
     }
 }
@@ -249,7 +269,9 @@ impl DeviceModel {
     /// classified here before it compiles anywhere.
     pub fn can_send_patterns(&self) -> bool {
         match self.pattern_route {
-            PatternRoute::Request | PatternRoute::RequestGen1 => true,
+            PatternRoute::Request
+            | PatternRoute::RequestGen1
+            | PatternRoute::RequestSyntakt => true,
             PatternRoute::LiveOnly | PatternRoute::RequestReadOnly => false,
         }
     }
@@ -257,9 +279,10 @@ impl DeviceModel {
     /// Whether a pattern may be fetched **from** this box.
     pub fn can_fetch_patterns(&self) -> bool {
         match self.pattern_route {
-            PatternRoute::Request | PatternRoute::RequestGen1 | PatternRoute::RequestReadOnly => {
-                true
-            }
+            PatternRoute::Request
+            | PatternRoute::RequestGen1
+            | PatternRoute::RequestSyntakt
+            | PatternRoute::RequestReadOnly => true,
             PatternRoute::LiveOnly => false,
         }
     }
@@ -394,7 +417,7 @@ pub static SYNTAKT: DeviceModel = DeviceModel {
     notes_per_trig: 1,
     default_track_kind: TrackKind::Audio,
     sysex: None,
-    pattern_route: PatternRoute::RequestReadOnly,
+    pattern_route: PatternRoute::RequestSyntakt,
     preset_load: PresetLoad::None,
     wire_slots: 128,
 };

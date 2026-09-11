@@ -38,14 +38,15 @@
 //! it stores `0x50` and nothing else, so a pattern write reaches sounds whether
 //! it wants to or not.
 //!
-//! # This box is not in the app's write picker yet
+//! # The route
 //!
-//! `device::SYNTAKT` is still [`PatternRoute::RequestReadOnly`]. Everything here
-//! works and is tested; what is missing is the panel dispatch, and promoting the
-//! route before that exists would put a button on screen that calls the gen-2
-//! flow and fails. So the checks below name the box by slug rather than by
-//! route — the route that would describe it does not exist yet, and inventing an
-//! unreachable variant to check against would be worse than saying so.
+//! `device::SYNTAKT` is [`PatternRoute::RequestSyntakt`], which is what the
+//! panels dispatch on to reach this file and the flow behind it. For one commit
+//! it was not: this file existed and the box was still
+//! `PatternRoute::RequestReadOnly`, because promoting it before the panels knew
+//! the flow would have put a button on screen that called the gen-2 path and
+//! failed. That ordering is DEVELOPMENT.md lesson 3 read forwards instead of
+//! after the fact.
 
 use digi_protocol::pattern::{
     length_byte_to_steps, micro_byte_to_steps, micro_steps_to_byte, steps_to_length_byte,
@@ -53,12 +54,13 @@ use digi_protocol::pattern::{
 use digi_protocol::safe_write::{SyntaktStep, SyntaktTrackWrite};
 use digi_protocol::syntakt_pattern::{self as st, SyntaktCond};
 
-use crate::device::{DeviceId, DeviceModel};
+use crate::device::{DeviceId, DeviceModel, PatternRoute};
 use crate::model::{Note, Pattern, Source};
 use crate::session::{PatternRef, Session};
 
-/// The slug that names this box's format, and the one check every entry point
-/// here makes. See the module doc for why it is a slug and not a route.
+/// The slug this box's `source` record carries. Not what the entry points check
+/// — that is the route, as `a4_transfer`'s is — but what an imported pattern
+/// remembers about where it came from.
 const SLUG: &str = "syntakt";
 
 /// What the box calls each block.
@@ -131,7 +133,7 @@ pub fn syntakt_pattern_to_model(
     slot: u8,
     payload: &[u8],
 ) -> Result<(Pattern, SyntaktImportReport), SyntaktImportError> {
-    if model.slug != Some(SLUG) {
+    if model.pattern_route() != PatternRoute::RequestSyntakt {
         return Err(SyntaktImportError::NotThisBox { expected: model.display });
     }
     if !st::looks_like_pattern(payload) {
@@ -520,7 +522,7 @@ impl Session {
         into: PatternRef,
     ) -> Result<SyntaktTrackExport, SyntaktExportError> {
         let d = self.device(device).ok_or(SyntaktExportError::NoSuchDevice(device))?;
-        if d.model.slug != Some(SLUG) {
+        if d.model.pattern_route() != PatternRoute::RequestSyntakt {
             return Err(SyntaktExportError::NotThisBox { expected: d.model.display });
         }
         let pattern = d
