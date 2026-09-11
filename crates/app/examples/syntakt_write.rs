@@ -60,6 +60,7 @@
 //   cargo run -p digi_roll_studio --example syntakt_write -- --index 1 --relock 0:0:60 --send
 
 use std::io::Write as _;
+use std::time::Duration;
 
 use digi_midi::a4_transfer::Pacing;
 use digi_midi::syntakt_transfer::{
@@ -91,10 +92,18 @@ fn main() {
     // nothing at all on an Analog Four, silently, and it is the shape every
     // Syntakt attempt on 2026-09-10 used. `--single` keeps it reachable so the
     // difference stays measurable; it is an experiment, not a time saving.
-    let pacing = if flag("--single") {
-        Pacing::single()
-    } else {
-        Pacing::din()
+    // `--chunk N --gap MS` is how the digis' own rate gets tried on this box:
+    // `device::paced_send` uses 4 KB pieces at 800 bytes a millisecond, two
+    // orders of magnitude faster than DIN. If the Syntakt takes that, it can use
+    // the store path the DT2 and DN2 already use rather than needing a second.
+    let pacing = match (
+        flag("--single"),
+        arg("--chunk").and_then(|s| s.parse::<usize>().ok()),
+        arg("--gap").and_then(|s| s.parse::<u64>().ok()),
+    ) {
+        (true, _, _) => Pacing::single(),
+        (_, Some(chunk), Some(gap)) => Pacing { chunk, gap: Duration::from_millis(gap) },
+        _ => Pacing::din(),
     };
     // Fetch from one slot, store into another. The point is not copying: it is
     // that a store into an *empty* slot has a visible outcome, where a store of

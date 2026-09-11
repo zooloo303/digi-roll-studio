@@ -53,7 +53,7 @@ The manual agrees on arming, for what it is worth: §14.5.2 says the box "is
 continuously listening for SysEx data". There is no interlock between a stray
 36 KB SysEx and an overwritten pattern.
 
-## 3. The frame has to be paced
+## 3. The frame has to be split, and the piece size is what matters
 
 The controlled pair, same bytes and same destination minutes apart:
 
@@ -62,9 +62,34 @@ The controlled pair, same bytes and same destination minutes apart:
 | one `send` of 36,294 bytes | **nothing**, silently |
 | 142 packets of 256 bytes at DIN rate | every byte |
 
-This is PLAN.md §9's Analog Four finding, on a box nine years newer and on USB
-rather than DIN. It was measured there on 2026-08-30 and not applied here until
-somebody had run out of other ideas.
+That is PLAN.md §9's Analog Four finding reproduced on a box nine years newer,
+and it was the wrong conclusion to stop at. **The rate is not the constraint.
+The piece size is**, and a sweep says so:
+
+| piece | packets | landed |
+|---|---|---|
+| 4,096 | 9 | yes |
+| 8,192 | 5 | yes |
+| 16,384 | 3 | yes |
+| 20,000 | 2 | **no** |
+| 36,294 (one call) | 1 | **no** |
+
+All of the sweep ran at 6 ms between pieces, two orders of magnitude faster than
+DIN, and the whole 36 KB goes out in about a twentieth of a second. Fewer
+packets is not the problem — 3 pieces work and 2 do not — so the boundary is
+somewhere between 16 KB and 20 KB per call, which has the shape of a buffer
+rather than of a box that cannot keep up.
+
+**This matters because it means the Syntakt needs no store path of its own.**
+`device::paced_send` already chunks at `SEND_CHUNK`, 4 KB on macOS, which is
+four times inside the boundary; the DT2 and DN2 go out through it today.
+
+It also means the Windows question is open and probably bad. `SEND_CHUNK` is
+`usize::MAX` there, because WinMM refuses a chunk that does not begin `0xF0` —
+so on Windows this frame goes out in one call, which is the shape that stores
+nothing. That is the Analog Four's position exactly (`a4_transfer::CAN_PACE`),
+and a panel offering a Syntakt write on Windows would be offering the thing that
+has never worked. **Untested: there is no Windows machine here.**
 
 ## The read-back that would have failed
 
