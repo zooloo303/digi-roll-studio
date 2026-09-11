@@ -5,8 +5,12 @@
 //! rather than with a previous version of itself. The captures live in
 //! `dumps/syntakt-2026-09-10/`; the working is in that folder's READMEs.
 //!
-//! **Nothing here writes.** There is no encoder for this box and no firmware
-//! allowlist entry, and these tests do not imply either.
+//! **Nothing here writes**, and that is now a statement about this file rather
+//! than about the box. Until 2026-09-11 it was both: there was no encoder and no
+//! allowlist entry. There are both now — `safe_write::syntakt_safe_write_tracks`
+//! and `syntakt`/`0082` — and the write side has its own suite in
+//! `syntakt_safe_write.rs`. These tests stay a read map, measured against
+//! captures, and they do not depend on any of that.
 
 use digi_protocol::pattern::length_byte_to_steps;
 use digi_protocol::syntakt_pattern as st;

@@ -380,33 +380,69 @@ pub fn set_track_notes(payload: &mut [u8], track: usize, notes: &[SyntaktNote]) 
     if track >= NUM_BLOCKS || payload.len() < BLOCK_BASE + BLOCK_STRIDE * (track + 1) {
         return false;
     }
-    let base = block(track);
     for step in 0..NUM_STEPS {
-        let found = notes.iter().find(|n| n.step == step);
-        let word = base + TRIG_LANE + step * 2;
-        match found {
-            Some(n) => {
-                payload[word] |= TRIG_ON_BYTE0;
-                payload[word + 1] |= TRIG_ON_BYTE1;
-                payload[base + NOTE_LANE + step] =
-                    if n.locked.note { n.note } else { NO_LOCK };
-                payload[base + VELOCITY_LANE + step] =
-                    if n.locked.velocity { n.velocity } else { NO_LOCK };
-                payload[base + LENGTH_LANE + step] =
-                    if n.locked.length { n.length_byte } else { NO_LOCK };
-                payload[base + MICRO_LANE + step] = n.micro_ticks as u8;
-                payload[base + CONDITION_LANE + step] = n.condition_byte;
-            }
-            None => {
-                payload[word] &= !TRIG_ON_BYTE0;
-                payload[word + 1] &= !TRIG_ON_BYTE1;
-                payload[base + NOTE_LANE + step] = EMPTY_LANE;
-                payload[base + VELOCITY_LANE + step] = EMPTY_LANE;
-                payload[base + LENGTH_LANE + step] = EMPTY_LANE;
-                payload[base + MICRO_LANE + step] = EMPTY_MICRO;
-                payload[base + CONDITION_LANE + step] = EMPTY_LANE;
-            }
+        set_step(payload, track, step, notes.iter().find(|n| n.step == step));
+    }
+    true
+}
+
+/// Write one step of a block.
+///
+/// `Some` authors a note trig. `None` clears one — **but only if the step plays
+/// a note now.**
+///
+/// That exception is the whole reason this is a function rather than a branch
+/// inside the loop above. A Syntakt step can hold a trig that sounds no note and
+/// carries parameter locks alone; the DN2's published format map calls that
+/// state `0x78` in the trig word's first byte, and nothing in this model can
+/// represent it. A step like that was never on screen, so **nobody can have
+/// meant to delete it**, and a write-back that cleared the word would destroy it
+/// silently on every press.
+///
+/// This is the rule `a4_pattern`'s `TrigState::Trigless` arrived at on
+/// 2026-09-01, for the same reason and after the same mistake. Here it costs a
+/// [`plays_note`] check.
+///
+/// Returns whether anything was written; `false` means the indices or the slice
+/// were out of range and nothing was touched.
+pub fn set_step(
+    payload: &mut [u8],
+    track: usize,
+    step: usize,
+    note: Option<&SyntaktNote>,
+) -> bool {
+    if track >= NUM_BLOCKS
+        || step >= NUM_STEPS
+        || payload.len() < BLOCK_BASE + BLOCK_STRIDE * (track + 1)
+    {
+        return false;
+    }
+    let base = block(track);
+    let word = base + TRIG_LANE + step * 2;
+    match note {
+        Some(n) => {
+            payload[word] |= TRIG_ON_BYTE0;
+            payload[word + 1] |= TRIG_ON_BYTE1;
+            payload[base + NOTE_LANE + step] = if n.locked.note { n.note } else { NO_LOCK };
+            payload[base + VELOCITY_LANE + step] =
+                if n.locked.velocity { n.velocity } else { NO_LOCK };
+            payload[base + LENGTH_LANE + step] =
+                if n.locked.length { n.length_byte } else { NO_LOCK };
+            payload[base + MICRO_LANE + step] = n.micro_ticks as u8;
+            payload[base + CONDITION_LANE + step] = n.condition_byte;
         }
+        // Not `else { clear }`: a step holding something unrepresentable keeps
+        // every one of its bytes, the condition lane included.
+        None if plays_note(payload, track, step) => {
+            payload[word] &= !TRIG_ON_BYTE0;
+            payload[word + 1] &= !TRIG_ON_BYTE1;
+            payload[base + NOTE_LANE + step] = EMPTY_LANE;
+            payload[base + VELOCITY_LANE + step] = EMPTY_LANE;
+            payload[base + LENGTH_LANE + step] = EMPTY_LANE;
+            payload[base + MICRO_LANE + step] = EMPTY_MICRO;
+            payload[base + CONDITION_LANE + step] = EMPTY_LANE;
+        }
+        None => {}
     }
     true
 }

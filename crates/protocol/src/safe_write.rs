@@ -92,6 +92,12 @@ pub const WRITE_ALLOWED_BUILDS: &[(&str, &[&str])] = &[
     // The full byte-for-byte verify is what `a4_safe_write_tracks` runs on
     // every write, so the first send through it completes this row's evidence.
     ("analogfour", &["0195", "0201"]), // 1.55B, 1.55D
+    // 1.40. Verified 2026-09-11 on hardware, with a control: six sends into six
+    // empty slots, each carrying a different edit, each read back and compared.
+    // A02 was read before the first write and after the last and is
+    // byte-identical, so a box that ignored the writes reads back differently
+    // from one that took them. `dumps/syntakt-2026-09-11/README.md` has the run.
+    ("syntakt", &["0082"]), // 1.40
 ];
 
 /// How many mismatching offsets the verify step reports. The JS default is 64;
@@ -110,6 +116,10 @@ pub fn decoder_for(slug: &str) -> Option<&'static str> {
         // callers that need one ask `spec_for` and get `None`, which is how the
         // gen-2 flow refuses this box (see `safe_write_tracks`).
         "analogfour" => Some("a4"),
+        // Gen-2 framing, bespoke layout. `crate::syntakt_pattern` is the struct
+        // and there is no `Spec`, so `spec_for` says `None` here too and the
+        // gen-2 flow refuses it by name — see [`syntakt_safe_write_tracks`].
+        "syntakt" => Some("syntakt"),
         _ => None,
     }
 }
@@ -613,9 +623,17 @@ pub fn safe_write_tracks(
     // [`a4_safe_write_tracks`]. A caller that routed it here is refused rather
     // than encoded with a `Spec` this box does not have.
     let Some(spec) = spec_for(&identity.slug) else {
+        // There are two of these now, and "not gen-2" stopped being a good
+        // enough reason to name one of them: the Syntakt speaks the gen-2 dump
+        // protocol and still has no `Spec`. So the message says which flow this
+        // box has rather than which generation it is not.
+        let flow = match decoder_for(&identity.slug) {
+            Some("syntakt") => "`syntakt_safe_write_tracks`",
+            _ => "the Analog Four flow",
+        };
         return Err(WriteError::Gate(format!(
-            "{} patterns are gen-1 — this write goes through the Analog Four flow, not the \
-             gen-2 one",
+            "{} patterns have no gen-2 `Spec` — this write goes through {flow}, not the gen-2 \
+             one",
             identity.name
         )));
     };
@@ -1181,6 +1199,297 @@ pub fn a4_safe_write_tracks(
     })
 }
 
+// --- the Syntakt flow ---------------------------------------------------------
+
+/// One step's worth of Syntakt write.
+///
+/// The five lanes hardware named on 2026-09-10: note, velocity, length, micro
+/// timing and trig condition. **Raw bytes rather than decoded values**, for the
+/// reason [`crate::syntakt_pattern::SyntaktNote`] keeps its condition raw — a
+/// value this app cannot name still has to survive a round trip, and a decode
+/// that drops it is a write that deletes it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SyntaktStep {
+    /// MIDI note number.
+    pub note: u8,
+    /// Velocity as displayed, 0–127.
+    pub velocity: u8,
+    /// The length lane's byte. `crate::pattern::length_byte_to_steps` converts.
+    pub length_byte: u8,
+    /// Signed micro timing, in 24ths of a step.
+    pub micro_ticks: i8,
+    /// The condition lane's byte, raw. [`crate::syntakt_pattern::NO_LOCK`] for
+    /// a step with no condition.
+    pub condition_byte: u8,
+}
+
+/// One track's worth of Syntakt write — the twin of [`A4TrackWrite`].
+#[derive(Debug, Clone)]
+pub struct SyntaktTrackWrite {
+    /// Destination slot, 0–127, eight banks of sixteen.
+    pub index: u8,
+    /// 0–12: the twelve audio tracks and the FX track.
+    pub track_index: usize,
+    /// One entry per step, always all 64. `Some` authors a note trig; `None`
+    /// clears one — so this write is the track's whole trig lane, and an empty
+    /// track is a deliberate clear rather than a no-op.
+    pub steps: Vec<Option<SyntaktStep>>,
+    /// Swing as a percentage, or `None` to leave the byte alone. Belongs to the
+    /// whole pattern, so two different answers in one write is a refusal.
+    pub swing: Option<f64>,
+}
+
+/// Replace several tracks of **one** pattern on a Syntakt, safely, in one pass.
+///
+/// The third of these, and a twin rather than a branch for the reason
+/// [`a4_safe_write_tracks`] is one: the ceremony is the same rules in the same
+/// order — gate, re-fetch, confirm, stash, encode, send, read back, compare —
+/// and almost nothing *inside* the steps is shared. The decode is
+/// [`crate::syntakt_pattern`]'s rather than a `Spec`'s.
+///
+/// # What the re-fetch buys here, and it is more than elsewhere
+///
+/// This box stores `0x50`, the pattern **with its kit**, and appears to store
+/// nothing of the `0x51` that carries a pattern alone
+/// (`dumps/syntakt-2026-09-11/README.md`). So every write reaches sounds whether
+/// it wants to or not, and nothing here can author a kit.
+///
+/// Composing on the destination read moments before the send is what makes that
+/// safe rather than merely unavoidable: **the kit going back is the
+/// destination's own, byte for byte**, along with the p-lock pool and every lane
+/// this format does not name. A write can only differ from what is on the box
+/// right now by the steps it was asked to change.
+///
+/// # What it does not touch, and the one loose end
+///
+/// The p-lock pool is mapped on this box but no write composes one, so it goes
+/// back as fetched. **Clearing a step therefore leaves that step's pool entries
+/// behind**, pointing at a trig that is no longer there. They are inert on the
+/// box — a lock with no trig sounds nothing — and they are the destination's own
+/// bytes rather than invented ones, which is why this is a loose end rather than
+/// a refusal. A pool writer would close it.
+pub fn syntakt_safe_write_tracks(
+    device: &mut impl PatternIo,
+    stash: &Stash,
+    writes: &[SyntaktTrackWrite],
+    hooks: &mut impl WriteHooks,
+    now: Timestamp,
+) -> Result<WriteResult, WriteError> {
+    use crate::pattern_settings::{SWING_MAX, SWING_MIN};
+    use crate::syntakt_pattern as st;
+
+    let gate = write_gate(device.identity());
+    if !gate.ok {
+        return Err(WriteError::Gate(gate.reason));
+    }
+    let identity = device.identity().expect("the gate refuses a missing identity").clone();
+    // The mirror of the other two flows' refusals: the gate passes three
+    // formats, and a box routed here would have its dump read at this format's
+    // offsets — plausible nonsense, refused by name instead.
+    if decoder_for(&identity.slug) != Some("syntakt") {
+        return Err(WriteError::Gate(format!(
+            "{} patterns are not the Syntakt's format — this write goes through another flow",
+            identity.name
+        )));
+    }
+    let family = identity.family.expect("a decodable box has a dump family");
+
+    // Before the fetch, because none of these need a box to be wrong.
+    let index = match writes {
+        [] => {
+            return Err(WriteError::Encode(
+                "nothing to write: a write with no tracks in it would back the slot up and send \
+                 it back unchanged"
+                    .into(),
+            ))
+        }
+        [first, ..] => first.index,
+    };
+    if let Some(stray) = writes.iter().find(|w| w.index != index) {
+        return Err(WriteError::Encode(format!(
+            "one write, one slot: these tracks are aimed at {} and {}",
+            bank_name(index as usize),
+            bank_name(stray.index as usize)
+        )));
+    }
+    for (position, write) in writes.iter().enumerate() {
+        if write.track_index >= st::NUM_BLOCKS {
+            return Err(WriteError::Encode(format!(
+                "no track {}; a Syntakt pattern has {}",
+                write.track_index + 1,
+                st::NUM_BLOCKS
+            )));
+        }
+        if write.steps.len() != st::NUM_STEPS {
+            return Err(WriteError::Encode(format!(
+                "track {} names {} steps and a Syntakt trig lane has {} — a partial lane would \
+                 leave steps nobody decided about",
+                write.track_index + 1,
+                write.steps.len(),
+                st::NUM_STEPS
+            )));
+        }
+        if writes[..position].iter().any(|w| w.track_index == write.track_index) {
+            return Err(WriteError::Encode(format!(
+                "track {} is named twice in one write — the second would silently replace the \
+                 first",
+                write.track_index + 1
+            )));
+        }
+    }
+    // Swing is one byte belonging to the whole pattern, so two answers for one
+    // send is a caller that has not decided. `None` is not an answer and does
+    // not conflict with one: it means "leave the byte alone".
+    let mut swing: Option<f64> = None;
+    for write in writes {
+        match (swing, write.swing) {
+            (Some(a), Some(b)) if a != b => {
+                return Err(WriteError::Encode(format!(
+                    "two swings for one pattern: {a} and {b} — swing belongs to the slot, not to \
+                     a track"
+                )))
+            }
+            (None, Some(b)) => swing = Some(b),
+            _ => {}
+        }
+    }
+
+    let label = bank_name(index as usize);
+
+    // Rule: re-fetch. This payload is both the backup and the base we edit —
+    // see the header for what that buys on this box in particular.
+    hooks.on_status(&format!("Fetching {label} for backup…"));
+    let original = device.fetch_pattern_kit(index).map_err(WriteError::Io)?;
+    if !st::looks_like_pattern(&original) {
+        return Err(WriteError::Encode(format!(
+            "the box answered {} bytes for {label} and they do not announce struct version {} — \
+             not a pattern this format can edit",
+            original.len(),
+            st::STRUCT_VERSION
+        )));
+    }
+
+    let mut tracks = Vec::with_capacity(writes.len());
+    for write in writes {
+        tracks.push(TrackConfirm {
+            track_index: write.track_index,
+            existing_trigs: st::trig_count(&original, write.track_index),
+            note_count: write.steps.iter().filter(|s| s.is_some()).count(),
+            // The pool is mapped on this box, and a write leaves it as fetched —
+            // so nothing is being cleared and there is nothing to warn about.
+            // See the header's loose end for what that costs.
+            box_plocks: Vec::new(),
+        });
+    }
+
+    let consented = hooks.confirm(&ConfirmArgs {
+        pattern_kit: None,
+        label: label.clone(),
+        index,
+        // The same shape `pattern_settings::read_swing` uses, against this
+        // format's own offset: a byte outside the range reads as straight
+        // rather than as a percentage nobody can set.
+        swing: Some(match original[st::SWING] {
+            byte if byte <= SWING_MAX - SWING_MIN => st::SWING_STRAIGHT_PERCENT + byte,
+            _ => st::SWING_STRAIGHT_PERCENT,
+        }),
+        free_lanes: None,
+        tracks,
+    });
+    if !consented {
+        return Ok(WriteResult {
+            ok: false,
+            cancelled: true,
+            diffs: Vec::new(),
+            dropped: 0,
+            written: 0,
+            warnings: Vec::new(),
+            label,
+            index,
+            tracks: writes.iter().map(|w| w.track_index).collect(),
+            backup: None,
+            payload: None,
+        });
+    }
+
+    // Rule 1, and the point past which the destination is recoverable — the
+    // bytes exactly as the box sent them, framed back up as the `0x50` message
+    // it would take again ([`pattern_dump_type`]).
+    let backup = pattern_kit_backup(&identity.slug, family, index, &original, now);
+    let stashed = stash
+        .stash(
+            &backup,
+            &BackupContext {
+                device_name: identity.name.clone(),
+                // Nothing in the mapped format is a kit name, and inventing one
+                // would label the restore list with a guess.
+                kit_name: String::new(),
+                track_index: match writes {
+                    [only] => Some(only.track_index),
+                    _ => None,
+                },
+            },
+        )
+        .map_err(WriteError::Stash)?;
+    hooks.on_backup(&backup).map_err(WriteError::Backup)?;
+    hooks.on_log(&format!("Backed up {} — restorable from “{}”", stashed.summary(), backup.name));
+
+    let mut payload = original.clone();
+    let mut written = 0usize;
+    for write in writes {
+        for (step, authored) in write.steps.iter().enumerate() {
+            let note = authored.map(|t| st::SyntaktNote {
+                step,
+                note: t.note,
+                velocity: t.velocity,
+                length_byte: t.length_byte,
+                micro_ticks: t.micro_ticks,
+                condition_byte: t.condition_byte,
+                // Every lane written explicitly rather than left at `FF`:
+                // a trig following the track default would move when somebody
+                // changes that default on the box later, which is not what was
+                // drawn.
+                locked: st::Locks { note: true, velocity: true, length: true },
+            });
+            if note.is_some() {
+                written += 1;
+            }
+            // `set_step` leaves a step alone when it holds a trig this model
+            // cannot represent — see its doc. That is the A4's trigless rule,
+            // arrived at there the hard way.
+            st::set_step(&mut payload, write.track_index, step, note.as_ref());
+        }
+    }
+    if let Some(percent) = swing {
+        let percent = (percent.round() as i64).clamp(SWING_MIN as i64, SWING_MAX as i64) as u8;
+        payload[st::SWING] = percent - st::SWING_STRAIGHT_PERCENT;
+    }
+
+    hooks.on_status(&match writes {
+        [only] => format!("Writing {label} T{}…", only.track_index + 1),
+        many => format!("Writing {} to {label}…", plural(many.len(), "track")),
+    });
+    device.send_pattern_kit(index, &payload).map_err(WriteError::Io)?;
+
+    hooks.on_status("Verifying — reading the pattern back…");
+    let reread = device.fetch_pattern_kit(index).map_err(WriteError::Io)?;
+    let diffs = diff_payloads(&payload, &reread, VERIFY_DIFF_CAP);
+
+    Ok(WriteResult {
+        ok: diffs.is_empty(),
+        cancelled: false,
+        diffs,
+        dropped: 0,
+        written,
+        warnings: Vec::new(),
+        label,
+        index,
+        tracks: writes.iter().map(|w| w.track_index).collect(),
+        backup: Some(backup),
+        payload: Some(payload),
+    })
+}
+
 /// Send a previously taken backup back to its slot, safely.
 ///
 /// The counterpart to [`safe_write_track`] for the one write whose payload must
@@ -1630,8 +1939,32 @@ mod tests {
                 ("digitakt2", &["0070", "0071", "0079"][..]),
                 ("digitone2", &["0049", "0050", "0059"][..]),
                 ("analogfour", &["0195", "0201"][..]),
+                // Added 2026-09-11. This assertion is the interlock: a row
+                // reaches the allowlist only by someone editing the list *and*
+                // this literal, which is a second chance to ask what verified
+                // it. For this one: six sends into six empty slots on OS 1.40,
+                // each a different edit, each read back and byte-compared, with
+                // A02 read before the first and after the last and identical.
+                // `dumps/syntakt-2026-09-11/README.md`.
+                ("syntakt", &["0082"][..]),
             ]
         );
+    }
+
+    /// The Syntakt passes the same gate for the same reason the A4 does, and
+    /// hands out no `Spec` for the same reason: its decoder is
+    /// [`crate::syntakt_pattern`] and its flow is
+    /// [`syntakt_safe_write_tracks`].
+    #[test]
+    fn gate_passes_the_syntakt_on_its_verified_build_and_no_other() {
+        let r = write_gate(Some(&identity(30, "0082")));
+        assert!(r.ok, "{}", r.reason);
+        assert_eq!(r.spec_kind, Some("syntakt"));
+        assert!(spec_for("syntakt").is_none(), "this box has no gen-2 Spec to hand out");
+
+        let r = write_gate(Some(&identity(30, "0081")));
+        assert!(!r.ok, "an unverified Syntakt build must stay read-only");
+        assert!(r.reason.contains("0081"));
     }
 
     #[test]
