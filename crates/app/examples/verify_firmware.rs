@@ -12,9 +12,11 @@ use digi_protocol::backup_stash::Stash;
 use digi_protocol::pattern::Note;
 use digi_protocol::plocks::LaneWrite;
 use digi_protocol::safe_write::{
-    a4_safe_write_tracks, safe_restore_pattern_kit, safe_write_track, A4Step,
-    A4TrackWrite, PatternKitFile, Timestamp, TrackWrite, WriteHooks,
+    a4_safe_write_tracks, safe_restore_pattern_kit, safe_write_track, syntakt_safe_write_tracks,
+    A4Step, A4TrackWrite, PatternKitFile, SyntaktStep, SyntaktTrackWrite, Timestamp, TrackWrite,
+    WriteHooks,
 };
+use digi_protocol::syntakt_pattern::{self as st, SyntaktCond};
 use digi_protocol::trig_cond::TrigSetting;
 
 struct Evidence {
@@ -41,6 +43,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         "digitakt2" => ("0079", "1.16"),
         "digitone2" => ("0059", "1.11"),
         "analogfour" => ("0201", "1.55D"),
+        "syntakt" => ("0082", "1.40"),
         _ => return Err("not a September 2026 firmware target".into()),
     };
     let index = PatternRef::from_label(&args[1]).and_then(|p| p.wire_index()).ok_or("invalid pattern slot")?;
@@ -72,6 +75,30 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             index, track_index: 0, steps,
             plocks: Some(vec![A4LaneWrite::new(0x22, vec![Some(64 << 8)])]),
         }], &mut hooks, Timestamp::now())
+    } else if slug == "syntakt" {
+        // Five lanes and the pattern's swing, which is every field this box's
+        // format carries. The values differ from each other on purpose: a verify
+        // that sent the same number down every lane could not tell a lane that
+        // arrived from a lane that was already right.
+        let ratio = st::condition_byte(&SyntaktCond::Ratio { a: 2, b: 4 }).ok_or("2:4")?;
+        let first = st::condition_byte(&SyntaktCond::Logic { name: "1ST", negated: false })
+            .ok_or("1ST")?;
+        let mut steps = vec![None; st::NUM_STEPS];
+        for (step, note, velocity, length_byte, micro_ticks, condition_byte) in [
+            (0usize, 60u8, 100u8, 14u8, 0i8, st::NO_LOCK),
+            (4, 67, 80, 7, 8, ratio),
+            (9, 55, 120, 14, -8, first),
+        ] {
+            steps[step] =
+                Some(SyntaktStep { note, velocity, length_byte, micro_ticks, condition_byte });
+        }
+        syntakt_safe_write_tracks(
+            &mut device,
+            &stash,
+            &[SyntaktTrackWrite { index, track_index: 0, steps, swing: Some(58.0) }],
+            &mut hooks,
+            Timestamp::now(),
+        )
     } else {
         let condition = TrigSetting { prob: Some(75), fill: Some(false), cond: Some("2:4") };
         let notes = [(0, 60, 100, 1.0, 0.0), (0, 64, 90, 2.0, 0.0), (4, 67, 80, 1.0, 1.0 / 24.0)]
