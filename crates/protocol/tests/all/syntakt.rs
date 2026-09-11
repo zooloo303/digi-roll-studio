@@ -379,3 +379,38 @@ fn the_message_this_app_would_send_matches_the_one_the_box_sent() {
         );
     }
 }
+
+
+/// Every byte the menu names survives being decoded and re-encoded.
+///
+/// This proves [`condition`] and [`condition_byte`] agree with each other. It
+/// does not prove either agrees with the box: both rest on the same four
+/// measured points and the same inferences about what lies between them.
+#[test]
+fn every_condition_the_menu_names_round_trips_through_its_byte() {
+    let mut named = 0;
+    for byte in 0..=255u8 {
+        match st::condition(byte) {
+            None => {}
+            Some(cond) => {
+                named += 1;
+                assert_eq!(
+                    st::condition_byte(&cond),
+                    Some(byte),
+                    "byte {byte} decoded as {cond:?} and did not come back"
+                );
+            }
+        }
+    }
+    // 22 percentages, 5 logic pairs, and the 2..=8 ratio groups.
+    assert_eq!(named, 22 + 10 + (2..=8).sum::<usize>());
+}
+
+/// A condition the box has no entry for is refused rather than rounded.
+#[test]
+fn a_condition_off_the_menu_has_no_byte() {
+    assert_eq!(st::condition_byte(&st::SyntaktCond::Probability(37)), None);
+    assert_eq!(st::condition_byte(&st::SyntaktCond::Ratio { a: 9, b: 9 }), None);
+    assert_eq!(st::condition_byte(&st::SyntaktCond::Ratio { a: 3, b: 2 }), None);
+    assert_eq!(st::condition_byte(&st::SyntaktCond::Ratio { a: 0, b: 4 }), None);
+}

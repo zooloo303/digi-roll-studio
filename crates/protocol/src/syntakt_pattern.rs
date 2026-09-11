@@ -169,6 +169,25 @@ pub fn trig_word(payload: &[u8], track: usize, step: usize) -> Option<(u8, u8)> 
     Some((*payload.get(at)?, *payload.get(at + 1)?))
 }
 
+/// Whether a step holds nothing at all.
+///
+/// Measured: an empty step's word reads `00 00`, except that odd-numbered steps
+/// carry [`TRIG_POSITIONAL`] in the second byte and read `00 10`. The DN2's
+/// published format map calls that bit a structural marker for the step's
+/// position, which agrees with every capture here.
+///
+/// **The gap between this and [`plays_note`] is the interesting one.** A step
+/// that is not empty and plays no note holds something this model has no words
+/// for — a trig with parameter locks and no note, which the DN2 map calls `0x78`
+/// — and every caller that edits a track has to leave those alone rather than
+/// clear them. [`set_step`] does.
+pub fn step_is_empty(payload: &[u8], track: usize, step: usize) -> bool {
+    match trig_word(payload, track, step) {
+        None => true,
+        Some((b0, b1)) => b0 == 0 && b1 & !TRIG_POSITIONAL == 0,
+    }
+}
+
 /// Whether a step plays a note. See [`TRIG_PLAYS_NOTE`].
 pub fn plays_note(payload: &[u8], track: usize, step: usize) -> bool {
     trig_word(payload, track, step).is_some_and(|(_, b1)| b1 & TRIG_PLAYS_NOTE != 0)
@@ -341,6 +360,38 @@ pub fn condition(byte: u8) -> Option<SyntaktCond> {
         n -= b;
     }
     None
+}
+
+/// One condition as the byte that stores it — the inverse of [`condition`].
+///
+/// `None` where the menu has no such entry: a probability off Elektron's
+/// ladder, a logic name this box does not list, or a ratio outside `1:2`–`8:8`.
+/// A caller that gets `None` has something the box cannot hold and has to say
+/// so rather than round silently.
+///
+/// **Inherits [`condition`]'s uncertainty exactly**, because it is derived from
+/// the same four measured points and the same inferences about the interior.
+/// The round trip being exact proves the two agree with each other, which is a
+/// weaker claim than either agreeing with the box.
+pub fn condition_byte(cond: &SyntaktCond) -> Option<u8> {
+    use crate::a4_conditions::PERCENTAGES;
+    match cond {
+        SyntaktCond::Probability(p) => {
+            PERCENTAGES.iter().position(|v| v == p).map(|i| i as u8)
+        }
+        SyntaktCond::Logic { name, negated } => CONDITION_LOGIC
+            .iter()
+            .position(|n| n == name)
+            .map(|i| CONDITION_LOGIC_BASE + (i as u8) * 2 + u8::from(*negated)),
+        SyntaktCond::Ratio { a, b } => {
+            if !(2..=8).contains(b) || *a == 0 || a > b {
+                return None;
+            }
+            // The same grouping `condition` walks, counted forwards.
+            let before: u8 = (2..*b).sum();
+            Some(CONDITION_RATIO_BASE + before + (a - 1))
+        }
+    }
 }
 
 /// The condition on one step, if it carries one.
