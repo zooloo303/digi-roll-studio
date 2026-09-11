@@ -61,9 +61,12 @@
 
 use std::io::Write as _;
 
-use digi_midi::syntakt_transfer::{send_pattern, Consent, PATTERN_DUMP};
+use digi_midi::a4_transfer::Pacing;
+use digi_midi::syntakt_transfer::{
+    send_pattern, verify_before_send, Consent, PATTERN_DUMP, PATTERN_KIT_DUMP,
+};
 use digi_midi::{list_inputs, list_outputs, open_output_by_name, ElektronDevice, PortBinding};
-use digi_protocol::protocol::{build_dump_message, FAMILY_SYNTAKT};
+use digi_protocol::protocol::{build_dump_message, parse_sysex, FAMILY_SYNTAKT};
 use digi_protocol::syntakt_pattern as st;
 
 /// The request that fetches a pattern without its kit.
@@ -84,6 +87,15 @@ fn main() {
     let index = arg("--index").and_then(|s| s.parse::<u8>().ok()).unwrap_or(0);
     let fragment = arg("--port").unwrap_or_else(|| "Syntakt".to_string());
     let sending = flag("--send");
+    // **Not politeness.** One `send` of the whole frame is the shape that did
+    // nothing at all on an Analog Four, silently, and it is the shape every
+    // Syntakt attempt on 2026-09-10 used. `--single` keeps it reachable so the
+    // difference stays measurable; it is an experiment, not a time saving.
+    let pacing = if flag("--single") {
+        Pacing::single()
+    } else {
+        Pacing::din()
+    };
     // Fetch from one slot, store into another. The point is not copying: it is
     // that a store into an *empty* slot has a visible outcome, where a store of
     // a slot's own bytes back into itself verifies whether or not anything
@@ -106,6 +118,226 @@ fn main() {
         return;
     };
     let port_name = output.name.clone();
+
+    // --- 0. `--from`: send a file exactly as it is --------------------------
+    //
+    // **The destination is not in the message.** A gen-2 box stores an incoming
+    // pattern into whatever slot is armed under SETTINGS > SYSEX DUMP > SYSEX
+    // RECEIVE and ignores the index byte the dump carries; the index is what the
+    // box wrote when it produced the dump, and is descriptive of the source.
+    //
+    // That is measured on a Digitone II by SYXGRID, whose author removed a
+    // destination-slot picker for being "a fiction". It is the difference
+    // between this repo's Analog Four finding and this box: PLAN.md §9 measured
+    // a 2013 A4 taking a dump with no arming step at all, and that measurement
+    // was carried to a 2022 box it was never made on.
+    //
+    // So this mode does not fetch and cannot back the destination up: it has no
+    // way to name where the bytes land. It says so instead of pretending. What
+    // it sends is a file that came off a box, unedited — the send where being
+    // wrong costs the least.
+    if let Some(path) = arg("--from") {
+        let wire = match std::fs::read(&path) {
+            Ok(b) => b,
+            Err(e) => {
+                println!("could not read {path}: {e}");
+                return;
+            }
+        };
+        let frame = match verify_before_send(&wire) {
+            Ok(f) => f,
+            Err(why) => {
+                println!("{path} is not sendable: {why}");
+                return;
+            }
+        };
+        let mut payload = parse_sysex(&wire)
+            .dump
+            .map(|d| d.payload)
+            .unwrap_or_default();
+        let original = payload.clone();
+        println!(
+            "{path}: {} bytes on the wire, {} unpacked, dump type {:#04x}",
+            wire.len(),
+            frame.payload_len,
+            frame.dump_type
+        );
+
+        // `--trigs 1:1-16` turns on a run of trigs, one-based both ends. A
+        // read-back that finds them is not vacuous the way sending a slot's own
+        // bytes back into itself was on 2026-09-10.
+        if let Some(spec) = arg("--trigs") {
+            let Some((track, steps)) = spec.split_once(':') else {
+                println!("--trigs wants track:first-last, one-based");
+                return;
+            };
+            let (first, last) = steps.split_once('-').unwrap_or((steps, steps));
+            let (Ok(track), Ok(first), Ok(last)) = (
+                track.parse::<usize>(),
+                first.parse::<usize>(),
+                last.parse::<usize>(),
+            ) else {
+                println!("--trigs wants numbers");
+                return;
+            };
+            if track == 0 || track > st::NUM_BLOCKS || first == 0 || last > st::NUM_STEPS {
+                println!("--trigs is out of range for this box");
+                return;
+            }
+            for step in first - 1..last {
+                let at = st::BLOCK_BASE + st::BLOCK_STRIDE * (track - 1) + st::TRIG_LANE + step * 2;
+                payload[at] |= st::TRIG_ON_BYTE0;
+                payload[at + 1] |= st::TRIG_ON_BYTE1;
+            }
+            println!("turning on block {track}, steps {first}..={last}");
+        }
+        if let Some(swing) = arg("--swing").and_then(|s| s.parse::<u8>().ok()) {
+            payload[st::SWING] = swing.saturating_sub(st::SWING_STRAIGHT_PERCENT);
+            println!("swing {swing}%");
+        }
+        let moved: Vec<usize> = (0..payload.len())
+            .filter(|&i| payload[i] != original[i])
+            .collect();
+        if moved.is_empty() {
+            println!("no edit requested — this sends the file's own pattern data");
+        } else {
+            println!("{} byte(s) changed:", moved.len());
+            for i in moved.iter().take(8) {
+                println!("   {i:6}  {:02x} -> {:02x}", original[*i], payload[*i]);
+            }
+        }
+        // `--to` rewrites the index byte, **which on this box is the
+        // destination.**
+        //
+        // The first trial did not show that: the armed slot and the index byte
+        // both said A01, so it showed nothing. The second one separated them —
+        // index 2, armed on A02, landed in A03, and A02 came back
+        // byte-identical to its pre-write read. A third with nothing armed at
+        // all landed where its index said. That is the opposite of SYXGRID's
+        // Digitone II, where the armed slot decides; two gen-2 boxes, two
+        // answers, and a third gets neither for free.
+        let target = arg("--to")
+            .and_then(|s| s.parse::<u8>().ok())
+            .unwrap_or(frame.slot);
+        let wire = if moved.is_empty() && target == frame.slot {
+            wire
+        } else {
+            build_dump_message(FAMILY_SYNTAKT, frame.dump_type, target, &payload)
+        };
+        let frame = match verify_before_send(&wire) {
+            Ok(f) => f,
+            Err(why) => {
+                println!("the rebuilt frame is not sendable: {why}");
+                return;
+            }
+        };
+        for t in 0..st::NUM_BLOCKS {
+            let n = st::trig_count(&payload, t);
+            if n > 0 {
+                println!("   block {:2}  {n} trig(s)", t + 1);
+            }
+        }
+        println!(
+            "\nThe index byte reads {}. On 2026-09-11 that byte, and not the",
+            frame.slot
+        );
+        println!("slot armed in SYSEX RECEIVE, is where a Syntakt put the pattern.");
+        println!("There is no backup here: this mode does not fetch the destination.");
+
+        if !sending {
+            println!("\nDry run. Pass --send to write it.");
+            return;
+        }
+        // `0x50` reaches the kit. `0x51` could not, and `0x51` is also the one
+        // the box stores nothing of — so the safe dump type and the useless one
+        // turned out to be the same dump type. Crossing that line is a decision
+        // and it is typed, not defaulted.
+        let consent = if frame.dump_type == PATTERN_KIT_DUMP {
+            if !flag("--with-kit") {
+                println!("\nThis file is a {PATTERN_KIT_DUMP:#04x} and carries the kit as well as");
+                println!("the pattern. Pass --with-kit if that is what you mean to overwrite.");
+                return;
+            }
+            println!("\n--with-kit: this overwrites the destination's SOUNDS as well.");
+            Consent::given_for_pattern_and_kit(frame.slot)
+        } else {
+            Consent::given_for(frame.slot)
+        };
+        print!("Type {CONSENT} to proceed: ");
+        let _ = std::io::stdout().flush();
+        let mut typed = String::new();
+        if std::io::stdin().read_line(&mut typed).is_err() || typed.trim() != CONSENT {
+            println!("not confirmed — nothing sent.");
+            return;
+        }
+        {
+            let mut conn = match open_output_by_name(&port_name) {
+                Ok(c) => c,
+                Err(e) => {
+                    println!("could not open {port_name} to send: {e:?}");
+                    return;
+                }
+            };
+            println!(
+                "sending {} bytes in {} packet(s), about {:.1}s",
+                wire.len(),
+                pacing.packets(wire.len()),
+                pacing.estimate(wire.len()).as_secs_f64()
+            );
+            match send_pattern(&mut conn, &wire, consent, pacing) {
+                Ok(_) => println!("sent {} bytes", wire.len()),
+                Err(e) => {
+                    println!("the send failed: {e}");
+                    return;
+                }
+            }
+        }
+
+        // Reading back is a request, and the box is sitting in SYSEX RECEIVE.
+        // Whether it answers from there is not known, so a silent box here is a
+        // result about the menu and not about the write. Say which.
+        let Some(slot) = arg("--verify-slot")
+            .and_then(|s| s.parse::<u8>().ok())
+            .or(Some(frame.slot))
+        else {
+            println!("\nNo --verify-slot given. Leave SYSEX RECEIVE and look at the box.");
+            return;
+        };
+        std::thread::sleep(std::time::Duration::from_millis(1200));
+        let mut device =
+            match ElektronDevice::open(&PortBinding::from(input), &PortBinding::from(output)) {
+                Ok(d) => d,
+                Err(e) => {
+                    println!("could not reopen the port to verify: {e}");
+                    return;
+                }
+            };
+        match device.fetch_dump(FAMILY_SYNTAKT, PATTERN_REQUEST, slot) {
+            Err(e) => {
+                println!("\nslot {slot} did not answer: {e}");
+                println!("The box may simply not serve requests from the SYSEX RECEIVE screen.");
+                println!("Leave that screen and re-read before concluding anything.");
+            }
+            Ok(after) => {
+                let sent: usize = (0..st::NUM_BLOCKS)
+                    .map(|t| st::trig_count(&payload, t))
+                    .sum();
+                let got: usize = (0..st::NUM_BLOCKS)
+                    .map(|t| st::trig_count(&after.payload, t))
+                    .sum();
+                println!("\nslot {slot} now holds {got} trig(s); {sent} were sent");
+                if after.payload == payload {
+                    println!("ARRIVED — every byte of slot {slot} matches the file");
+                } else {
+                    let bad = (0..payload.len().min(after.payload.len()))
+                        .filter(|&i| after.payload[i] != payload[i])
+                        .count();
+                    println!("slot {slot} differs from the file in {bad} byte(s)");
+                }
+            }
+        }
+        return;
+    }
 
     // --- 1. fetch, and back the destination up before anything else ---------
     let before = {
@@ -188,7 +420,12 @@ fn main() {
 
     // --- 4. send, narrowly -------------------------------------------------
     let message = build_dump_message(FAMILY_SYNTAKT, PATTERN_DUMP, into, &payload);
-    println!("sending {} bytes as dump type {PATTERN_DUMP:#04x}…", message.len());
+    println!(
+        "sending {} bytes as dump type {PATTERN_DUMP:#04x} in {} packet(s), about {:.1}s…",
+        message.len(),
+        pacing.packets(message.len()),
+        pacing.estimate(message.len()).as_secs_f64()
+    );
     {
         let mut conn = match open_output_by_name(&port_name) {
             Ok(c) => c,
@@ -203,7 +440,7 @@ fn main() {
         // Four's sender instead, and that function refused — correctly, since
         // it validates the A4's format. Nothing went out. This is the path that
         // was missing, rather than a way around the one that said no.
-        match send_pattern(&mut conn, &message, Consent::given_for(into)) {
+        match send_pattern(&mut conn, &message, Consent::given_for(into), pacing) {
             Ok(frame) => println!("sent {} bytes to slot {}", message.len(), frame.slot),
             Err(e) => {
                 println!("the send failed: {e}");

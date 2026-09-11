@@ -1,5 +1,19 @@
 # Writing to a Syntakt: what was tried, and the negative result
 
+> **Resolved on 2026-09-11. See `../../syntakt-2026-09-11/README.md`.**
+>
+> Everything below is still true: these messages were sent and the box stored
+> none of them. Three things were wrong at once, and the first is the one this
+> page could not have guessed — **the box stores `0x50`, the pattern with its
+> kit, and appears to store nothing of the `0x51` every attempt here sent.**
+> `0x51` was chosen because it cannot reach a sound and so cannot damage one;
+> that argument was sound, and it was also why nothing landed. The other two:
+> the destination is the message's index byte, and the frame has to be paced.
+>
+> The section below recommends a CoreMIDI spy on Elektron's own software. What
+> actually answered it was cheaper and is worth remembering: **listen to what
+> the box's own SYSEX SEND emits.** SEND and RECEIVE are two halves of one menu.
+
 **Nothing was ever stored.** The box accepts a `0x51` pattern dump without an
 error and applies none of it. Read this before trying again.
 
@@ -31,7 +45,7 @@ bytes back into itself verifies whether or not anything happened, and the risk
 had been named out loud beforehand and then not applied to the result. A write
 test whose passing condition is also its failing condition tests nothing.
 
-## Where to look next, and where not to
+## Where to look next, and where not to *(superseded — kept for the reasoning)*
 
 **Not a sweep of store opcodes.** DEVELOPMENT.md lesson 13 is an Analog Four
 that had to be power-cycled four times over two days for exactly that, and its
