@@ -75,6 +75,39 @@ pub enum PatternRoute {
     /// answers dump requests"). The box still *can* push a dump from its own
     /// front panel; what died is the claim that this was the only way in.
     RequestGen1,
+    /// **Request and reply, gen-2 framing, bespoke layout.** The app sends a
+    /// `0x60` and the box answers `0x50` — the pattern *with its kit* — which
+    /// `protocol::syntakt_pattern` reads and there is no `Spec` for. The write
+    /// back is that same `0x50`, through `safe_write::syntakt_safe_write_tracks`
+    /// on the same re-fetch, backup, confirm, verify ceremony as the other two.
+    /// The Syntakt.
+    ///
+    /// **Three things separate this from [`Request`](PatternRoute::Request)**,
+    /// all measured on 2026-09-11 and all in `dumps/syntakt-2026-09-11/`: this
+    /// box stores nothing of the `0x51` that carries a pattern alone, so a write
+    /// reaches sounds whether it wants to or not; the destination is the
+    /// message's index byte rather than the slot armed in SYSEX RECEIVE, which
+    /// is the opposite of what SYXGRID measured on a Digitone II; and a frame
+    /// delivered in one call stores nothing, silently, while pieces of 16 KB or
+    /// under store every byte.
+    RequestSyntakt,
+    /// **Request and reply, and nothing goes back.** The app can fetch a
+    /// pattern and read it; there is no send.
+    ///
+    /// This exists because "we can read this box" and "we may write to it" are
+    /// different claims, and until this variant the type could not tell them
+    /// apart — a model had to say [`Request`](PatternRoute::Request) to be
+    /// fetchable, which also put it in every send picker.
+    ///
+    /// **No box is on this route today.** The Syntakt was, from 2026-09-10 until
+    /// the write was verified on 2026-09-11, which is exactly the deliberate act
+    /// the next paragraph asks for. The variant stays because the next
+    /// unmapped-write box needs it and because the reason it exists has not
+    /// changed.
+    ///
+    /// Promoting a box out of this variant is a deliberate act that should
+    /// follow a verified write, not a tidy-up.
+    RequestReadOnly,
 }
 
 impl PatternRoute {
@@ -87,14 +120,19 @@ impl PatternRoute {
 
     /// What a box list says about this box in three words.
     ///
-    /// Both request routes read "fetch + write" on purpose: which generation of
-    /// dump protocol a box speaks is this app's plumbing, not a fact a person
-    /// routing a desk acts on. The two panels behave identically, so the label
-    /// must too.
+    /// Both writable request routes read "fetch + write" on purpose: which
+    /// generation of dump protocol a box speaks is this app's plumbing, not a
+    /// fact a person routing a desk acts on. Those two panels behave
+    /// identically, so the label must too.
+    ///
+    /// **A read-only box gets its own words**, because that difference *is*
+    /// something the person acts on: it is the answer to "why is this box not
+    /// in the send picker".
     pub fn label(self) -> &'static str {
         match self {
             Self::LiveOnly => "live only",
-            Self::Request | Self::RequestGen1 => "fetch + write",
+            Self::RequestReadOnly => "fetch only",
+            Self::Request | Self::RequestGen1 | Self::RequestSyntakt => "fetch + write",
         }
     }
 }
@@ -223,6 +261,32 @@ impl DeviceModel {
         self.pattern_route
     }
 
+    /// Whether a pattern may be sent **to** this box.
+    ///
+    /// One place, so a new route cannot be quietly treated as writable by a
+    /// caller that only checked for `LiveOnly`. Written as an exhaustive match
+    /// rather than a `!=` for the same reason: the next variant has to be
+    /// classified here before it compiles anywhere.
+    pub fn can_send_patterns(&self) -> bool {
+        match self.pattern_route {
+            PatternRoute::Request
+            | PatternRoute::RequestGen1
+            | PatternRoute::RequestSyntakt => true,
+            PatternRoute::LiveOnly | PatternRoute::RequestReadOnly => false,
+        }
+    }
+
+    /// Whether a pattern may be fetched **from** this box.
+    pub fn can_fetch_patterns(&self) -> bool {
+        match self.pattern_route {
+            PatternRoute::Request
+            | PatternRoute::RequestGen1
+            | PatternRoute::RequestSyntakt
+            | PatternRoute::RequestReadOnly => true,
+            PatternRoute::LiveOnly => false,
+        }
+    }
+
     /// How a preset gets from this box's +Drive onto one of its tracks.
     pub fn preset_load(&self) -> PresetLoad {
         self.preset_load
@@ -331,7 +395,34 @@ pub static A4: DeviceModel = DeviceModel {
 
 /// The shipped roster. DT2 and DN2 per PLAN.md §2; A4 since 2026-08-24,
 /// hardware-verified 2026-08-28.
-pub static MODELS: &[&DeviceModel] = &[&DT2, &DN2, &A4];
+/// The Syntakt — read-only, and deliberately so.
+///
+/// Twelve tracks and an FX track, which is the thirteen blocks a pattern dump
+/// holds; 64 steps, eight banks of sixteen patterns. Its per-step layout is
+/// mapped and round-trips byte-exact (`protocol::syntakt_pattern`), which is
+/// what makes fetching honest.
+///
+/// **`sysex: None` and [`PatternRoute::RequestReadOnly`].** There is no gen-2
+/// `Spec` for this box — its layout is the Analog Four's shape, not the digis'
+/// — and there is no verified write, so it does not appear in a send picker.
+/// `notes_per_trig` is 1 because nothing here has ever seen a chord on it, and
+/// claiming four would let the MIDI import fold voices onto a trig that may not
+/// hold them.
+pub static SYNTAKT: DeviceModel = DeviceModel {
+    key: "ST",
+    display: "Syntakt",
+    slug: Some("syntakt"),
+    num_tracks: 13,
+    max_steps: 64,
+    notes_per_trig: 1,
+    default_track_kind: TrackKind::Audio,
+    sysex: None,
+    pattern_route: PatternRoute::RequestSyntakt,
+    preset_load: PresetLoad::None,
+    wire_slots: 128,
+};
+
+pub static MODELS: &[&DeviceModel] = &[&DT2, &DN2, &A4, &SYNTAKT];
 
 pub fn model_for_key(key: &str) -> Option<&'static DeviceModel> {
     MODELS.iter().copied().find(|m| m.key == key)

@@ -10,7 +10,7 @@
 // src/SysEx.elm, src/Elektron/Instrument.elm, src/Project/Update.elm.
 
 use crate::protocol::{
-    FAMILY_ANALOG_FOUR, FAMILY_DIGITAKT, FAMILY_DIGITAKT_2, FAMILY_DIGITONE_2,
+    FAMILY_ANALOG_FOUR, FAMILY_DIGITAKT, FAMILY_DIGITAKT_2, FAMILY_DIGITONE_2, FAMILY_SYNTAKT,
 };
 
 /// A product we recognise from the Device response. Only boxes with a known
@@ -47,6 +47,10 @@ pub const PRODUCTS: &[Product] = &[
     // the byte already sitting in `protocol.rs` from its own outbound dumps
     // (`examples/a4_dump_probe`, PLAN.md §10 "The A4 answers dump requests").
     Product { product_id: 4, name: "Analog Four", slug: "analogfour", family: Some(FAMILY_ANALOG_FOUR) },
+    // Answers 0x01 with product id 30 and the name "Syntakt", OS 1.40 build
+    // 0082, and dump requests on family 0x16 — both read off the box on
+    // 2026-09-10, the same OS the eight donated capture pairs were taken on.
+    Product { product_id: 30, name: "Syntakt", slug: "syntakt", family: Some(FAMILY_SYNTAKT) },
 ];
 
 pub fn product_for_id(product_id: u8) -> Option<&'static Product> {

@@ -92,11 +92,12 @@ use digi_protocol::backup_stash::Stash;
 use digi_protocol::device::DeviceIdentity;
 use digi_protocol::pattern::{PatternKit, Spec};
 use digi_protocol::plocks::{LaneWrite, PoolLane};
+use digi_core::syntakt_transfer::TRACK_NAMES as SYNTAKT_TRACK_NAMES;
 use digi_protocol::a4_pattern::TRACK_NAMES as A4_TRACK_NAMES;
 use digi_protocol::safe_write::{
-    a4_safe_write_tracks, safe_write_track, write_impact_lines, write_result_message,
-    A4TrackWrite, ConfirmArgs, ImpactArgs, PatternIo, ResultMessage, Timestamp, TrackWrite,
-    WriteHooks, BACKUP_LINE,
+    a4_safe_write_tracks, safe_write_track, syntakt_safe_write_tracks, write_impact_lines,
+    write_result_message, A4TrackWrite, ConfirmArgs, ImpactArgs, PatternIo, ResultMessage,
+    SyntaktTrackWrite, Timestamp, TrackWrite, WriteHooks, BACKUP_LINE,
 };
 use eframe::egui::{self, Ui};
 
@@ -150,6 +151,7 @@ pub struct Job {
 pub enum PlannedWrite {
     Gen2(TrackWrite),
     A4(A4TrackWrite),
+    Syntakt(SyntaktTrackWrite),
 }
 
 /// What the worker says while it works. `Ask` is the one that expects an answer.
@@ -225,6 +227,10 @@ pub fn run(
         // single-track caller.
         PlannedWrite::A4(write) => {
             a4_safe_write_tracks(device, stash, std::slice::from_ref(write), &mut hooks, now)
+        }
+        // Plural with a one-element slice for the same reason the A4's arm is.
+        PlannedWrite::Syntakt(write) => {
+            syntakt_safe_write_tracks(device, stash, std::slice::from_ref(write), &mut hooks, now)
         }
     }
     .map_err(|e| e.to_string())?;
@@ -322,6 +328,19 @@ impl WriteHooks for UiHooks<'_> {
                 label: &args.label,
                 track_index: track.track_index,
                 existing_trigs: track.existing_trigs,
+                warnings: &self.job.warnings,
+                playing: self.job.playing,
+            }),
+            (PlannedWrite::Syntakt(write), _) => syntakt_confirm_lines(&SyntaktFacts {
+                device_name: &self.device_name,
+                pattern_name: &self.job.pattern_name,
+                source_label: &self.job.source_label,
+                notes: track.note_count,
+                label: &args.label,
+                track_index: track.track_index,
+                existing_trigs: track.existing_trigs,
+                swing: write.swing.map(|s| s.round() as u8),
+                box_swing: args.swing,
                 warnings: &self.job.warnings,
                 playing: self.job.playing,
             }),
@@ -538,6 +557,81 @@ pub fn a4_confirm_lines(f: &A4Facts) -> Vec<String> {
          slot holds them right now — the write is composed on a fresh read of that slot."
             .to_string(),
     ];
+    for w in f.warnings {
+        lines.push(format!("Note: {w}"));
+    }
+    if f.playing {
+        lines.push(
+            "The transport is running — this app keeps clocking the box while the dump goes \
+             across, and pressing this does not stop it."
+                .to_string(),
+        );
+    }
+    lines.push(String::new());
+    lines.push(BACKUP_LINE.to_string());
+    lines
+}
+
+/// What a Syntakt write is agreed to on.
+pub struct SyntaktFacts<'a> {
+    pub device_name: &'a str,
+    pub pattern_name: &'a str,
+    pub source_label: &'a str,
+    pub notes: usize,
+    pub label: &'a str,
+    pub track_index: usize,
+    pub existing_trigs: usize,
+    /// The swing this write would set, as a percentage.
+    pub swing: Option<u8>,
+    /// What the destination holds now.
+    pub box_swing: Option<u8>,
+    pub warnings: &'a [String],
+    pub playing: bool,
+}
+
+/// The sentences a Syntakt write is agreed to on — [`a4_confirm_lines`]'s twin,
+/// and it exists because two of that one's sentences are false here.
+///
+/// **Velocity and length move on this box**, where the A4's line says they stay.
+/// And the read-modify-write sentence has to be stronger rather than merely
+/// reworded: this box stores `0x50` and nothing smaller, so **the kit goes back
+/// too**. That is safe for exactly one reason — the bytes are the ones the
+/// destination just handed over, unaltered — and a dialog that did not say so
+/// would be hiding the single largest thing this press does.
+pub fn syntakt_confirm_lines(f: &SyntaktFacts) -> Vec<String> {
+    let mut lines = vec![
+        format!(
+            "Send {} from “{}” {} to {} track {} ({}) on the {}?",
+            plural(f.notes, "note"),
+            f.pattern_name,
+            f.source_label,
+            f.label,
+            f.track_index + 1,
+            SYNTAKT_TRACK_NAMES.get(f.track_index).copied().unwrap_or("?"),
+            f.device_name,
+        ),
+        String::new(),
+        if f.existing_trigs > 0 {
+            format!(
+                "This replaces the {} already on that track.",
+                plural(f.existing_trigs, "trig")
+            )
+        } else {
+            "That track is currently empty.".to_string()
+        },
+        "The notes move with their velocity, length, micro timing and trig condition."
+            .to_string(),
+        "This box takes a pattern only with its kit attached, so the whole thing goes back — \
+         but every byte you did not draw is the destination's own, read moments before the \
+         send. Sounds, parameter locks and the other tracks come back exactly as they are."
+            .to_string(),
+    ];
+    match (f.swing, f.box_swing) {
+        (Some(ours), Some(theirs)) if ours != theirs => {
+            lines.push(format!("Swing goes from {theirs}% to {ours}% — it belongs to the whole pattern, not to this track."));
+        }
+        _ => {}
+    }
     for w in f.warnings {
         lines.push(format!("Note: {w}"));
     }
@@ -1061,12 +1155,31 @@ pub fn plan(
         return Err(blocker(device, present).unwrap_or_else(|| "that box has no ports".into()));
     };
 
+    // See `ui::sync`: a fetch-only box would be stopped by the missing `Spec`
+    // below anyway, but with a reason that is wrong for this one.
+    if !device.model.can_send_patterns() {
+        return Err(format!(
+            "{} is fetch-only here — its format is mapped but no write to it has been \
+             verified on hardware",
+            device.model.display
+        ));
+    }
+
     // The two formats plan through their own `core` seam and meet again at
     // `PlannedWrite`; everything below the match is shared.
     let (spec, write, warnings) = match device.model.pattern_route() {
         PatternRoute::RequestGen1 => {
             let export = session.a4_track_write(id, from, track, into).map_err(|e| e.to_string())?;
             (None, PlannedWrite::A4(export.write), export.warnings)
+        }
+        // **Named, not left to the fallthrough.** This box has no `Spec`, so the
+        // arm below would refuse it with "has no patterns to write to" — a
+        // sentence that is false about a box whose write is verified on
+        // hardware, arriving after the button was already enabled.
+        PatternRoute::RequestSyntakt => {
+            let export =
+                session.syntakt_track_write(id, from, track, into).map_err(|e| e.to_string())?;
+            (None, PlannedWrite::Syntakt(export.write), export.warnings)
         }
         _ => {
             let spec = device
@@ -1540,5 +1653,94 @@ mod tests {
         assert_eq!(track_label(&device, from, 0), "T1 BD");
         // An untouched track is called T2, and "T2 T2" is not a label.
         assert_eq!(track_label(&device, from, 1), "T2");
+    }
+
+    // --- the Syntakt's dialog -------------------------------------------------
+
+    fn syntakt_facts<'a>() -> SyntaktFacts<'a> {
+        SyntaktFacts {
+            device_name: "Syntakt",
+            pattern_name: "H01",
+            source_label: "A01 T7",
+            notes: 2,
+            label: "A03",
+            track_index: 6,
+            existing_trigs: 0,
+            swing: Some(50),
+            box_swing: Some(50),
+            warnings: &[],
+            playing: false,
+        }
+    }
+
+    /// **The sentence this dialog exists for.** This box stores the pattern only
+    /// with its kit attached, so a press reaches sounds — and the only thing
+    /// that makes it safe is that those bytes are the destination's own. A
+    /// dialog that did not say both halves would be hiding the largest thing
+    /// the button does.
+    #[test]
+    fn the_syntakt_dialog_says_the_kit_goes_back_and_why_that_is_safe() {
+        let lines = syntakt_confirm_lines(&syntakt_facts()).join(" ");
+        assert!(lines.contains("only with its kit attached"), "{lines}");
+        assert!(lines.contains("destination's own"), "{lines}");
+    }
+
+    /// The A4's line says velocity and length stay put. On this box they move,
+    /// and copying that sentence over would have been a lie the user acts on.
+    #[test]
+    fn the_syntakt_dialog_does_not_borrow_the_analog_fours_sentence() {
+        let lines = syntakt_confirm_lines(&syntakt_facts()).join(" ");
+        assert!(lines.contains("velocity, length, micro timing"), "{lines}");
+        assert!(!lines.contains("Only the trigs move"), "{lines}");
+    }
+
+    #[test]
+    fn the_syntakt_dialog_names_the_track_the_box_names() {
+        let lines = syntakt_confirm_lines(&syntakt_facts());
+        assert!(lines[0].contains("track 7 (T7)"), "{}", lines[0]);
+        assert!(lines[0].contains("to A03"), "{}", lines[0]);
+    }
+
+    /// Swing belongs to the whole pattern, so a change to it is said once and
+    /// only when it is a change.
+    #[test]
+    fn swing_is_mentioned_only_when_the_press_would_move_it() {
+        let quiet = syntakt_confirm_lines(&syntakt_facts()).join(" ");
+        assert!(!quiet.contains("Swing goes"), "{quiet}");
+
+        let moved = syntakt_confirm_lines(&SyntaktFacts {
+            swing: Some(60),
+            ..syntakt_facts()
+        })
+        .join(" ");
+        assert!(moved.contains("Swing goes from 50% to 60%"), "{moved}");
+    }
+
+    #[test]
+    fn an_empty_destination_track_is_said_rather_than_left_blank() {
+        let empty = syntakt_confirm_lines(&syntakt_facts()).join(" ");
+        assert!(empty.contains("currently empty"), "{empty}");
+        let busy = syntakt_confirm_lines(&SyntaktFacts { existing_trigs: 9, ..syntakt_facts() })
+            .join(" ");
+        assert!(busy.contains("replaces the 9 trigs"), "{busy}");
+    }
+
+    /// Every dialog in this panel ends on the backup line. A new one that
+    /// forgot it would be the only write in the app agreed to without it.
+    #[test]
+    fn the_syntakt_dialog_ends_on_the_backup_line_like_every_other() {
+        let lines = syntakt_confirm_lines(&syntakt_facts());
+        assert_eq!(lines.last().map(String::as_str), Some(BACKUP_LINE));
+    }
+
+    /// Warnings from `core` — a chord that could not go, notes past step 64,
+    /// automation that stays on the box — are printed, not summarised away.
+    #[test]
+    fn the_writes_own_losses_reach_the_dialog() {
+        let warnings = ["3 notes shared a step with another".to_string()];
+        let lines =
+            syntakt_confirm_lines(&SyntaktFacts { warnings: &warnings, ..syntakt_facts() })
+                .join(" ");
+        assert!(lines.contains("Note: 3 notes shared a step"), "{lines}");
     }
 }

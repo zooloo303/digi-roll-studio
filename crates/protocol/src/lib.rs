@@ -18,6 +18,7 @@ pub mod preset_index;
 pub mod query;
 pub mod safe_write;
 pub mod sound;
+pub mod syntakt_pattern;
 pub mod trig_cond;
 
 // The firmware allowlist lives with the rest of the safety rules it is one of —

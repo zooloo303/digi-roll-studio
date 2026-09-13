@@ -78,6 +78,7 @@ use std::sync::mpsc::{channel, Receiver};
 use digi_core::a4_transfer::A4ImportReport;
 use digi_core::device::{model_for_slug, Device, DeviceModel, PortRef};
 use digi_core::import::{Fetched, ImportReport};
+use digi_core::syntakt_transfer::SyntaktImportReport;
 use digi_core::device::PatternRoute;
 use digi_core::session::PatternRef;
 use digi_core::{DeviceId, Session};
@@ -110,6 +111,14 @@ enum Dump {
     },
     /// A gen-1 Analog Four pattern, fetched with `0x64`.
     A4 { pattern: A4Pattern, answered: String },
+    /// A Syntakt pattern, fetched with `0x60` and answered as `0x50`.
+    ///
+    /// The payload is carried undecoded because there is no `Spec` to decode it
+    /// with and no decoded type to carry: `core::syntakt_transfer` reads it
+    /// straight, on the UI thread, the way the A4's arm hands over its payload.
+    /// The slot travels too, because on this box the index byte is also where a
+    /// write would go back to.
+    Syntakt { slot: u8, payload: Vec<u8>, answered: String },
 }
 
 /// A fetch in flight. The destination is captured at the press: the row's
@@ -127,6 +136,10 @@ enum Outcome {
     /// An Analog Four landing — its report counts different losses (trigless
     /// trigs, an invented velocity) so it words its own summary.
     ImportedA4 { into: PatternRef, report: A4ImportReport },
+    /// A Syntakt landing. Its report counts what this box loses and the others
+    /// do not — trigs that sound no note, and automation that does not travel —
+    /// so it words its own summary.
+    ImportedSyntakt { into: PatternRef, report: SyntaktImportReport },
     /// Anything that stopped it: a port that would not open, a box that did not
     /// answer, a corrupt dump, a decode, or an import `core` refused.
     Failed(String),
@@ -399,6 +412,41 @@ impl TransferPanel {
                     ));
                 }
             }
+            Some(Outcome::ImportedSyntakt { into, report }) => {
+                ui.colored_label(egui::Color32::LIGHT_GREEN, syntakt_summary(*into, report));
+                if report.trigless_dropped > 0 {
+                    ui.weak(format!(
+                        "{} trig(s) on the box sound no note and are not drawn — this app holds \
+                         notes. A write back leaves them exactly where they are",
+                        report.trigless_dropped
+                    ));
+                }
+                // **Said on the panel, not only in the report.** This box's
+                // automation is mapped and still does not travel, so a roll that
+                // looks complete is not. Leaving it to a gap would be the panel
+                // lying by omission, which is lesson 3 with the sign flipped.
+                if report.plock_lanes_not_carried > 0 {
+                    ui.weak(format!(
+                        "{} parameter-lock lane(s) stay on the box — only one of its parameter \
+                         ids is known, so a lane would arrive as a number nobody can name",
+                        report.plock_lanes_not_carried
+                    ));
+                }
+                if report.conditions > 0 {
+                    ui.weak(format!(
+                        "{} trig(s) carry a probability, fill or condition — shown in the trig \
+                         lanes under the roll",
+                        report.conditions
+                    ));
+                }
+                if report.conditions_off_the_menu > 0 {
+                    ui.weak(format!(
+                        "{} condition(s) were past the menu this decoder knows and did not come \
+                         across",
+                        report.conditions_off_the_menu
+                    ));
+                }
+            }
             Some(Outcome::ImportedA4 { into, report }) => {
                 ui.colored_label(egui::Color32::LIGHT_GREEN, a4_summary(*into, report));
                 if report.trigless_dropped > 0 {
@@ -544,6 +592,15 @@ impl TransferPanel {
                     Err(e) => Outcome::Failed(format!("{e} ({answered} answered)")),
                 }
             }
+            Ok(Dump::Syntakt { slot, payload, answered }) => {
+                match session.import_syntakt_pattern(id, into, slot, &payload) {
+                    Ok(report) => {
+                        edited = true;
+                        Outcome::ImportedSyntakt { into, report }
+                    }
+                    Err(e) => Outcome::Failed(format!("{e} ({answered} answered)")),
+                }
+            }
             Err(e) => Outcome::Failed(e),
         };
         let name = session.device(id).map(|d| d.name.clone()).unwrap_or_default();
@@ -553,6 +610,9 @@ impl TransferPanel {
             }
             Outcome::ImportedA4 { into, report } => {
                 console::post(ctx, format!("{name}: {}", a4_summary(*into, report)));
+            }
+            Outcome::ImportedSyntakt { into, report } => {
+                console::post(ctx, format!("{name}: {}", syntakt_summary(*into, report)));
             }
             Outcome::Failed(e) => {
                 console::post(ctx, format!("{name}: fetch failed — {e}"));
@@ -596,6 +656,12 @@ fn fetch(
             pattern: A4Pattern { slot: index, payload },
             answered: identity.name,
         });
+    }
+    if model.pattern_route() == PatternRoute::RequestSyntakt {
+        // `0x60` answers `0x50`, the pattern with its kit. Nothing is decoded
+        // here: this box has no `Spec`, and its reader is `core`'s.
+        let payload = device.fetch_pattern_kit(index).map_err(|e| e.to_string())?;
+        return Ok(Dump::Syntakt { slot: index, payload, answered: identity.name });
     }
     let spec = model
         .spec()
@@ -743,6 +809,39 @@ fn a4_summary(into: PatternRef, report: &A4ImportReport) -> String {
         report.notes,
         report.tracks_with_notes,
         lanes,
+    )
+}
+
+/// What a Syntakt import landed, and what it could not.
+///
+/// **The two caveats are the point of this line existing separately.** A trig
+/// that sounds no note has no place in a roll that holds notes, and a p-lock
+/// lane does not travel from this box at all — so a user reading "12 notes" off
+/// a pattern the box shows more in needs both said here rather than inferred
+/// from a gap.
+fn syntakt_summary(into: PatternRef, report: &SyntaktImportReport) -> String {
+    let mut caveats = Vec::new();
+    if report.trigless_dropped > 0 {
+        caveats.push(format!("{} trig(s) sound no note and are not drawn", report.trigless_dropped));
+    }
+    if report.plock_lanes_not_carried > 0 {
+        caveats.push(format!(
+            "{} p-lock lane(s) stay on the box",
+            report.plock_lanes_not_carried
+        ));
+    }
+    if report.conditions_off_the_menu > 0 {
+        caveats.push(format!(
+            "{} condition(s) past this decoder's menu",
+            report.conditions_off_the_menu
+        ));
+    }
+    format!(
+        "Into {} · {} note(s) on {} track(s){}",
+        into.label(),
+        report.notes,
+        report.tracks_with_notes,
+        if caveats.is_empty() { String::new() } else { format!(" — {}", caveats.join(", ")) },
     )
 }
 
