@@ -102,7 +102,7 @@ fn main() {
     // slot is this?", and a stored-slot request echoes what was asked while a
     // working-state request names whatever is loaded. Reading a pattern the box
     // is not editing looks exactly like a box that ignores edits.
-    println!("{:>5}  {:>5}  {:>4}  {:>8}  {}", "req", "resp", "idx", "bytes", "leading bytes");
+    println!("{:>5}  {:>5}  {:>4}  {:>8}  leading bytes", "req", "resp", "idx", "bytes");
 
     if let Some(dir) = &out {
         std::fs::create_dir_all(dir).expect("could not make the output directory");
