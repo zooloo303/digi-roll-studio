@@ -1,0 +1,631 @@
+{
+  "date": "2026-09-15",
+  "gearmulatorRelease": "mdmm-v0.1.0-alpha.11",
+  "runs": {
+    "probe-01": {
+      "rate": 48000.0,
+      "block": 256,
+      "frames": 1440000,
+      "eventsDelivered": 44,
+      "blocks": 5625,
+      "renderSeconds": 0.2912049583333343,
+      "maxBlockSeconds": 0.0008594583333333334,
+      "blocksOverBudget": 0,
+      "device": "offline",
+      "mixGainPerInstance": 0.25,
+      "peak": 0.0,
+      "plugins": [
+        {
+          "name": "Gearmulator MD",
+          "version": "2.2.9",
+          "latencySamples": 289,
+          "stateBytes": 503,
+          "wrapperParameterCount": 2513,
+          "track1Level": {
+            "index": 24,
+            "name": "Track 1 Level",
+            "id": "24",
+            "value": 0.0
+          }
+        },
+        {
+          "name": "Gearmulator MM",
+          "version": "2.2.9",
+          "latencySamples": 289,
+          "stateBytes": 503,
+          "wrapperParameterCount": 2445,
+          "track1Level": {
+            "index": 56,
+            "name": "Track 1 Level",
+            "id": "56",
+            "value": 0.0
+          }
+        }
+      ]
+    },
+    "probe-02": {
+      "rate": 48000.0,
+      "block": 256,
+      "frames": 1440000,
+      "eventsDelivered": 44,
+      "blocks": 5625,
+      "renderSeconds": 35.82216416666672,
+      "maxBlockSeconds": 0.1645080833333333,
+      "blocksOverBudget": 5429,
+      "device": "offline",
+      "mixGainPerInstance": 0.25,
+      "peak": 0.1750937402248383,
+      "plugins": [
+        {
+          "name": "Gearmulator MD",
+          "version": "2.2.9",
+          "latencySamples": 32,
+          "stateBytes": 12587658,
+          "wrapperParameterCount": 2513,
+          "track1Level": {
+            "index": 24,
+            "name": "Track 1 Level",
+            "id": "49978837",
+            "value": 0.8818897604942322
+          }
+        },
+        {
+          "name": "Gearmulator MM",
+          "version": "2.2.9",
+          "latencySamples": 32,
+          "stateBytes": 4197199,
+          "wrapperParameterCount": 2445,
+          "track1Level": {
+            "index": 56,
+            "name": "Track 1 Level",
+            "id": "53672921",
+            "value": 0.7795275449752808
+          }
+        }
+      ]
+    },
+    "live-01": {
+      "rate": 48000.0,
+      "block": 512,
+      "frames": 2880000,
+      "eventsDelivered": 44,
+      "blocks": 5625,
+      "renderSeconds": 71.81969899999982,
+      "maxBlockSeconds": 0.1931145416666667,
+      "blocksOverBudget": 5528,
+      "device": "MacBook Pro Speakers",
+      "mixGainPerInstance": 0.25,
+      "peak": 0.1760127395391464,
+      "plugins": [
+        {
+          "name": "Gearmulator MD",
+          "version": "2.2.9",
+          "latencySamples": 32,
+          "stateBytes": 12587700,
+          "wrapperParameterCount": 2513,
+          "track1Level": {
+            "index": 24,
+            "name": "Track 1 Level",
+            "id": "49978837",
+            "value": 0.8818897604942322
+          }
+        },
+        {
+          "name": "Gearmulator MM",
+          "version": "2.2.9",
+          "latencySamples": 32,
+          "stateBytes": 4197242,
+          "wrapperParameterCount": 2445,
+          "track1Level": {
+            "index": 56,
+            "name": "Track 1 Level",
+            "id": "53672921",
+            "value": 0.7795275449752808
+          }
+        }
+      ]
+    },
+    "recall-editors": {
+      "rate": 48000.0,
+      "block": 512,
+      "frames": 4320000,
+      "eventsDelivered": 44,
+      "blocks": 8438,
+      "renderSeconds": 109.0650661666668,
+      "maxBlockSeconds": 0.09922183333333333,
+      "blocksOverBudget": 8391,
+      "device": "MacBook Pro Speakers",
+      "mixGainPerInstance": 0.25,
+      "peak": 0.1838915050029755,
+      "plugins": [
+        {
+          "name": "Gearmulator MD",
+          "version": "2.2.9",
+          "latencySamples": 32,
+          "stateBytes": 12587700,
+          "wrapperParameterCount": 2513,
+          "track1Level": {
+            "index": 24,
+            "name": "Track 1 Level",
+            "id": "49978837",
+            "value": 0.8818897604942322
+          }
+        },
+        {
+          "name": "Gearmulator MM",
+          "version": "2.2.9",
+          "latencySamples": 32,
+          "stateBytes": 4197242,
+          "wrapperParameterCount": 2445,
+          "track1Level": {
+            "index": 56,
+            "name": "Track 1 Level",
+            "id": "53672921",
+            "value": 0.7795275449752808
+          }
+        }
+      ]
+    },
+    "state-muted": {
+      "rate": 48000.0,
+      "block": 512,
+      "frames": 1440000,
+      "eventsDelivered": 44,
+      "blocks": 2813,
+      "renderSeconds": 36.03785699999991,
+      "maxBlockSeconds": 0.05988570833333334,
+      "blocksOverBudget": 2770,
+      "device": "offline",
+      "mixGainPerInstance": 0.25,
+      "peak": 0.1871445327997208,
+      "plugins": [
+        {
+          "name": "Gearmulator MD",
+          "version": "2.2.9",
+          "latencySamples": 32,
+          "stateBytes": 12587700,
+          "wrapperParameterCount": 2513,
+          "track1Level": {
+            "index": 24,
+            "name": "Track 1 Level",
+            "id": "49978837",
+            "value": 0.8818897604942322
+          }
+        },
+        {
+          "name": "Gearmulator MM",
+          "version": "2.2.9",
+          "latencySamples": 32,
+          "stateBytes": 4197242,
+          "wrapperParameterCount": 2445,
+          "track1Level": {
+            "index": 56,
+            "name": "Track 1 Level",
+            "id": "53672921",
+            "value": 0.7795275449752808
+          }
+        }
+      ]
+    },
+    "state-recalled": {
+      "rate": 48000.0,
+      "block": 512,
+      "frames": 1440000,
+      "eventsDelivered": 44,
+      "blocks": 2813,
+      "renderSeconds": 35.71142333333322,
+      "maxBlockSeconds": 0.02348070833333333,
+      "blocksOverBudget": 2772,
+      "device": "offline",
+      "mixGainPerInstance": 0.25,
+      "peak": 0.1922707408666611,
+      "plugins": [
+        {
+          "name": "Gearmulator MD",
+          "version": "2.2.9",
+          "latencySamples": 32,
+          "stateBytes": 12587700,
+          "wrapperParameterCount": 2513,
+          "track1Level": {
+            "index": 24,
+            "name": "Track 1 Level",
+            "id": "49978837",
+            "value": 0.8818897604942322
+          }
+        },
+        {
+          "name": "Gearmulator MM",
+          "version": "2.2.9",
+          "latencySamples": 32,
+          "stateBytes": 4197242,
+          "wrapperParameterCount": 2445,
+          "track1Level": {
+            "index": 56,
+            "name": "Track 1 Level",
+            "id": "53672921",
+            "value": 0.7795275449752808
+          }
+        }
+      ]
+    },
+    "parameter-zero": {
+      "rate": 48000.0,
+      "block": 512,
+      "frames": 1440000,
+      "parameterEventsDelivered": 2,
+      "eventsDelivered": 44,
+      "blocks": 2813,
+      "renderSeconds": 35.55298479166671,
+      "maxBlockSeconds": 0.03757470833333333,
+      "blocksOverBudget": 2770,
+      "device": "offline",
+      "mixGainPerInstance": 0.25,
+      "peak": 0.1933470815420151,
+      "plugins": [
+        {
+          "name": "Gearmulator MD",
+          "version": "2.2.9",
+          "latencySamples": 32,
+          "stateBytes": 12587700,
+          "wrapperParameterCount": 2513,
+          "track1Level": {
+            "index": 24,
+            "name": "Track 1 Level",
+            "id": "49978837",
+            "value": 0.0
+          }
+        },
+        {
+          "name": "Gearmulator MM",
+          "version": "2.2.9",
+          "latencySamples": 32,
+          "stateBytes": 4197242,
+          "wrapperParameterCount": 2445,
+          "track1Level": {
+            "index": 56,
+            "name": "Track 1 Level",
+            "id": "53672921",
+            "value": 0.0
+          }
+        }
+      ]
+    },
+    "md-panel": {
+      "rate": 48000.0,
+      "block": 512,
+      "frames": 5760000,
+      "parameterEventsDelivered": 0,
+      "eventsDelivered": 0,
+      "blocks": 11250,
+      "renderSeconds": 75.47481808333337,
+      "maxBlockSeconds": 0.01045166666666667,
+      "blocksOverBudget": 0,
+      "device": "MacBook Pro Speakers",
+      "mixGainPerInstance": 0.25,
+      "peak": 0.0,
+      "plugins": [
+        {
+          "name": "Gearmulator MD",
+          "version": "2.2.9",
+          "latencySamples": 32,
+          "stateBytes": 12587700,
+          "wrapperParameterCount": 2513,
+          "track1Level": {
+            "index": 24,
+            "name": "Track 1 Level",
+            "id": "49978837",
+            "value": 0.8818897604942322
+          }
+        }
+      ]
+    },
+    "mm-parts": {
+      "rate": 48000.0,
+      "block": 512,
+      "frames": 2880000,
+      "parameterEventsDelivered": 36,
+      "eventsDelivered": 12,
+      "blocks": 5625,
+      "renderSeconds": 31.67600591666659,
+      "maxBlockSeconds": 0.01518395833333333,
+      "blocksOverBudget": 2,
+      "device": "offline",
+      "mixGainPerInstance": 0.25,
+      "peak": 0.1872180700302124,
+      "plugins": [
+        {
+          "name": "Gearmulator MM",
+          "version": "2.2.9",
+          "latencySamples": 32,
+          "stateBytes": 4197242,
+          "wrapperParameterCount": 2445,
+          "track1Level": {
+            "index": 56,
+            "name": "Track 1 Level",
+            "id": "53672921",
+            "value": 0.7795275449752808
+          }
+        }
+      ],
+      "partWindows": [
+        {
+          "part": 1,
+          "channel": 1,
+          "note": 60,
+          "peak": 0.027381062507629395,
+          "rms": 0.0019196565446945517
+        },
+        {
+          "part": 2,
+          "channel": 2,
+          "note": 60,
+          "peak": 0.018720388412475586,
+          "rms": 0.004258121769000092
+        },
+        {
+          "part": 3,
+          "channel": 3,
+          "note": 60,
+          "peak": 0.055175065994262695,
+          "rms": 0.005666723661126773
+        },
+        {
+          "part": 4,
+          "channel": 4,
+          "note": 60,
+          "peak": 0.04146850109100342,
+          "rms": 0.009342986360740256
+        },
+        {
+          "part": 5,
+          "channel": 5,
+          "note": 60,
+          "peak": 0.1872180700302124,
+          "rms": 0.012751803076712469
+        },
+        {
+          "part": 6,
+          "channel": 6,
+          "note": 60,
+          "peak": 0.007126331329345703,
+          "rms": 0.001485490765767861
+        }
+      ]
+    },
+    "md-parts": {
+      "rate": 48000.0,
+      "block": 512,
+      "frames": 2880000,
+      "parameterEventsDelivered": 256,
+      "eventsDelivered": 32,
+      "blocks": 5625,
+      "renderSeconds": 37.85007537499996,
+      "maxBlockSeconds": 0.05715691666666667,
+      "blocksOverBudget": 39,
+      "device": "offline",
+      "mixGainPerInstance": 0.25,
+      "peak": 0.07765857875347137,
+      "plugins": [
+        {
+          "name": "Gearmulator MD",
+          "version": "2.2.9",
+          "latencySamples": 32,
+          "stateBytes": 12587700,
+          "wrapperParameterCount": 2513,
+          "track1Level": {
+            "index": 24,
+            "name": "Track 1 Level",
+            "id": "49978837",
+            "value": 0.8818897604942322
+          }
+        }
+      ],
+      "partWindows": [
+        {
+          "part": 1,
+          "channel": 1,
+          "note": 36,
+          "peak": 0.05577373504638672,
+          "rms": 0.017415325256245087
+        },
+        {
+          "part": 2,
+          "channel": 1,
+          "note": 38,
+          "peak": 1.1920928955078125e-07,
+          "rms": 1.1920928955078125e-07
+        },
+        {
+          "part": 3,
+          "channel": 1,
+          "note": 40,
+          "peak": 1.1920928955078125e-07,
+          "rms": 1.1920928955078125e-07
+        },
+        {
+          "part": 4,
+          "channel": 1,
+          "note": 41,
+          "peak": 1.1920928955078125e-07,
+          "rms": 1.1920928955078125e-07
+        },
+        {
+          "part": 5,
+          "channel": 1,
+          "note": 43,
+          "peak": 1.1920928955078125e-07,
+          "rms": 1.1920928955078125e-07
+        },
+        {
+          "part": 6,
+          "channel": 1,
+          "note": 45,
+          "peak": 1.1920928955078125e-07,
+          "rms": 1.1920928955078125e-07
+        },
+        {
+          "part": 7,
+          "channel": 1,
+          "note": 47,
+          "peak": 1.1920928955078125e-07,
+          "rms": 1.1920928955078125e-07
+        },
+        {
+          "part": 8,
+          "channel": 1,
+          "note": 48,
+          "peak": 1.1920928955078125e-07,
+          "rms": 1.1920928955078125e-07
+        },
+        {
+          "part": 9,
+          "channel": 1,
+          "note": 50,
+          "peak": 1.1920928955078125e-07,
+          "rms": 1.1920928955078125e-07
+        },
+        {
+          "part": 10,
+          "channel": 1,
+          "note": 52,
+          "peak": 0.00892341136932373,
+          "rms": 0.0011280197906322173
+        },
+        {
+          "part": 11,
+          "channel": 1,
+          "note": 53,
+          "peak": 0.025107860565185547,
+          "rms": 0.0015567129447485405
+        },
+        {
+          "part": 12,
+          "channel": 1,
+          "note": 55,
+          "peak": 0.02258753776550293,
+          "rms": 0.002200144265602966
+        },
+        {
+          "part": 13,
+          "channel": 1,
+          "note": 57,
+          "peak": 0.06416797637939453,
+          "rms": 0.005865922081696648
+        },
+        {
+          "part": 14,
+          "channel": 1,
+          "note": 59,
+          "peak": 0.06521499156951904,
+          "rms": 0.006076601320880668
+        },
+        {
+          "part": 15,
+          "channel": 1,
+          "note": 60,
+          "peak": 0.07765865325927734,
+          "rms": 0.004898071520392538
+        },
+        {
+          "part": 16,
+          "channel": 1,
+          "note": 62,
+          "peak": 0.06737065315246582,
+          "rms": 0.006434413878917945
+        }
+      ]
+    },
+    "fresh-level-recall/mutated": {
+      "startupSeconds": 1.609345791666667,
+      "renderWallSeconds": 14.22779645833333,
+      "reportedDeviceOutputLatencySamples": 0,
+      "deviceXruns": -1,
+      "rate": 48000.0,
+      "block": 512,
+      "frames": 576000,
+      "parameterEventsDelivered": 0,
+      "eventsDelivered": 0,
+      "blocks": 1125,
+      "renderSeconds": 14.18838083333333,
+      "maxBlockSeconds": 0.03857375,
+      "blocksOverBudget": 1083,
+      "device": "offline",
+      "mixGainPerInstance": 0.25,
+      "peak": 0.0,
+      "plugins": [
+        {
+          "name": "Gearmulator MD",
+          "version": "2.2.9",
+          "latencySamples": 32,
+          "stateBytes": 12587700,
+          "wrapperParameterCount": 2513,
+          "track1Level": {
+            "index": 24,
+            "name": "Track 1 Level",
+            "id": "49978837",
+            "value": 0.0
+          }
+        },
+        {
+          "name": "Gearmulator MM",
+          "version": "2.2.9",
+          "latencySamples": 32,
+          "stateBytes": 4197242,
+          "wrapperParameterCount": 2445,
+          "track1Level": {
+            "index": 56,
+            "name": "Track 1 Level",
+            "id": "53672921",
+            "value": 0.0
+          }
+        }
+      ]
+    },
+    "fresh-level-recall/original": {
+      "startupSeconds": 1.339114791666667,
+      "renderWallSeconds": 14.0184435,
+      "reportedDeviceOutputLatencySamples": 0,
+      "deviceXruns": -1,
+      "rate": 48000.0,
+      "block": 512,
+      "frames": 576000,
+      "parameterEventsDelivered": 0,
+      "eventsDelivered": 0,
+      "blocks": 1125,
+      "renderSeconds": 14.00143370833335,
+      "maxBlockSeconds": 0.01573091666666667,
+      "blocksOverBudget": 1082,
+      "device": "offline",
+      "mixGainPerInstance": 0.25,
+      "peak": 0.0,
+      "plugins": [
+        {
+          "name": "Gearmulator MD",
+          "version": "2.2.9",
+          "latencySamples": 32,
+          "stateBytes": 12587700,
+          "wrapperParameterCount": 2513,
+          "track1Level": {
+            "index": 24,
+            "name": "Track 1 Level",
+            "id": "49978837",
+            "value": 0.8818897604942322
+          }
+        },
+        {
+          "name": "Gearmulator MM",
+          "version": "2.2.9",
+          "latencySamples": 32,
+          "stateBytes": 4197242,
+          "wrapperParameterCount": 2445,
+          "track1Level": {
+            "index": 56,
+            "name": "Track 1 Level",
+            "id": "53672921",
+            "value": 0.7795275449752808
+          }
+        }
+      ]
+    }
+  }
+}

@@ -1,6 +1,6 @@
 # Plugin devices — implementation plan
 
-**Status: P0 implemented; P1 native host proof is next.** Updated 2026-09-15.
+**Status: P0 complete; P1 native helper implemented and tested, exit gates still open.** Updated 2026-09-15.
 
 Goal: add Gearmulator Machinedrum and Monomachine AU/VST3 instruments as DRS
 devices whose parts are mapped to DRS tracks, while hardware development and
@@ -196,12 +196,13 @@ does not auto-open hardware ports; default build and tests still work.
 
 ### P1 — Prove the host, before modifying shared DRS behavior
 
-- [ ] Pin a tested Gearmulator build and host dependency/toolchain versions.
-- [ ] Load MD and MM VST3 in the helper, open/close editors and select user firmware.
+- [x] Pin a tested Gearmulator build and host dependency/toolchain versions.
+- [x] Load MD and MM VST3 in the helper, open/close editors and select user firmware.
+      Firmware selected through isolated ROM paths; chooser interaction untested.
 - [ ] Render continuously into the chosen audio device; mix both main stereo buses.
 - [ ] Send known MD trigger notes and all six MM channels; verify configured maps.
 - [ ] Supply transport data and demonstrate one sequencer owning note generation.
-- [ ] Enumerate parameters and prove one level parameter changes through the host.
+- [x] Enumerate parameters and prove one level parameter changes through the host.
 - [ ] Save, mutate and restore state in fresh instances, checking kit/sound recall.
 - [ ] Record CPU, latency, startup behavior and audio stability at representative
       sample rates/buffer sizes. An external-MIDI experiment can diagnose mapping
@@ -376,3 +377,53 @@ a firm release date before P1 resolves the native hosting and timing unknowns.
   CMake was not found on PATH. Host dependency/license selection, native helper,
   plugin installation, firmware boot, audio/editor/state evidence and performance
   measurements have not been implemented or validated. P2–P7 remain open.
+
+
+### 2026-09-15 — P1 native VST3 proof implemented (partial, not an exit pass)
+
+- Added independent `native/plugin-host/` CMake project: JUCE VST3 loader,
+  floating editors, continuous stopped rendering, explicit CoreAudio output,
+  main stereo mixing, absolute-frame MIDI schedules, block-boundary native-ID
+  parameter events, coherent stopped/play/seek/tempo context, parameter reports,
+  WAV evidence and per-instance state snapshots. No Rust/shared UI/model changes.
+- Pinned JUCE 7.0.12 commit `4f43011b96eb0636104cb3e433894cda98243626` under its
+  GPLv3 option, including the bundled VST3 SDK's GPLv3 route. Added checksum-verified
+  dependency scripts and a narrow, tracked macOS SDK 27 compatibility patch.
+  CMake 3.31.6 and Apple clang 21.0.0 built the helper and fixture independently.
+- Downloaded Gearmulator alpha.11 ARM64 PGO locally, checksum pinned. Corrected
+  firmware search root to this release's `Gearmulator Preview` vendor folder.
+  Both supplied ROMs match supported fingerprints and booted real editors.
+  ROMs remain in the original checkout; local-only symlinks select them.
+- Real tests: both plugins rendered nonzero audio and ran through MacBook Pro
+  Speakers. Both editors inspected; MM part 6 selected, MM editor closed to show
+  MD. No MIDI hardware ports touched. MM all-six-channel solo probes produced
+  audio; MD parts 2–9 remained effectively silent in the tested kit. Panel map
+  entries 1–13 were read and match candidate notes; 14–16 need panel confirmation.
+- Post-boot level-zero controls worked via native parameter IDs. Startup level
+  writes were overwritten by firmware boot; that failed attempt is documented.
+  Fresh processes restored both level-zero and original snapshots, with asserted
+  level readbacks; editors also displayed factory kits. Full changed
+  kit/user-sample recall remains open. Snapshots are about 12.6 MB MD / 4.2 MB MM.
+- Both-plugin 48k/512 callback work exceeded budget in nearly every block. MD alone
+  idle at 48k/512 had no measured overruns over 120 rendered seconds. Neither is
+  an end-to-end latency measurement or a clean-listening/stability certification.
+  **No supported two-plugin realtime configuration established; P1 is not passed.**
+- Exact commands and measured/failed runs:
+  [P1 evidence](PLUGIN_HOST_P1_EVIDENCE.md),
+  [build/run instructions](../native/plugin-host/README.md),
+  [compact measurements](plugin-host-p1-results.json).
+- Verification commands from this worktree:
+  `local/plugin-host/tools/bin/cmake --build local/plugin-host/build -j 6`;
+  `local/plugin-host/tools/bin/ctest --test-dir local/plugin-host/build --output-on-failure`;
+  `cargo test --workspace`; `cargo clippy --workspace --all-targets`;
+  `cargo test --workspace --features plugin-host`;
+  `cargo clippy --workspace --all-targets --features plugin-host`.
+  Native consolidated proof passed: real fixture VST3 loading at 44.1/48 kHz ×
+  128/256/512, exact block-boundary MIDI/mix impulses while stopped, parameter zero
+  and parameter-before-note ordering, native IDs, fresh-process state recall,
+  transport process context, invalid-input and missing-plugin failures.
+  Rust tests: 2,137 passed in each mode; Clippy passed in each mode.
+- Remaining P1 gates: all MD parts with a known sounding kit; play-mode sequencing
+  ownership; full musical state recall; acceptable two-plugin realtime processing;
+  real rate/buffer/editor matrix, measured onset jitter/output latency and sustained
+  stability. P2–P7 have not started. No helper/plugin/ROM added to packaging.
