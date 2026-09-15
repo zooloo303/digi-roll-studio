@@ -561,7 +561,43 @@ fn icon() -> egui::IconData {
 }
 
 fn main() -> eframe::Result<()> {
+    use digi_protocol::runtime_profile::RuntimeProfile;
+    let profile = if cfg!(feature = "plugin-host") {
+        RuntimeProfile::PluginPreview
+    } else {
+        RuntimeProfile::Stable
+    };
+    profile
+        .install()
+        .expect("runtime profile must be selected before services start");
+    // Machine-readable startup evidence without creating a window or MIDI client.
+    if std::env::args().any(|arg| arg == "--runtime-info") {
+        let root = digi_protocol::backup_stash::app_data_dir()
+            .expect("application data directory unavailable");
+        println!(
+            "{}",
+            serde_json::json!({
+                "name": profile.display_name(),
+                "data_root": root,
+                "backups": digi_protocol::backup_stash::Stash::default_dir().unwrap(),
+                "recovery": digi_roll_studio::ui::recovery::default_dir().unwrap(),
+                "preset_index": digi_protocol::preset_index::PresetIndex::default_dir().unwrap(),
+                "hardware_autoconnect": digi_roll_studio::ui::autoconnect::AutoConnect::default().enabled(),
+                "plugin_host_feature": cfg!(feature = "plugin-host"),
+            })
+        );
+        return Ok(());
+    }
     let options = eframe::NativeOptions {
+        persistence_path: if profile == RuntimeProfile::PluginPreview {
+            Some(
+                digi_protocol::backup_stash::app_data_dir()
+                    .expect("preview requires an application data directory")
+                    .join("settings"),
+            )
+        } else {
+            None
+        },
         // Wide enough for the roll to be worth looking at with the rail, a tool
         // panel and Setup all open at once — which is the layout's whole claim.
         //
@@ -577,7 +613,7 @@ fn main() -> eframe::Result<()> {
         ..Default::default()
     };
     eframe::run_native(
-        "Digi Roll Studio",
+        profile.display_name(),
         options,
         Box::new(|cc| {
             // The app's one global style change, and it has to be made before

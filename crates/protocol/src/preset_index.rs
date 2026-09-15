@@ -249,22 +249,12 @@ impl PresetIndex {
 
     /// The index in the platform's per-user application-data directory.
     ///
-    /// Hand-rolled from environment variables for the same reason
-    /// [`crate::backup_stash::Stash::default_dir`] is: it is three `cfg` arms
-    /// against a crate that otherwise depends only on serde. `HOME` unset
-    /// returns an error rather than writing a cache into the working directory.
+    /// Shares the runtime profile with backups and crash recovery. Missing
+    /// platform storage returns an error rather than using the working directory.
     pub fn default_dir() -> Result<PathBuf, IndexError> {
-        let base = if cfg!(target_os = "macos") {
-            std::env::var_os("HOME").map(|h| PathBuf::from(h).join("Library/Application Support"))
-        } else if cfg!(target_os = "windows") {
-            std::env::var_os("APPDATA").map(PathBuf::from)
-        } else {
-            std::env::var_os("XDG_DATA_HOME").map(PathBuf::from).or_else(|| {
-                std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".local/share"))
-            })
-        };
-        base.map(|b| b.join("digi-roll-studio").join("preset-index"))
-            .ok_or(IndexError::NoDefaultDir)
+        crate::backup_stash::app_data_dir()
+            .map(|root| root.join("preset-index"))
+            .map_err(|_| IndexError::NoDefaultDir)
     }
 
     pub fn default_index() -> Result<Self, IndexError> {

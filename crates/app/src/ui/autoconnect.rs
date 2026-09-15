@@ -299,7 +299,7 @@ pub struct AutoConnect {
 impl Default for AutoConnect {
     fn default() -> Self {
         Self {
-            enabled: true,
+            enabled: digi_protocol::runtime_profile::RuntimeProfile::current().hardware_autoconnect(),
             pending: None,
             tried: HashMap::new(),
             last_scan: None,

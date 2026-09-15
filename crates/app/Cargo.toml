@@ -5,6 +5,11 @@ edition.workspace = true
 license.workspace = true
 rust-version.workspace = true
 
+[features]
+default = []
+# Native helper is built separately; ordinary Rust builds need no native SDK.
+plugin-host = []
+
 [dependencies]
 egui = "0.36"
 eframe = "0.36"

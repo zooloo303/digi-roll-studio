@@ -284,7 +284,8 @@ pub fn app_data_dir() -> Result<PathBuf, StashError> {
             std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".local/share"))
         })
     };
-    base.map(|b| b.join("digi-roll-studio")).ok_or(StashError::NoDefaultDir)
+    base.map(|b| crate::runtime_profile::RuntimeProfile::current().under(&b))
+        .ok_or(StashError::NoDefaultDir)
 }
 
 /// A directory holding the backup ring.

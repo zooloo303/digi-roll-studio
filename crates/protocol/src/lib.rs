@@ -6,6 +6,7 @@ pub mod a4_kit;
 pub mod a4_pattern;
 pub mod a4_plocks;
 pub mod backup_stash;
+pub mod runtime_profile;
 pub mod conditions;
 pub mod copy_track;
 pub mod device;
