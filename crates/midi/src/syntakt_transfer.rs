@@ -65,14 +65,26 @@
 //! It means [`Consent`] naming a slot is not decoration here: the slot it names
 //! is the slot that gets overwritten.
 //!
-//! # No firmware allowlist entry
+//! # The firmware allowlist entry, and what it gates
 //!
-//! There is none for this box and this module does not add one. A write here is
-//! an experiment run by hand with a backup in front of it, not a route the app
-//! offers. `core::device::SYNTAKT` is `PatternRoute::RequestReadOnly`: a write
-//! has now been seen to work, which is the bar for promoting it, but promoting
-//! it is a UI change with its own consent surface and it is not this module's
-//! to make quietly.
+//! `protocol::safe_write::WRITE_ALLOWED_BUILDS` carries `("syntakt", ["0082"])`
+//! — OS 1.40 and nothing else — added 2026-09-11 against six sends into six
+//! empty slots, each a different edit, each read back and byte-compared
+//! (`dumps/syntakt-2026-09-11/README.md`). `core::device::SYNTAKT` is
+//! `PatternRoute::RequestSyntakt`, so the app does offer this route, through
+//! `safe_write::syntakt_safe_write_tracks` and its own consent surface.
+//!
+//! **This section said the opposite until 2026-09-16** — "there is none for
+//! this box", "not a route the app offers", "`RequestReadOnly`" — all three
+//! written while the write was unverified and left behind when it was not. The
+//! promotion it asks for happened five days after it was written. Nothing in a
+//! test reads a module header, which is exactly why one can be this wrong for
+//! this long (DEVELOPMENT.md §17).
+//!
+//! What has not changed is the gate itself: any build but `0082` is still
+//! refused by name, and the allowlist is still the one copy in the crate, with
+//! `the_allowlist_holds_only_the_builds_the_writes_were_verified_on` as the
+//! interlock that makes adding a row a second, deliberate act.
 
 use std::time::Duration;
 

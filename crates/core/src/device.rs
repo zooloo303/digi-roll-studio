@@ -395,16 +395,28 @@ pub static A4: DeviceModel = DeviceModel {
 
 /// The shipped roster. DT2 and DN2 per PLAN.md §2; A4 since 2026-08-24,
 /// hardware-verified 2026-08-28.
-/// The Syntakt — read-only, and deliberately so.
+/// The Syntakt — a full transfer peer since 0.5.5.
 ///
 /// Twelve tracks and an FX track, which is the thirteen blocks a pattern dump
 /// holds; 64 steps, eight banks of sixteen patterns. Its per-step layout is
 /// mapped and round-trips byte-exact (`protocol::syntakt_pattern`), which is
 /// what makes fetching honest.
 ///
-/// **`sysex: None` and [`PatternRoute::RequestReadOnly`].** There is no gen-2
+/// **`sysex: None` and [`PatternRoute::RequestSyntakt`].** There is no gen-2
 /// `Spec` for this box — its layout is the Analog Four's shape, not the digis'
-/// — and there is no verified write, so it does not appear in a send picker.
+/// — and the write is its own `0x50` flow through
+/// `protocol::safe_write::syntakt_safe_write_tracks`, on the same re-fetch,
+/// backup, confirm, verify ceremony as the other two routes.
+///
+/// **This paragraph said "read-only, and deliberately so" until 2026-09-16**,
+/// naming [`PatternRoute::RequestReadOnly`] beside a field that had said
+/// `RequestSyntakt` since the write was verified on 2026-09-11 — six sends into
+/// six empty slots on OS 1.40, each read back and byte-compared
+/// (`dumps/syntakt-2026-09-11/`), then four more through 0.5.5-beta.2, each read
+/// back and restored byte-identically (`dumps/syntakt-2026-09-15/beta2-test/`).
+/// The box has been on the write allowlist that whole time. DEVELOPMENT.md §17:
+/// wrong prose about code the tests were passing over, and the tests were right.
+///
 /// `notes_per_trig` is 1 because nothing here has ever seen a chord on it, and
 /// claiming four would let the MIDI import fold voices onto a trig that may not
 /// hold them.

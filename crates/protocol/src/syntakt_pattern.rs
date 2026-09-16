@@ -19,12 +19,25 @@
 //! question about this format is more likely to be answered by the A4's notes
 //! than by a digi's.
 //!
-//! # No encoder, and no write path
+//! # Editing in place, and still no encoder
 //!
-//! There is deliberately nothing here that builds a pattern. Writing needs a
-//! byte-exact round trip and a firmware allowlist entry, and this box has
-//! neither; the decode below is honest about a handful of fields and silent
-//! about everything else in the 983 bytes.
+//! There is deliberately nothing here that *builds* a pattern from scratch, and
+//! there never will be: the decode below is honest about a handful of fields and
+//! silent about everything else in the 983 bytes, so anything this crate
+//! assembled whole would be mostly invention.
+//!
+//! What it does have is the read-modify-write half — [`set_track_notes`],
+//! [`set_step`] and [`locks_for`], which edit a dump **fetched from the box it
+//! is going back to** and leave every untouched byte exactly as it arrived.
+//! That is the same bargain `a4_pattern` strikes, and it is what makes a write
+//! minimal-diff rather than a re-synthesis.
+//!
+//! **This section said "no write path" and that the box had neither a byte-exact
+//! round trip nor a firmware allowlist entry, until 2026-09-16.** All three had
+//! been false since 2026-09-11: the round trip is what `syntakt_transfer`'s
+//! fixtures assert, the allowlist carries `("syntakt", ["0082"])`, and the three
+//! functions above are in this file. DEVELOPMENT.md §17 — and a header is where
+//! it hides longest, because no test reads one.
 
 /// Blocks in the pattern region. The Syntakt shows twelve tracks and an FX
 /// track, which is thirteen — but **the count is what was measured, not what

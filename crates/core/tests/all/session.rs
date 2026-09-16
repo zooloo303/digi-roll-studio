@@ -48,16 +48,28 @@ fn track_count_comes_from_the_model_not_a_constant() {
 
 #[test]
 fn an_unshipped_live_only_model_constructs_correctly() {
-    // Deliberately not shipped in MODELS: this proves the table is data without
-    // claiming a Syntakt profile we have not verified. This test's model was
-    // an "Analog Four" from Phase 2 until 2026-08-24, when the real A4 row
-    // graduated into the shipped table — the Syntakt takes over as the next
-    // box the plan names and this build does not ship.
-    static SYNTAKT: DeviceModel = DeviceModel {
-        key: "ST",
-        display: "Syntakt",
+    // Deliberately not shipped in MODELS: this proves the table is data — that a
+    // model this crate has never heard of constructs, validates and holds
+    // patterns — without claiming a profile nobody has verified.
+    //
+    // **The stand-in has been replaced twice, each time by the box graduating.**
+    // It was an "Analog Four" from Phase 2 until 2026-08-24, then a "Syntakt"
+    // until 0.5.5 shipped the real `SYNTAKT` row on this very key. Each time,
+    // the comment outlived the fact by a release: a test that says "this build
+    // does not ship it" beside a build that ships it is DEVELOPMENT.md §17, and
+    // it passed both times because nothing here asserts on the roster.
+    //
+    // So the roster is asserted on now, and the stand-in is the **gen-1
+    // Digitakt** — a box `protocol::device::PRODUCTS` can already name off a
+    // handshake (product id 12, slug `digitakt`) and `MODELS` deliberately has
+    // no row for. That is the honest shape of "unshipped": known to exist,
+    // unprofiled. If it ever graduates, the assertion below fails rather than
+    // the prose quietly going stale a third time.
+    static DIGITAKT_1: DeviceModel = DeviceModel {
+        key: "DT1",
+        display: "Digitakt",
         slug: None,
-        num_tracks: 12,
+        num_tracks: 8,
         max_steps: 64,
         notes_per_trig: 4,
         default_track_kind: TrackKind::Audio,
@@ -68,15 +80,21 @@ fn an_unshipped_live_only_model_constructs_correctly() {
         wire_slots: 0,
     };
 
-    let d = Device::new("ST", &SYNTAKT, 8);
+    assert!(
+        digi_core::device::model_for_key(DIGITAKT_1.key).is_none(),
+        "the stand-in has graduated into the shipped table — pick another, and \
+         do not leave this comment describing the old one"
+    );
+
+    let d = Device::new("DT1", &DIGITAKT_1, 8);
     assert_eq!(d.patterns.len(), 8);
     for p in &d.patterns {
-        assert_eq!(p.num_tracks(), 12);
+        assert_eq!(p.num_tracks(), 8);
     }
     // sysex: None means sequence-live-only — no fetch, no write.
     assert!(!d.can_sysex());
-    assert!(SYNTAKT.spec().is_none());
-    d.validate().expect("a 12-track model is coherent");
+    assert!(DIGITAKT_1.spec().is_none());
+    d.validate().expect("an 8-track model is coherent");
 }
 
 #[test]
