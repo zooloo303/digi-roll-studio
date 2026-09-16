@@ -9,6 +9,7 @@
 //! measurements behind this.
 
 mod chords;
+mod device;
 mod edit_ops;
 mod export;
 mod history;
@@ -16,3 +17,4 @@ mod import;
 mod midifile;
 mod record;
 mod session;
+mod syntakt_write;

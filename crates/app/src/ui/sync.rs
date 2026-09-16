@@ -101,8 +101,11 @@ use digi_protocol::a4_kit::{parse_working_kit, A4Kit, DUMP_A4_KIT_WORKING};
 use digi_protocol::pattern::{decode_pattern_kit, track_trig_count, PatternKit, Spec};
 use digi_protocol::protocol::{build_dump_message, FAMILY_ANALOG_FOUR};
 use digi_protocol::plocks::{free_lane_count, read_track_plocks, PoolLane};
+use digi_core::syntakt_transfer::TRACK_NAMES as SYNTAKT_TRACK_NAMES;
+use digi_protocol::syntakt_pattern as syntakt;
 use digi_protocol::safe_write::{
-    a4_safe_write_tracks, safe_write_tracks, write_gate, write_impact_lines,
+    a4_safe_write_tracks, safe_write_tracks, syntakt_safe_write_tracks, write_gate,
+    write_impact_lines, SyntaktTrackWrite,
     write_result_message, A4TrackWrite, ConfirmArgs, ImpactArgs, PatternIo, Timestamp,
     TrackWrite, WriteError, WriteHooks, BACKUP_LINE,
 };
@@ -121,6 +124,7 @@ use crate::ui::write::{aim, blocker, is_home, track_kind_label, wrong_box, Ports
 pub enum JobWrites {
     Gen2(Vec<TrackWrite>),
     A4(Vec<A4TrackWrite>),
+    Syntakt(Vec<SyntaktTrackWrite>),
 }
 
 impl JobWrites {
@@ -128,6 +132,7 @@ impl JobWrites {
         match self {
             Self::Gen2(w) => w.len(),
             Self::A4(w) => w.len(),
+            Self::Syntakt(w) => w.len(),
         }
     }
 
@@ -244,9 +249,31 @@ pub fn plan_box(
         });
         return plan;
     };
-    let gen1 = device.model.pattern_route() == PatternRoute::RequestGen1;
+    // **Refused by intent, not by accident.** A read-only box has no gen-2
+    // `Spec` either, so the check below would already have stopped it — with
+    // "no pattern format", which for the Syntakt is not true and would send
+    // somebody looking for a mapping that exists. Ask the question that is
+    // actually being asked, and say the actual answer.
+    if !device.model.can_send_patterns() {
+        plan.blocked.push(Blocked {
+            device: id,
+            name: device.name.clone(),
+            why: format!(
+                "{} is fetch-only here — its format is mapped but no write to it has been \
+                 verified on hardware",
+                device.model.display
+            ),
+        });
+        return plan;
+    }
+    // **Three formats now, and "has a `Spec`" stopped being the question.** Two
+    // of them carry `None` there: the A4 because its layout is `a4_pattern`'s,
+    // the Syntakt because its layout is `syntakt_pattern`'s. A box is blocked
+    // below only when it has neither a spec nor a flow of its own.
+    let route = device.model.pattern_route();
+    let bespoke = matches!(route, PatternRoute::RequestGen1 | PatternRoute::RequestSyntakt);
     let spec = device.model.spec();
-    if !gen1 && spec.is_none() {
+    if !bespoke && spec.is_none() {
         plan.blocked.push(Blocked {
             device: id,
             name: device.name.clone(),
@@ -267,7 +294,11 @@ pub fn plan_box(
         from,
         into,
         pattern_name: pattern.map(|p| p.name.clone()).unwrap_or_default(),
-        writes: if gen1 { JobWrites::A4(Vec::new()) } else { JobWrites::Gen2(Vec::new()) },
+        writes: match route {
+            PatternRoute::RequestGen1 => JobWrites::A4(Vec::new()),
+            PatternRoute::RequestSyntakt => JobWrites::Syntakt(Vec::new()),
+            _ => JobWrites::Gen2(Vec::new()),
+        },
         aims: Vec::new(),
         skipped: Vec::new(),
     };
@@ -301,6 +332,16 @@ pub fn plan_box(
                 session.track_write(spec, id, from, track_index, into).map(|export| {
                     writes.push(export.write);
                     (track.map(|t| t.plocks.len()).unwrap_or(0), export.warnings)
+                })
+                .map_err(|e| e.to_string())
+            }
+            (JobWrites::Syntakt(writes), _) => {
+                session.syntakt_track_write(id, from, track_index, into).map(|export| {
+                    writes.push(export.write);
+                    // `lanes: 0` for the A4's reason: this box's automation does
+                    // not travel, and this count is a promise of what does. The
+                    // loss rides in `export.warnings`, which the dialog prints.
+                    (0, export.warnings)
                 })
                 .map_err(|e| e.to_string())
             }
@@ -465,6 +506,37 @@ pub fn survey(device: &mut impl PatternIo, job: &BoxJob) -> Result<Survey, Strin
             })
             .collect::<Result<Vec<_>, String>>()?;
         return Ok(Survey { kit_name: String::new(), box_swing: None, free_lanes: None, existing });
+    }
+
+    // The Syntakt's survey is the A4's shape and for the same reason: per-track
+    // trig counts from the format's own counter, so the dialog and the flow's
+    // confirm compare like with like. Its swing *is* mapped, so unlike the A4
+    // this one carries it.
+    if matches!(job.writes, JobWrites::Syntakt(_)) {
+        if !syntakt::looks_like_pattern(&bytes) {
+            return Err(format!(
+                "the box answered {} bytes for {} that do not announce struct version {}",
+                bytes.len(),
+                job.into.label(),
+                syntakt::STRUCT_VERSION
+            ));
+        }
+        let existing = job
+            .aims
+            .iter()
+            .map(|aim| TrackSurvey {
+                track_index: aim.track_index,
+                existing_trigs: syntakt::trig_count(&bytes, aim.track_index),
+                kind: SYNTAKT_TRACK_NAMES.get(aim.track_index).copied().unwrap_or("?").into(),
+                box_plocks: Vec::new(),
+            })
+            .collect();
+        return Ok(Survey {
+            kit_name: String::new(),
+            box_swing: syntakt::swing_percent(&bytes),
+            free_lanes: None,
+            existing,
+        });
     }
 
     let spec = job.spec.ok_or_else(|| "this box has no pattern format".to_string())?;
@@ -677,6 +749,17 @@ pub fn ask_box(job: &BoxJob, survey: &Survey, playing: bool) -> AskBox {
              of that slot."
                 .to_string(),
         ),
+        // **Not the A4's sentence.** Velocity and length do move on this box,
+        // and the whole pattern goes back with its kit attached because it
+        // stores nothing smaller — so the enumeration has to say what makes
+        // that safe rather than claim less is sent than is.
+        JobWrites::Syntakt(_) => lines.push(
+            "The notes move with their velocity, length, micro timing and condition. This box \
+             takes a pattern only with its kit attached, so the whole thing goes back — but \
+             every byte no track here draws is the destination's own, read moments before the \
+             send."
+                .to_string(),
+        ),
     }
     if playing {
         lines.push(
@@ -868,6 +951,9 @@ pub fn run<D: PatternIo>(
             JobWrites::A4(all) => JobWrites::A4(
                 all.iter().filter(|w| ticked(w.track_index)).cloned().collect(),
             ),
+            JobWrites::Syntakt(all) => JobWrites::Syntakt(
+                all.iter().filter(|w| ticked(w.track_index)).cloned().collect(),
+            ),
         };
         if writes.is_empty() {
             report.boxes.push(BoxOutcome {
@@ -888,6 +974,9 @@ pub fn run<D: PatternIo>(
             }
             JobWrites::A4(writes) => {
                 a4_safe_write_tracks(&mut device, stash, writes, &mut hooks, now)
+            }
+            JobWrites::Syntakt(writes) => {
+                syntakt_safe_write_tracks(&mut device, stash, writes, &mut hooks, now)
             }
         };
         let (text, is_error, wrote) = match outcome {
@@ -1509,6 +1598,19 @@ pub fn patch_read_blocker(device: &Device, present: PortsPresent<'_>) -> Option<
             device.model.display
         ));
     }
+    // **A second reason, and it is not the same reason.** The Syntakt transfers
+    // patterns in both directions and this build reads, writes and verifies
+    // them — but the 4,608 bytes of kit in its `0x50` are not decoded, so there
+    // are no names in there to read. Refused *here* rather than at the wire so
+    // the button is disabled with the reason on it, instead of being pressable
+    // and failing. `read_patch_kit` says the same thing for a caller that
+    // reaches it another way.
+    if device.pattern_route() == PatternRoute::RequestSyntakt {
+        return Some(format!(
+            "{}'s patterns are decoded but its kit is not — no patch names to read yet",
+            device.model.display
+        ));
+    }
     match (&device.io.input, &device.io.output) {
         (Some(input), Some(output)) => {
             let gone = match (
@@ -1683,6 +1785,15 @@ pub fn read_patch_kit(device: &mut impl PatternIo, job: &PatchJob) -> Result<Pat
             ))
             .map(PatchKit::Gen1)
         }
+        // **Named, because the fallthrough's sentence is false about this box.**
+        // "No pattern format this build can decode" would arrive for a box whose
+        // patterns this build reads, writes and verifies. What is missing is
+        // narrower and worth saying: the 4,608 bytes of kit in its `0x50` are
+        // not decoded, so there are no patch names to read.
+        PatternRoute::RequestSyntakt => Err(format!(
+            "{}'s patterns are decoded but its kit is not — no patch names to read yet",
+            job.display
+        )),
         _ => {
             let spec = job.spec.ok_or_else(|| {
                 format!("{} has no pattern format this build can decode", job.display)
@@ -2368,5 +2479,46 @@ mod tests {
             ..args
         };
         assert_eq!(changed_since_survey(&survey, &args), None);
+    }
+
+    // --- the Syntakt --------------------------------------------------------
+
+    /// **A button that fails is worse than a button that is not there.** This
+    /// box's patterns move both ways and its kit is not decoded, so the patch
+    /// read has nothing to read — and the refusal belongs on the disabled
+    /// button rather than arriving from the wire after a press.
+    #[test]
+    fn the_patch_read_is_refused_for_the_syntakt_with_the_narrow_reason() {
+        use digi_core::device::{Device, DeviceIo, PortRef, SYNTAKT};
+        let port = |n: &str| PortRef { id: n.into(), name: n.into() };
+        let live = |n: &str| digi_midi::PortInfo { id: n.into(), name: n.into(), slug: None };
+        let mut device = Device::new("ST", &SYNTAKT, 16);
+        device.io =
+            DeviceIo { input: Some(port("in")), output: Some(port("out")), ..DeviceIo::default() };
+        let inputs = [live("in")];
+        let outputs = [live("out")];
+        let why = patch_read_blocker(&device, PortsPresent { inputs: &inputs, outputs: &outputs })
+            .expect("this box has no patch names to read");
+        // Not "no pattern dumps": it has those, and says so everywhere else.
+        assert!(why.contains("kit is not"), "{why}");
+        assert!(!why.contains("plays over MIDI"), "{why}");
+    }
+
+    /// The two halves of that refusal have to agree, because a caller can reach
+    /// the read without going through the button.
+    #[test]
+    fn the_button_and_the_wire_refuse_the_syntakt_in_the_same_words() {
+        use digi_core::device::{Device, DeviceIo, PortRef, SYNTAKT};
+        let port = |n: &str| PortRef { id: n.into(), name: n.into() };
+        let live = |n: &str| digi_midi::PortInfo { id: n.into(), name: n.into(), slug: None };
+        let mut device = Device::new("ST", &SYNTAKT, 16);
+        device.io =
+            DeviceIo { input: Some(port("in")), output: Some(port("out")), ..DeviceIo::default() };
+        let inputs = [live("in")];
+        let outputs = [live("out")];
+        let button =
+            patch_read_blocker(&device, PortsPresent { inputs: &inputs, outputs: &outputs })
+                .unwrap();
+        assert!(button.contains("no patch names to read yet"), "{button}");
     }
 }

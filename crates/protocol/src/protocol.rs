@@ -59,6 +59,9 @@ pub const DUMP_WHOLE_PROJECT_REQUEST: u8 = 0x6f;
 pub const FAMILY_DIGITAKT: u8 = 0x0a;
 pub const FAMILY_DIGITAKT_2: u8 = 0x14;
 pub const FAMILY_DIGITONE_2: u8 = 0x15;
+/// The Syntakt's family byte. Measured 2026-09-10: the box answers `0x60`
+/// through `0x66` and `0x6b` on this family and times out on the rest.
+pub const FAMILY_SYNTAKT: u8 = 0x16;
 /// The gen-1 Analog Four mk1. The identity API calls this box 4; the byte in a
 /// dump header is 6.
 ///

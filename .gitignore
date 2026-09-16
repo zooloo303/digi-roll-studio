@@ -24,3 +24,6 @@
 /local/
 /design_handoff_digi_roll_ui/
 /design_handoff_digi_roll_ui_v2/
+
+# Backups a write attempt made, kept out of the repo root.
+/syntakt-slot*.syx

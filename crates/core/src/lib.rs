@@ -26,6 +26,7 @@ pub mod project;
 pub mod record;
 pub mod session;
 pub mod song;
+pub mod syntakt_transfer;
 pub mod track_clip;
 
 pub use chords::{Harmony, Scale};

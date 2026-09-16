@@ -1511,6 +1511,7 @@ fn result(ok: bool, written: usize, dropped: usize, warnings: Vec<String>) -> Wr
         cancelled: false,
         diffs: Vec::new(),
         dropped,
+        skipped: 0,
         written,
         warnings,
         label: "A02".into(),
@@ -1538,6 +1539,35 @@ fn dropped_notes_are_never_hidden() {
         write_result_message(&result(true, 4, 3, Vec::new())).text,
         "Wrote 4 notes to A02 T2 — verified byte-identical (3 notes didn't fit and were dropped)"
     );
+}
+
+/// **A skip that was agreed to is counted, not shouted.** On 2026-09-15 a
+/// Syntakt write that did exactly what its confirm dialog said came back red,
+/// in a modal titled "The write did not go as asked", because the skip rode in
+/// `warnings`.
+#[test]
+fn a_skip_named_before_consent_is_an_informational_count() {
+    let m = write_result_message(&WriteResult { skipped: 8, ..result(true, 8, 0, Vec::new()) });
+    assert_eq!(
+        m.text,
+        "Wrote 8 notes to A02 T2 — verified byte-identical (8 notes beyond the destination length \
+         were skipped)"
+    );
+    assert!(!m.is_error);
+    let one = write_result_message(&WriteResult { skipped: 1, ..result(true, 8, 0, Vec::new()) });
+    assert!(one.text.ends_with("(1 note beyond the destination length was skipped)"), "{}", one.text);
+}
+
+/// Warnings keep their meaning next to a skip: something went other than asked.
+#[test]
+fn a_warning_still_shouts_when_notes_were_also_skipped() {
+    let m = write_result_message(&WriteResult {
+        skipped: 2,
+        ..result(true, 4, 0, vec!["a lane did not fit".into()])
+    });
+    assert!(m.is_error);
+    assert!(m.text.contains("were skipped"), "{}", m.text);
+    assert!(m.text.contains("— but a lane did not fit"), "{}", m.text);
 }
 
 #[test]

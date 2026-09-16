@@ -1392,6 +1392,49 @@ before the tag, every time.** A tag that fails takes its version number with it,
 and `draft-release` needs all four jobs, so either of these alone would have
 produced a release with no assets at all.
 
+### 22. The safe choice and the broken choice can be the same choice
+
+The Syntakt store path sent `0x51`, the pattern without its kit, **because** it
+is the narrow one: a dump that cannot address a sound cannot damage one. That
+reasoning is correct and it is written into the module. It was also, for two
+days, the reason nothing was stored at all — the box takes `0x50`, the pattern
+*with* its kit, and appears to keep nothing of the other.
+
+So the failure had no symptom pointing at it. A refused frame, a checksum
+complaint, a wedged SysEx API: any of those names a suspect. **Silence names
+nothing**, and the one deliberate narrowing in the path was the last place to
+look precisely because it had a good argument attached to it and had been
+written down as a virtue.
+
+Three things generalise.
+
+- **A safety narrowing is a claim about what the device accepts**, whether or
+  not it was made as one. "This cannot break a sound" was true. "This is a
+  message the box will act on" was smuggled in beside it and never tested. When
+  a path is narrowed for safety, the narrowed form needs its own positive
+  result, not an inherited one.
+- **Ask the device what it emits, not what it accepts.** The plan for weeks had
+  been a CoreMIDI spy on Elektron's own software. What settled it was opening an
+  input and pressing SYSEX SEND on the box: SEND and RECEIVE are two halves of
+  one menu, and one read-only listen answered a question a whole capture rig had
+  been budgeted for. **The cheap probe was two menu levels away the entire
+  time.**
+- **A second implementation is evidence, not a fact about your box.** SYXGRID
+  measured that a Digitone II ignores the index byte and stores into the armed
+  slot, and removed a destination picker for being "a fiction". A Syntakt does
+  the opposite: the index byte decides, and no arming step is needed. The
+  finding that *did* transfer was a different one — that a dump type and a
+  pacing gap exist at all, and are worth checking. **Borrow the questions, not
+  the answers.**
+
+The fourth thing is not new, it is lesson 19 again and it is why any of this is
+believable: **every destination was empty before the write and every edit
+differed from the others**, so a box that ignored the write reads back
+differently from one that took it. The day before, a write was reported
+"VERIFIED" after sending a slot's own bytes back into itself. A test whose
+passing condition is also its failing condition tests nothing, and no amount of
+it accumulates into a result.
+
 ---
 
 ---

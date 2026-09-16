@@ -76,7 +76,7 @@
 
 use std::path::Path;
 
-use digi_core::device::DeviceId;
+use digi_core::device::{DeviceId, PatternRoute};
 use digi_core::edit_ops::{
     clamp_micro, clamp_velocity, clear_track, duplicate_last_bar, set_selection_length,
     transpose_room, transpose_track, LenEntry, ResizeOpts, Transposed, OCTAVE, VEL_MAX, VEL_MIN,
@@ -1083,6 +1083,29 @@ impl EditPanel {
         // someone "every parameter already has a lane" in front of an empty list
         // would be a flat contradiction.
         let can_author = !params.is_empty();
+
+        // **The Syntakt gets its own sentence, because both of the ones below
+        // are false about it.** They say a fetch brings the box's p-locks here
+        // and a write sends them back as they came. On this box a fetch counts
+        // its lanes and leaves them on the device — only one paramId is known —
+        // and a write leaves the destination's own pool untouched. A beta
+        // tester read the generic text on 2026-09-15 with a RESO lock sitting
+        // on the box, which is exactly the case it misdescribes.
+        let syntakt = session
+            .device(device)
+            .is_some_and(|d| d.model.pattern_route() == PatternRoute::RequestSyntakt);
+        if syntakt && lanes.is_empty() {
+            ui.label(
+                egui::RichText::new(
+                    "Syntakt p-locks stay on the box. A fetch counts them and says so, but \
+                     does not bring them here — only one of this box's parameter ids is known \
+                     — and a write back leaves the box's own lanes exactly as they are.",
+                )
+                .weak()
+                .small(),
+            );
+            return changed;
+        }
 
         if lanes.is_empty() {
             ui.label(
