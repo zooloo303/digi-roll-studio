@@ -393,8 +393,6 @@ pub static A4: DeviceModel = DeviceModel {
     wire_slots: 128,
 };
 
-/// The shipped roster. DT2 and DN2 per PLAN.md §2; A4 since 2026-08-24,
-/// hardware-verified 2026-08-28.
 /// The Syntakt — a full transfer peer since 0.5.5.
 ///
 /// Twelve tracks and an FX track, which is the thirteen blocks a pattern dump
@@ -434,6 +432,8 @@ pub static SYNTAKT: DeviceModel = DeviceModel {
     wire_slots: 128,
 };
 
+/// The shipped roster. DT2 and DN2 per PLAN.md §2; A4 since 2026-08-24,
+/// hardware-verified 2026-08-28; the Syntakt since 0.5.5.
 pub static MODELS: &[&DeviceModel] = &[&DT2, &DN2, &A4, &SYNTAKT];
 
 pub fn model_for_key(key: &str) -> Option<&'static DeviceModel> {
