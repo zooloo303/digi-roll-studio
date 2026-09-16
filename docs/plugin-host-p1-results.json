@@ -627,5 +627,2340 @@
         }
       ]
     }
+  },
+  "followupRuns": {
+    "both-parallel": {
+      "parallel": true,
+      "p50BlockSeconds": 0.006732291666666667,
+      "p99BlockSeconds": 0.007776166666666666,
+      "callbackBudgetSeconds": 0.01066666666666667,
+      "startupSeconds": 1.432067625,
+      "renderWallSeconds": 19.04387433333333,
+      "reportedDeviceOutputLatencySamples": 0,
+      "deviceXruns": -1,
+      "rate": 48000.0,
+      "block": 512,
+      "frames": 1440000,
+      "parameterEventsDelivered": 0,
+      "eventsDelivered": 44,
+      "blocks": 2813,
+      "renderSeconds": 19.03020895833333,
+      "maxBlockSeconds": 0.02463408333333333,
+      "blocksOverBudget": 5,
+      "device": "offline",
+      "mixGainPerInstance": 0.25,
+      "peak": 0.1874791383743286,
+      "plugins": [
+        {
+          "name": "Gearmulator MD",
+          "version": "2.2.9",
+          "identifier": "VST3-Gearmulator MD-edd6707f-49123446",
+          "latencySamples": 32,
+          "stateBytes": 12587700
+        },
+        {
+          "name": "Gearmulator MM",
+          "version": "2.2.9",
+          "identifier": "VST3-Gearmulator MM-fd320e16-49123e43",
+          "latencySamples": 32,
+          "stateBytes": 4197242
+        }
+      ]
+    },
+    "both-parallel-live": {
+      "parallel": true,
+      "measurementStartSeconds": 8.0,
+      "measuredBlocks": 10500,
+      "measuredRenderSeconds": 70.83226179166658,
+      "measuredMaxBlockSeconds": 0.008982541666666666,
+      "measuredBlocksOverBudget": 0,
+      "p50BlockSeconds": 0.006728875,
+      "p99BlockSeconds": 0.007392083333333333,
+      "callbackBudgetSeconds": 0.01066666666666667,
+      "startupSeconds": 1.658991,
+      "renderWallSeconds": 120.0562475833333,
+      "reportedDeviceOutputLatencySamples": 1346,
+      "deviceXruns": 2,
+      "rate": 48000.0,
+      "block": 512,
+      "frames": 5760000,
+      "parameterEventsDelivered": 0,
+      "eventsDelivered": 44,
+      "blocks": 11250,
+      "renderSeconds": 75.85330762500013,
+      "maxBlockSeconds": 0.011036375,
+      "blocksOverBudget": 1,
+      "device": "MacBook Pro Speakers",
+      "mixGainPerInstance": 0.25,
+      "peak": 0.1866353452205658,
+      "plugins": [
+        {
+          "name": "Gearmulator MD",
+          "version": "2.2.9",
+          "identifier": "VST3-Gearmulator MD-edd6707f-49123446",
+          "latencySamples": 32,
+          "stateBytes": 12587700
+        },
+        {
+          "name": "Gearmulator MM",
+          "version": "2.2.9",
+          "identifier": "VST3-Gearmulator MM-fd320e16-49123e43",
+          "latencySamples": 32,
+          "stateBytes": 4197242
+        }
+      ]
+    },
+    "both-parallel-live-editors": {
+      "parallel": true,
+      "measurementStartSeconds": 8.0,
+      "deviceXrunsAfterMeasurementStart": 0,
+      "xrunMeasurementStartFrame": 385024,
+      "measuredBlocks": 10500,
+      "measuredRenderSeconds": 73.4108256250001,
+      "measuredMaxBlockSeconds": 0.008245416666666667,
+      "measuredBlocksOverBudget": 0,
+      "p50BlockSeconds": 0.006958458333333333,
+      "p99BlockSeconds": 0.007718458333333333,
+      "callbackBudgetSeconds": 0.01066666666666667,
+      "startupSeconds": 1.899479041666667,
+      "renderWallSeconds": 120.0336874583333,
+      "reportedDeviceOutputLatencySamples": 1346,
+      "deviceXruns": 1,
+      "rate": 48000.0,
+      "block": 512,
+      "frames": 5760000,
+      "parameterEventsDelivered": 0,
+      "eventsDelivered": 218,
+      "blocks": 11250,
+      "renderSeconds": 78.45767770833355,
+      "maxBlockSeconds": 0.012410875,
+      "blocksOverBudget": 1,
+      "device": "MacBook Pro Speakers",
+      "mixGainPerInstance": 0.25,
+      "peak": 0.190753847360611,
+      "plugins": [
+        {
+          "name": "Gearmulator MD",
+          "version": "2.2.9",
+          "identifier": "VST3-Gearmulator MD-edd6707f-49123446",
+          "latencySamples": 32,
+          "stateBytes": 12587700
+        },
+        {
+          "name": "Gearmulator MM",
+          "version": "2.2.9",
+          "identifier": "VST3-Gearmulator MM-fd320e16-49123e43",
+          "latencySamples": 32,
+          "stateBytes": 4197242
+        }
+      ]
+    },
+    "both-parallel-live-editors-corrected": {
+      "parallel": true,
+      "measurementStartSeconds": 8.0,
+      "deviceXrunsAfterMeasurementStart": 0,
+      "xrunMeasurementStartFrame": 386048,
+      "measuredBlocks": 10500,
+      "measuredRenderSeconds": 70.82748549999951,
+      "measuredMaxBlockSeconds": 0.008122958333333333,
+      "measuredBlocksOverBudget": 0,
+      "p50BlockSeconds": 0.006721291666666667,
+      "p99BlockSeconds": 0.007456875,
+      "callbackBudgetSeconds": 0.01066666666666667,
+      "startupSeconds": 1.973339041666667,
+      "renderWallSeconds": 120.0525127916667,
+      "reportedDeviceOutputLatencySamples": 1346,
+      "deviceXruns": 2,
+      "rate": 48000.0,
+      "block": 512,
+      "frames": 5760000,
+      "parameterEventsDelivered": 0,
+      "eventsDelivered": 218,
+      "blocks": 11250,
+      "renderSeconds": 75.8556956666664,
+      "maxBlockSeconds": 0.01208191666666667,
+      "blocksOverBudget": 2,
+      "device": "MacBook Pro Speakers",
+      "mixGainPerInstance": 0.25,
+      "peak": 0.1907539367675781,
+      "plugins": [
+        {
+          "name": "Gearmulator MD",
+          "version": "2.2.9",
+          "identifier": "VST3-Gearmulator MD-edd6707f-49123446",
+          "latencySamples": 32,
+          "stateBytes": 12587700
+        },
+        {
+          "name": "Gearmulator MM",
+          "version": "2.2.9",
+          "identifier": "VST3-Gearmulator MM-fd320e16-49123e43",
+          "latencySamples": 32,
+          "stateBytes": 4197242
+        }
+      ]
+    },
+    "md-corrected-proof": {
+      "parallel": false,
+      "measurementStartSeconds": 0.0,
+      "deviceXrunsAfterMeasurementStart": -1,
+      "xrunMeasurementStartFrame": -1,
+      "measuredBlocks": 10125,
+      "measuredRenderSeconds": 66.69256833333291,
+      "measuredMaxBlockSeconds": 0.02255391666666667,
+      "measuredBlocksOverBudget": 7,
+      "p50BlockSeconds": 0.00656475,
+      "p99BlockSeconds": 0.007482833333333334,
+      "callbackBudgetSeconds": 0.01066666666666667,
+      "startupSeconds": 1.150140583333333,
+      "renderWallSeconds": 66.69739145833333,
+      "reportedDeviceOutputLatencySamples": 0,
+      "deviceXruns": -1,
+      "rate": 48000.0,
+      "block": 512,
+      "frames": 5184000,
+      "parameterEventsDelivered": 288,
+      "eventsDelivered": 64,
+      "blocks": 10125,
+      "renderSeconds": 66.69256833333291,
+      "maxBlockSeconds": 0.02255391666666667,
+      "blocksOverBudget": 7,
+      "device": "offline",
+      "mixGainPerInstance": 0.25,
+      "peak": 0.1473831236362457,
+      "plugins": [
+        {
+          "name": "Gearmulator MD",
+          "version": "2.2.9",
+          "identifier": "VST3-Gearmulator MD-edd6707f-49123446",
+          "latencySamples": 32,
+          "stateBytes": 12587700
+        }
+      ],
+      "windows": [
+        {
+          "part": 1,
+          "note": 36,
+          "positive": {
+            "peak": 0.04629957675933838,
+            "rms": 0.02040298210003183
+          },
+          "negative": {
+            "peak": 1.1920928955078125e-07,
+            "rms": 1.1920928955078125e-07
+          },
+          "passed": true
+        },
+        {
+          "part": 2,
+          "note": 37,
+          "positive": {
+            "peak": 0.14738309383392334,
+            "rms": 0.010718185465258035
+          },
+          "negative": {
+            "peak": 1.1920928955078125e-07,
+            "rms": 1.1920928955078125e-07
+          },
+          "passed": true
+        },
+        {
+          "part": 3,
+          "note": 38,
+          "positive": {
+            "peak": 0.0957556962966919,
+            "rms": 0.003385913738187231
+          },
+          "negative": {
+            "peak": 1.1920928955078125e-07,
+            "rms": 1.1920928955078125e-07
+          },
+          "passed": true
+        },
+        {
+          "part": 4,
+          "note": 39,
+          "positive": {
+            "peak": 0.11950194835662842,
+            "rms": 0.009898040105556309
+          },
+          "negative": {
+            "peak": 1.1920928955078125e-07,
+            "rms": 1.1920928955078125e-07
+          },
+          "passed": true
+        },
+        {
+          "part": 5,
+          "note": 40,
+          "positive": {
+            "peak": 0.03196001052856445,
+            "rms": 0.010385139075605383
+          },
+          "negative": {
+            "peak": 1.1920928955078125e-07,
+            "rms": 1.1920928955078125e-07
+          },
+          "passed": true
+        },
+        {
+          "part": 6,
+          "note": 41,
+          "positive": {
+            "peak": 0.03474998474121094,
+            "rms": 0.0059828169712879565
+          },
+          "negative": {
+            "peak": 1.1920928955078125e-07,
+            "rms": 1.1920928955078125e-07
+          },
+          "passed": true
+        },
+        {
+          "part": 7,
+          "note": 42,
+          "positive": {
+            "peak": 0.06522762775421143,
+            "rms": 0.0019873846044331433
+          },
+          "negative": {
+            "peak": 1.1920928955078125e-07,
+            "rms": 1.1920928955078125e-07
+          },
+          "passed": true
+        },
+        {
+          "part": 8,
+          "note": 43,
+          "positive": {
+            "peak": 0.017173171043395996,
+            "rms": 0.0034351279552195936
+          },
+          "negative": {
+            "peak": 1.1920928955078125e-07,
+            "rms": 1.1920928955078125e-07
+          },
+          "passed": true
+        },
+        {
+          "part": 9,
+          "note": 44,
+          "positive": {
+            "peak": 0.025090456008911133,
+            "rms": 0.0016984162615991604
+          },
+          "negative": {
+            "peak": 1.1920928955078125e-07,
+            "rms": 1.1920928955078125e-07
+          },
+          "passed": true
+        },
+        {
+          "part": 10,
+          "note": 45,
+          "positive": {
+            "peak": 0.00864875316619873,
+            "rms": 0.0015443693803646236
+          },
+          "negative": {
+            "peak": 1.1920928955078125e-07,
+            "rms": 1.1920928955078125e-07
+          },
+          "passed": true
+        },
+        {
+          "part": 11,
+          "note": 46,
+          "positive": {
+            "peak": 0.020359516143798828,
+            "rms": 0.0021017263457771464
+          },
+          "negative": {
+            "peak": 1.1920928955078125e-07,
+            "rms": 1.1920928955078125e-07
+          },
+          "passed": true
+        },
+        {
+          "part": 12,
+          "note": 47,
+          "positive": {
+            "peak": 0.02074754238128662,
+            "rms": 0.0027978433438598915
+          },
+          "negative": {
+            "peak": 1.1920928955078125e-07,
+            "rms": 1.1920928955078125e-07
+          },
+          "passed": true
+        },
+        {
+          "part": 13,
+          "note": 48,
+          "positive": {
+            "peak": 0.05957913398742676,
+            "rms": 0.0076820483408461555
+          },
+          "negative": {
+            "peak": 1.1920928955078125e-07,
+            "rms": 1.1920928955078125e-07
+          },
+          "passed": true
+        },
+        {
+          "part": 14,
+          "note": 49,
+          "positive": {
+            "peak": 0.0602872371673584,
+            "rms": 0.007957966093114242
+          },
+          "negative": {
+            "peak": 1.1920928955078125e-07,
+            "rms": 1.1920928955078125e-07
+          },
+          "passed": true
+        },
+        {
+          "part": 15,
+          "note": 50,
+          "positive": {
+            "peak": 0.06431877613067627,
+            "rms": 0.005729836249607713
+          },
+          "negative": {
+            "peak": 1.1920928955078125e-07,
+            "rms": 1.1920928955078125e-07
+          },
+          "passed": true
+        },
+        {
+          "part": 16,
+          "note": 51,
+          "positive": {
+            "peak": 0.06208646297454834,
+            "rms": 0.008426574979330862
+          },
+          "negative": {
+            "peak": 1.1920928955078125e-07,
+            "rms": 1.1920928955078125e-07
+          },
+          "passed": true
+        }
+      ]
+    },
+    "md-direct-cc": {
+      "parallel": false,
+      "measurementStartSeconds": 0.0,
+      "deviceXrunsAfterMeasurementStart": -1,
+      "xrunMeasurementStartFrame": -1,
+      "measuredBlocks": 10125,
+      "measuredRenderSeconds": 67.71060416666661,
+      "measuredMaxBlockSeconds": 0.05557591666666667,
+      "measuredBlocksOverBudget": 48,
+      "p50BlockSeconds": 0.006617875,
+      "p99BlockSeconds": 0.007533333333333334,
+      "callbackBudgetSeconds": 0.01066666666666667,
+      "startupSeconds": 0.9105380416666666,
+      "renderWallSeconds": 67.757346,
+      "reportedDeviceOutputLatencySamples": 0,
+      "deviceXruns": -1,
+      "rate": 48000.0,
+      "block": 512,
+      "frames": 5184000,
+      "parameterEventsDelivered": 0,
+      "eventsDelivered": 352,
+      "blocks": 10125,
+      "renderSeconds": 67.71060416666661,
+      "maxBlockSeconds": 0.05557591666666667,
+      "blocksOverBudget": 48,
+      "device": "offline",
+      "mixGainPerInstance": 0.25,
+      "peak": 0.05041555315256119,
+      "plugins": [
+        {
+          "name": "Gearmulator MD",
+          "version": "2.2.9",
+          "identifier": "VST3-Gearmulator MD-edd6707f-49123446",
+          "latencySamples": 32,
+          "stateBytes": 12587700
+        }
+      ],
+      "windows": [
+        {
+          "part": 1,
+          "note": 36,
+          "positive": {
+            "peak": 0.04631209373474121,
+            "rms": 0.020403270526299967
+          },
+          "negative": {
+            "peak": 1.1920928955078125e-07,
+            "rms": 1.1920928955078125e-07
+          },
+          "passed": true
+        },
+        {
+          "part": 2,
+          "note": 38,
+          "positive": {
+            "peak": 1.1920928955078125e-07,
+            "rms": 1.1920928955078125e-07
+          },
+          "negative": {
+            "peak": 1.1920928955078125e-07,
+            "rms": 1.1920928955078125e-07
+          },
+          "passed": false
+        },
+        {
+          "part": 3,
+          "note": 40,
+          "positive": {
+            "peak": 1.1920928955078125e-07,
+            "rms": 1.1920928955078125e-07
+          },
+          "negative": {
+            "peak": 1.1920928955078125e-07,
+            "rms": 1.1920928955078125e-07
+          },
+          "passed": false
+        },
+        {
+          "part": 4,
+          "note": 41,
+          "positive": {
+            "peak": 1.1920928955078125e-07,
+            "rms": 1.1920928955078125e-07
+          },
+          "negative": {
+            "peak": 1.1920928955078125e-07,
+            "rms": 1.1920928955078125e-07
+          },
+          "passed": false
+        },
+        {
+          "part": 5,
+          "note": 43,
+          "positive": {
+            "peak": 1.1920928955078125e-07,
+            "rms": 1.1920928955078125e-07
+          },
+          "negative": {
+            "peak": 1.1920928955078125e-07,
+            "rms": 1.1920928955078125e-07
+          },
+          "passed": false
+        },
+        {
+          "part": 6,
+          "note": 45,
+          "positive": {
+            "peak": 1.0728836059570312e-06,
+            "rms": 1.466373195386045e-07
+          },
+          "negative": {
+            "peak": 1.1920928955078125e-07,
+            "rms": 1.1920928955078125e-07
+          },
+          "passed": false
+        },
+        {
+          "part": 7,
+          "note": 47,
+          "positive": {
+            "peak": 1.1920928955078125e-07,
+            "rms": 1.1920928955078125e-07
+          },
+          "negative": {
+            "peak": 1.1920928955078125e-07,
+            "rms": 1.1920928955078125e-07
+          },
+          "passed": false
+        },
+        {
+          "part": 8,
+          "note": 48,
+          "positive": {
+            "peak": 1.1920928955078125e-07,
+            "rms": 1.1920928955078125e-07
+          },
+          "negative": {
+            "peak": 1.1920928955078125e-07,
+            "rms": 1.1920928955078125e-07
+          },
+          "passed": false
+        },
+        {
+          "part": 9,
+          "note": 50,
+          "positive": {
+            "peak": 1.1920928955078125e-07,
+            "rms": 1.1920928955078125e-07
+          },
+          "negative": {
+            "peak": 1.1920928955078125e-07,
+            "rms": 1.1920928955078125e-07
+          },
+          "passed": false
+        },
+        {
+          "part": 10,
+          "note": 52,
+          "positive": {
+            "peak": 0.006595134735107422,
+            "rms": 0.0012571675886530794
+          },
+          "negative": {
+            "peak": 1.1920928955078125e-07,
+            "rms": 1.1920928955078125e-07
+          },
+          "passed": true
+        },
+        {
+          "part": 11,
+          "note": 53,
+          "positive": {
+            "peak": 0.01588761806488037,
+            "rms": 0.0016400535439279663
+          },
+          "negative": {
+            "peak": 1.1920928955078125e-07,
+            "rms": 1.1920928955078125e-07
+          },
+          "passed": true
+        },
+        {
+          "part": 12,
+          "note": 55,
+          "positive": {
+            "peak": 0.015282630920410156,
+            "rms": 0.0021961026913405075
+          },
+          "negative": {
+            "peak": 1.1920928955078125e-07,
+            "rms": 1.1920928955078125e-07
+          },
+          "passed": true
+        },
+        {
+          "part": 13,
+          "note": 57,
+          "positive": {
+            "peak": 0.046393513679504395,
+            "rms": 0.00598277616588582
+          },
+          "negative": {
+            "peak": 1.1920928955078125e-07,
+            "rms": 1.1920928955078125e-07
+          },
+          "passed": true
+        },
+        {
+          "part": 14,
+          "note": 59,
+          "positive": {
+            "peak": 0.04704451560974121,
+            "rms": 0.00620989586559647
+          },
+          "negative": {
+            "peak": 1.1920928955078125e-07,
+            "rms": 1.1920928955078125e-07
+          },
+          "passed": true
+        },
+        {
+          "part": 15,
+          "note": 60,
+          "positive": {
+            "peak": 0.050415635108947754,
+            "rms": 0.004462405921423428
+          },
+          "negative": {
+            "peak": 1.1920928955078125e-07,
+            "rms": 1.1920928955078125e-07
+          },
+          "passed": true
+        },
+        {
+          "part": 16,
+          "note": 62,
+          "positive": {
+            "peak": 0.048647403717041016,
+            "rms": 0.006575570779036626
+          },
+          "negative": {
+            "peak": 1.1920928955078125e-07,
+            "rms": 1.1920928955078125e-07
+          },
+          "passed": true
+        }
+      ]
+    },
+    "md-known": {
+      "parallel": false,
+      "p50BlockSeconds": 0.006516291666666667,
+      "p99BlockSeconds": 0.007356916666666667,
+      "callbackBudgetSeconds": 0.01066666666666667,
+      "startupSeconds": 0.9179160833333333,
+      "renderWallSeconds": 36.762987875,
+      "reportedDeviceOutputLatencySamples": 0,
+      "deviceXruns": -1,
+      "rate": 48000.0,
+      "block": 512,
+      "frames": 2880000,
+      "parameterEventsDelivered": 256,
+      "eventsDelivered": 64,
+      "blocks": 5625,
+      "renderSeconds": 36.71674516666666,
+      "maxBlockSeconds": 0.01735870833333333,
+      "blocksOverBudget": 1,
+      "device": "offline",
+      "mixGainPerInstance": 0.25,
+      "peak": 0.1262772083282471,
+      "plugins": [
+        {
+          "name": "Gearmulator MD",
+          "version": "2.2.9",
+          "identifier": "VST3-Gearmulator MD-edd6707f-49123446",
+          "latencySamples": 32,
+          "stateBytes": 12587700
+        }
+      ],
+      "windows": [
+        {
+          "part": 1,
+          "peak": 0.12579739093780518,
+          "rms": 0.011245528910870066
+        },
+        {
+          "part": 2,
+          "peak": 1.1920928955078125e-07,
+          "rms": 1.1920928955078125e-07
+        },
+        {
+          "part": 3,
+          "peak": 1.1920928955078125e-07,
+          "rms": 1.1920928955078125e-07
+        },
+        {
+          "part": 4,
+          "peak": 1.1920928955078125e-07,
+          "rms": 1.1920928955078125e-07
+        },
+        {
+          "part": 5,
+          "peak": 1.1920928955078125e-07,
+          "rms": 1.1920928955078125e-07
+        },
+        {
+          "part": 6,
+          "peak": 1.1920928955078125e-07,
+          "rms": 1.1920928955078125e-07
+        },
+        {
+          "part": 7,
+          "peak": 1.1920928955078125e-07,
+          "rms": 1.1920928955078125e-07
+        },
+        {
+          "part": 8,
+          "peak": 1.1920928955078125e-07,
+          "rms": 1.1920928955078125e-07
+        },
+        {
+          "part": 9,
+          "peak": 1.1920928955078125e-07,
+          "rms": 1.1920928955078125e-07
+        },
+        {
+          "part": 10,
+          "peak": 0.10349583625793457,
+          "rms": 0.009251730881899409
+        },
+        {
+          "part": 11,
+          "peak": 0.10719037055969238,
+          "rms": 0.009581640013884316
+        },
+        {
+          "part": 12,
+          "peak": 0.11649596691131592,
+          "rms": 0.01041357195571271
+        },
+        {
+          "part": 13,
+          "peak": 0.11280620098114014,
+          "rms": 0.010083666634178631
+        },
+        {
+          "part": 14,
+          "peak": 0.11280596256256104,
+          "rms": 0.010083664254865607
+        },
+        {
+          "part": 15,
+          "peak": 0.12627720832824707,
+          "rms": 0.011288547449194723
+        },
+        {
+          "part": 16,
+          "peak": 0.11279594898223877,
+          "rms": 0.010083667744440208
+        }
+      ]
+    },
+    "md-known-mapped": {
+      "parallel": false,
+      "p50BlockSeconds": 0.006524041666666667,
+      "p99BlockSeconds": 0.007293791666666666,
+      "callbackBudgetSeconds": 0.01066666666666667,
+      "startupSeconds": 0.9396736666666666,
+      "renderWallSeconds": 36.76868929166667,
+      "reportedDeviceOutputLatencySamples": 0,
+      "deviceXruns": -1,
+      "rate": 48000.0,
+      "block": 512,
+      "frames": 2880000,
+      "parameterEventsDelivered": 256,
+      "eventsDelivered": 80,
+      "blocks": 5625,
+      "renderSeconds": 36.76481004166649,
+      "maxBlockSeconds": 0.019518375,
+      "blocksOverBudget": 4,
+      "device": "offline",
+      "mixGainPerInstance": 0.25,
+      "peak": 0.1262772083282471,
+      "plugins": [
+        {
+          "name": "Gearmulator MD",
+          "version": "2.2.9",
+          "identifier": "VST3-Gearmulator MD-edd6707f-49123446",
+          "latencySamples": 32,
+          "stateBytes": 12587700
+        }
+      ],
+      "windows": [
+        {
+          "part": 1,
+          "peak": 0.12579739093780518,
+          "rms": 0.011245528910870066
+        },
+        {
+          "part": 2,
+          "peak": 1.1920928955078125e-07,
+          "rms": 1.1920928955078125e-07
+        },
+        {
+          "part": 3,
+          "peak": 1.1920928955078125e-07,
+          "rms": 1.1920928955078125e-07
+        },
+        {
+          "part": 4,
+          "peak": 1.1920928955078125e-07,
+          "rms": 1.1920928955078125e-07
+        },
+        {
+          "part": 5,
+          "peak": 1.1920928955078125e-07,
+          "rms": 1.1920928955078125e-07
+        },
+        {
+          "part": 6,
+          "peak": 1.1920928955078125e-07,
+          "rms": 1.1920928955078125e-07
+        },
+        {
+          "part": 7,
+          "peak": 1.1920928955078125e-07,
+          "rms": 1.1920928955078125e-07
+        },
+        {
+          "part": 8,
+          "peak": 1.1920928955078125e-07,
+          "rms": 1.1920928955078125e-07
+        },
+        {
+          "part": 9,
+          "peak": 1.1920928955078125e-07,
+          "rms": 1.1920928955078125e-07
+        },
+        {
+          "part": 10,
+          "peak": 0.10349035263061523,
+          "rms": 0.009251728855330986
+        },
+        {
+          "part": 11,
+          "peak": 0.10719037055969238,
+          "rms": 0.009581640013884316
+        },
+        {
+          "part": 12,
+          "peak": 0.11649739742279053,
+          "rms": 0.010413572355550654
+        },
+        {
+          "part": 13,
+          "peak": 0.11280667781829834,
+          "rms": 0.01008366689733862
+        },
+        {
+          "part": 14,
+          "peak": 0.11279439926147461,
+          "rms": 0.010083667688947844
+        },
+        {
+          "part": 15,
+          "peak": 0.12627720832824707,
+          "rms": 0.011288547449194723
+        },
+        {
+          "part": 16,
+          "peak": 0.11279594898223877,
+          "rms": 0.010083667744440208
+        }
+      ]
+    },
+    "md-known-unmuted": {
+      "parallel": false,
+      "measurementStartSeconds": 0.0,
+      "measuredBlocks": 5625,
+      "measuredRenderSeconds": 36.54843770833325,
+      "measuredMaxBlockSeconds": 0.01948441666666667,
+      "measuredBlocksOverBudget": 5,
+      "p50BlockSeconds": 0.006478958333333333,
+      "p99BlockSeconds": 0.007306083333333334,
+      "callbackBudgetSeconds": 0.01066666666666667,
+      "startupSeconds": 1.01177575,
+      "renderWallSeconds": 36.56723958333333,
+      "reportedDeviceOutputLatencySamples": 0,
+      "deviceXruns": -1,
+      "rate": 48000.0,
+      "block": 512,
+      "frames": 2880000,
+      "parameterEventsDelivered": 256,
+      "eventsDelivered": 64,
+      "blocks": 5625,
+      "renderSeconds": 36.54843770833325,
+      "maxBlockSeconds": 0.01948441666666667,
+      "blocksOverBudget": 5,
+      "device": "offline",
+      "mixGainPerInstance": 0.25,
+      "peak": 0.1619009524583817,
+      "plugins": [
+        {
+          "name": "Gearmulator MD",
+          "version": "2.2.9",
+          "identifier": "VST3-Gearmulator MD-edd6707f-49123446",
+          "latencySamples": 32,
+          "stateBytes": 12587700
+        }
+      ],
+      "windows": [
+        {
+          "part": 1,
+          "peak": 0.12579119205474854,
+          "rms": 0.01124552561005409
+        },
+        {
+          "part": 2,
+          "peak": 0.12821054458618164,
+          "rms": 0.01146068762210666
+        },
+        {
+          "part": 3,
+          "peak": 0.12820208072662354,
+          "rms": 0.011460684487958261
+        },
+        {
+          "part": 4,
+          "peak": 0.13270258903503418,
+          "rms": 0.011862306157454174
+        },
+        {
+          "part": 5,
+          "peak": 0.15934062004089355,
+          "rms": 0.014243374735797829
+        },
+        {
+          "part": 6,
+          "peak": 0.13270342350006104,
+          "rms": 0.011862304181595309
+        },
+        {
+          "part": 7,
+          "peak": 0.14938247203826904,
+          "rms": 0.013354058175434738
+        },
+        {
+          "part": 8,
+          "peak": 0.14441394805908203,
+          "rms": 0.012909400974848823
+        },
+        {
+          "part": 9,
+          "peak": 0.16190087795257568,
+          "rms": 0.014472866598125831
+        },
+        {
+          "part": 10,
+          "peak": 0.10343694686889648,
+          "rms": 0.009252656152920535
+        },
+        {
+          "part": 11,
+          "peak": 0.10719001293182373,
+          "rms": 0.009581637382262252
+        },
+        {
+          "part": 12,
+          "peak": 0.11642599105834961,
+          "rms": 0.010414612992869839
+        },
+        {
+          "part": 13,
+          "peak": 0.11273837089538574,
+          "rms": 0.010084675019292662
+        },
+        {
+          "part": 14,
+          "peak": 0.11280179023742676,
+          "rms": 0.010083666703685169
+        },
+        {
+          "part": 15,
+          "peak": 0.12620127201080322,
+          "rms": 0.011289676274513842
+        },
+        {
+          "part": 16,
+          "peak": 0.11279809474945068,
+          "rms": 0.010083670628884042
+        }
+      ]
+    },
+    "md-level-proof": {
+      "parallel": false,
+      "measurementStartSeconds": 0.0,
+      "measuredBlocks": 10125,
+      "measuredRenderSeconds": 66.60199495833315,
+      "measuredMaxBlockSeconds": 0.017561,
+      "measuredBlocksOverBudget": 2,
+      "p50BlockSeconds": 0.006562041666666667,
+      "p99BlockSeconds": 0.007220875,
+      "callbackBudgetSeconds": 0.01066666666666667,
+      "startupSeconds": 0.9732768333333334,
+      "renderWallSeconds": 66.62523291666666,
+      "reportedDeviceOutputLatencySamples": 0,
+      "deviceXruns": -1,
+      "rate": 48000.0,
+      "block": 512,
+      "frames": 5184000,
+      "parameterEventsDelivered": 288,
+      "eventsDelivered": 64,
+      "blocks": 10125,
+      "renderSeconds": 66.60199495833315,
+      "maxBlockSeconds": 0.017561,
+      "blocksOverBudget": 2,
+      "device": "offline",
+      "mixGainPerInstance": 0.25,
+      "peak": 0.0501638762652874,
+      "plugins": [
+        {
+          "name": "Gearmulator MD",
+          "version": "2.2.9",
+          "identifier": "VST3-Gearmulator MD-edd6707f-49123446",
+          "latencySamples": 32,
+          "stateBytes": 12587700
+        }
+      ],
+      "windows": [
+        {
+          "part": 1,
+          "note": 36,
+          "positive": {
+            "peak": 0.04629957675933838,
+            "rms": 0.02040298210003183
+          },
+          "negative": {
+            "peak": 1.1920928955078125e-07,
+            "rms": 1.1920928955078125e-07
+          },
+          "passed": true
+        },
+        {
+          "part": 2,
+          "note": 38,
+          "positive": {
+            "peak": 1.1920928955078125e-07,
+            "rms": 1.1920928955078125e-07
+          },
+          "negative": {
+            "peak": 1.1920928955078125e-07,
+            "rms": 1.1920928955078125e-07
+          },
+          "passed": false
+        },
+        {
+          "part": 3,
+          "note": 40,
+          "positive": {
+            "peak": 1.1920928955078125e-07,
+            "rms": 1.1920928955078125e-07
+          },
+          "negative": {
+            "peak": 1.1920928955078125e-07,
+            "rms": 1.1920928955078125e-07
+          },
+          "passed": false
+        },
+        {
+          "part": 4,
+          "note": 41,
+          "positive": {
+            "peak": 1.1920928955078125e-07,
+            "rms": 1.1920928955078125e-07
+          },
+          "negative": {
+            "peak": 1.1920928955078125e-07,
+            "rms": 1.1920928955078125e-07
+          },
+          "passed": false
+        },
+        {
+          "part": 5,
+          "note": 43,
+          "positive": {
+            "peak": 1.1920928955078125e-07,
+            "rms": 1.1920928955078125e-07
+          },
+          "negative": {
+            "peak": 1.1920928955078125e-07,
+            "rms": 1.1920928955078125e-07
+          },
+          "passed": false
+        },
+        {
+          "part": 6,
+          "note": 45,
+          "positive": {
+            "peak": 1.0728836059570312e-06,
+            "rms": 1.832943780439635e-07
+          },
+          "negative": {
+            "peak": 1.1920928955078125e-07,
+            "rms": 1.1920928955078125e-07
+          },
+          "passed": false
+        },
+        {
+          "part": 7,
+          "note": 47,
+          "positive": {
+            "peak": 1.1920928955078125e-07,
+            "rms": 1.1920928955078125e-07
+          },
+          "negative": {
+            "peak": 1.1920928955078125e-07,
+            "rms": 1.1920928955078125e-07
+          },
+          "passed": false
+        },
+        {
+          "part": 8,
+          "note": 48,
+          "positive": {
+            "peak": 1.1920928955078125e-07,
+            "rms": 1.1920928955078125e-07
+          },
+          "negative": {
+            "peak": 1.1920928955078125e-07,
+            "rms": 1.1920928955078125e-07
+          },
+          "passed": false
+        },
+        {
+          "part": 9,
+          "note": 50,
+          "positive": {
+            "peak": 1.1920928955078125e-07,
+            "rms": 1.1920928955078125e-07
+          },
+          "negative": {
+            "peak": 1.1920928955078125e-07,
+            "rms": 1.1920928955078125e-07
+          },
+          "passed": false
+        },
+        {
+          "part": 10,
+          "note": 52,
+          "positive": {
+            "peak": 0.006595134735107422,
+            "rms": 0.0012571673612415174
+          },
+          "negative": {
+            "peak": 1.1920928955078125e-07,
+            "rms": 1.1920928955078125e-07
+          },
+          "passed": true
+        },
+        {
+          "part": 11,
+          "note": 53,
+          "positive": {
+            "peak": 0.015338897705078125,
+            "rms": 0.0016475333163427084
+          },
+          "negative": {
+            "peak": 1.1920928955078125e-07,
+            "rms": 1.1920928955078125e-07
+          },
+          "passed": true
+        },
+        {
+          "part": 12,
+          "note": 55,
+          "positive": {
+            "peak": 0.01528167724609375,
+            "rms": 0.002189414278338081
+          },
+          "negative": {
+            "peak": 1.1920928955078125e-07,
+            "rms": 1.1920928955078125e-07
+          },
+          "passed": true
+        },
+        {
+          "part": 13,
+          "note": 57,
+          "positive": {
+            "peak": 0.04634666442871094,
+            "rms": 0.005982781566790004
+          },
+          "negative": {
+            "peak": 1.1920928955078125e-07,
+            "rms": 1.1920928955078125e-07
+          },
+          "passed": true
+        },
+        {
+          "part": 14,
+          "note": 59,
+          "positive": {
+            "peak": 0.04716300964355469,
+            "rms": 0.006209893883733822
+          },
+          "negative": {
+            "peak": 1.1920928955078125e-07,
+            "rms": 1.1920928955078125e-07
+          },
+          "passed": true
+        },
+        {
+          "part": 15,
+          "note": 60,
+          "positive": {
+            "peak": 0.050163984298706055,
+            "rms": 0.0044624484397885215
+          },
+          "negative": {
+            "peak": 1.1920928955078125e-07,
+            "rms": 1.1920928955078125e-07
+          },
+          "passed": true
+        },
+        {
+          "part": 16,
+          "note": 62,
+          "positive": {
+            "peak": 0.04844820499420166,
+            "rms": 0.006575569429493228
+          },
+          "negative": {
+            "peak": 1.1920928955078125e-07,
+            "rms": 1.1920928955078125e-07
+          },
+          "passed": true
+        }
+      ]
+    },
+    "md-map-scan": {
+      "parallel": false,
+      "measurementStartSeconds": 0.0,
+      "deviceXrunsAfterMeasurementStart": -1,
+      "xrunMeasurementStartFrame": -1,
+      "measuredBlocks": 7125,
+      "measuredRenderSeconds": 46.28625849999996,
+      "measuredMaxBlockSeconds": 0.018345625,
+      "measuredBlocksOverBudget": 5,
+      "p50BlockSeconds": 0.006476458333333333,
+      "p99BlockSeconds": 0.00732775,
+      "callbackBudgetSeconds": 0.01066666666666667,
+      "startupSeconds": 0.868592875,
+      "renderWallSeconds": 46.33792475,
+      "reportedDeviceOutputLatencySamples": 0,
+      "deviceXruns": -1,
+      "rate": 48000.0,
+      "block": 512,
+      "frames": 3648000,
+      "parameterEventsDelivered": 0,
+      "eventsDelivered": 1184,
+      "blocks": 7125,
+      "renderSeconds": 46.28625849999996,
+      "maxBlockSeconds": 0.018345625,
+      "blocksOverBudget": 5,
+      "device": "offline",
+      "mixGainPerInstance": 0.25,
+      "peak": 0.1154013425111771,
+      "plugins": [
+        {
+          "name": "Gearmulator MD",
+          "version": "2.2.9",
+          "identifier": "VST3-Gearmulator MD-edd6707f-49123446",
+          "latencySamples": 32,
+          "stateBytes": 12587700
+        }
+      ],
+      "windows": [
+        {
+          "part": 1,
+          "sounding": [
+            {
+              "note": 36,
+              "rms": 0.03173503690303622,
+              "peak": 0.11540138721466064
+            },
+            {
+              "note": 37,
+              "rms": 0.0010819722889013313,
+              "peak": 0.001793980598449707
+            },
+            {
+              "note": 38,
+              "rms": 0.0005981330917377468,
+              "peak": 0.0010340213775634766
+            }
+          ]
+        },
+        {
+          "part": 2,
+          "sounding": [
+            {
+              "note": 37,
+              "rms": 0.01382331986341974,
+              "peak": 0.10753357410430908
+            },
+            {
+              "note": 38,
+              "rms": 0.0001463281669085192,
+              "peak": 0.0004023313522338867
+            }
+          ]
+        },
+        {
+          "part": 3,
+          "sounding": [
+            {
+              "note": 38,
+              "rms": 0.013824891040844214,
+              "peak": 0.10798060894012451
+            },
+            {
+              "note": 39,
+              "rms": 0.00014472022984539135,
+              "peak": 0.00039839744567871094
+            }
+          ]
+        },
+        {
+          "part": 4,
+          "sounding": [
+            {
+              "note": 39,
+              "rms": 0.013823341159442518,
+              "peak": 0.10834133625030518
+            },
+            {
+              "note": 40,
+              "rms": 0.0001384147999484624,
+              "peak": 0.0003829002380371094
+            }
+          ]
+        },
+        {
+          "part": 5,
+          "sounding": [
+            {
+              "note": 40,
+              "rms": 0.01382504110310357,
+              "peak": 0.10809648036956787
+            },
+            {
+              "note": 41,
+              "rms": 0.00013683727475238613,
+              "peak": 0.00037920475006103516
+            }
+          ]
+        },
+        {
+          "part": 6,
+          "sounding": [
+            {
+              "note": 41,
+              "rms": 0.013823197077474448,
+              "peak": 0.10836303234100342
+            },
+            {
+              "note": 42,
+              "rms": 0.00014508558095462608,
+              "peak": 0.0003992319107055664
+            }
+          ]
+        },
+        {
+          "part": 7,
+          "sounding": [
+            {
+              "note": 42,
+              "rms": 0.013823029631692569,
+              "peak": 0.10830080509185791
+            },
+            {
+              "note": 43,
+              "rms": 0.00014844797711383693,
+              "peak": 0.00040781497955322266
+            }
+          ]
+        },
+        {
+          "part": 8,
+          "sounding": [
+            {
+              "note": 43,
+              "rms": 0.013823278009544658,
+              "peak": 0.10730242729187012
+            },
+            {
+              "note": 44,
+              "rms": 0.00013727471846600089,
+              "peak": 0.0003802776336669922
+            }
+          ]
+        },
+        {
+          "part": 9,
+          "sounding": [
+            {
+              "note": 44,
+              "rms": 0.013823072348533945,
+              "peak": 0.10822451114654541
+            },
+            {
+              "note": 45,
+              "rms": 0.0001453397597740271,
+              "peak": 0.0003998279571533203
+            }
+          ]
+        },
+        {
+          "part": 10,
+          "sounding": [
+            {
+              "note": 45,
+              "rms": 0.006794782175730621,
+              "peak": 0.08414101600646973
+            },
+            {
+              "note": 46,
+              "rms": 0.0001341386503935798,
+              "peak": 0.00037288665771484375
+            },
+            {
+              "note": 52,
+              "rms": 0.010782131092930091,
+              "peak": 0.08392524719238281
+            },
+            {
+              "note": 53,
+              "rms": 0.00010954265662562871,
+              "peak": 0.00030243396759033203
+            }
+          ]
+        },
+        {
+          "part": 11,
+          "sounding": [
+            {
+              "note": 46,
+              "rms": 0.013823384774192957,
+              "peak": 0.10689914226531982
+            },
+            {
+              "note": 47,
+              "rms": 0.00013750904681832194,
+              "peak": 0.0003807544708251953
+            },
+            {
+              "note": 53,
+              "rms": 0.01078216249083742,
+              "peak": 0.08412110805511475
+            },
+            {
+              "note": 54,
+              "rms": 0.00011223090232029345,
+              "peak": 0.0003091096878051758
+            }
+          ]
+        },
+        {
+          "part": 12,
+          "sounding": [
+            {
+              "note": 47,
+              "rms": 0.013823135167397999,
+              "peak": 0.10660624504089355
+            },
+            {
+              "note": 48,
+              "rms": 0.00014066646977815286,
+              "peak": 0.0003883838653564453
+            },
+            {
+              "note": 55,
+              "rms": 0.010781890463440174,
+              "peak": 0.08446598052978516
+            },
+            {
+              "note": 56,
+              "rms": 0.00011166893955655342,
+              "peak": 0.0003076791763305664
+            }
+          ]
+        },
+        {
+          "part": 13,
+          "sounding": [
+            {
+              "note": 48,
+              "rms": 0.013823120298378719,
+              "peak": 0.10781872272491455
+            },
+            {
+              "note": 49,
+              "rms": 0.0001491006606851265,
+              "peak": 0.0004096031188964844
+            },
+            {
+              "note": 57,
+              "rms": 0.010781946918334562,
+              "peak": 0.08340942859649658
+            },
+            {
+              "note": 58,
+              "rms": 0.00011125519474468371,
+              "peak": 0.00030672550201416016
+            }
+          ]
+        },
+        {
+          "part": 14,
+          "sounding": [
+            {
+              "note": 49,
+              "rms": 0.013823190982482718,
+              "peak": 0.10826599597930908
+            },
+            {
+              "note": 50,
+              "rms": 0.00013304559442141258,
+              "peak": 0.0003705024719238281
+            },
+            {
+              "note": 59,
+              "rms": 0.010782164164464526,
+              "peak": 0.0842980146408081
+            },
+            {
+              "note": 60,
+              "rms": 0.00011073830514579018,
+              "peak": 0.00030541419982910156
+            }
+          ]
+        },
+        {
+          "part": 15,
+          "sounding": [
+            {
+              "note": 50,
+              "rms": 0.013823143401334599,
+              "peak": 0.10752749443054199
+            },
+            {
+              "note": 51,
+              "rms": 0.0001509116383909996,
+              "peak": 0.00041413307189941406
+            },
+            {
+              "note": 60,
+              "rms": 0.010782045106189953,
+              "peak": 0.08425772190093994
+            },
+            {
+              "note": 61,
+              "rms": 0.00012145930757888028,
+              "peak": 0.00033295154571533203
+            }
+          ]
+        },
+        {
+          "part": 16,
+          "sounding": [
+            {
+              "note": 51,
+              "rms": 0.013823279447566108,
+              "peak": 0.10795843601226807
+            },
+            {
+              "note": 52,
+              "rms": 0.00013968284332382705,
+              "peak": 0.0003859996795654297
+            },
+            {
+              "note": 62,
+              "rms": 0.010782141102744912,
+              "peak": 0.08451926708221436
+            },
+            {
+              "note": 63,
+              "rms": 0.0001091873584652806,
+              "peak": 0.00030159950256347656
+            }
+          ]
+        }
+      ]
+    },
+    "md-routing": {
+      "parallel": false,
+      "p50BlockSeconds": 0.006536791666666666,
+      "p99BlockSeconds": 0.007326958333333334,
+      "callbackBudgetSeconds": 0.01066666666666667,
+      "startupSeconds": 1.110215125,
+      "renderWallSeconds": 37.000756625,
+      "reportedDeviceOutputLatencySamples": 0,
+      "deviceXruns": -1,
+      "rate": 48000.0,
+      "block": 512,
+      "frames": 2880000,
+      "parameterEventsDelivered": 256,
+      "eventsDelivered": 48,
+      "blocks": 5625,
+      "renderSeconds": 36.99962595833328,
+      "maxBlockSeconds": 0.03842908333333334,
+      "blocksOverBudget": 17,
+      "device": "offline",
+      "mixGainPerInstance": 0.25,
+      "peak": 0.0779242217540741,
+      "plugins": [
+        {
+          "name": "Gearmulator MD",
+          "version": "2.2.9",
+          "identifier": "VST3-Gearmulator MD-edd6707f-49123446",
+          "latencySamples": 32,
+          "stateBytes": 12587700
+        }
+      ],
+      "windows": [
+        {
+          "part": 1,
+          "peak": 0.05577373504638672,
+          "rms": 0.017415325256245087
+        },
+        {
+          "part": 2,
+          "peak": 1.1920928955078125e-07,
+          "rms": 1.1920928955078125e-07
+        },
+        {
+          "part": 3,
+          "peak": 1.1920928955078125e-07,
+          "rms": 1.1920928955078125e-07
+        },
+        {
+          "part": 4,
+          "peak": 1.1920928955078125e-07,
+          "rms": 1.1920928955078125e-07
+        },
+        {
+          "part": 5,
+          "peak": 1.1920928955078125e-07,
+          "rms": 1.1920928955078125e-07
+        },
+        {
+          "part": 6,
+          "peak": 1.1920928955078125e-07,
+          "rms": 1.1920928955078125e-07
+        },
+        {
+          "part": 7,
+          "peak": 1.1920928955078125e-07,
+          "rms": 1.1920928955078125e-07
+        },
+        {
+          "part": 8,
+          "peak": 1.1920928955078125e-07,
+          "rms": 1.1920928955078125e-07
+        },
+        {
+          "part": 9,
+          "peak": 1.1920928955078125e-07,
+          "rms": 1.1920928955078125e-07
+        },
+        {
+          "part": 10,
+          "peak": 0.009171485900878906,
+          "rms": 0.0011280182061345616
+        },
+        {
+          "part": 11,
+          "peak": 0.025107860565185547,
+          "rms": 0.0015567129447485405
+        },
+        {
+          "part": 12,
+          "peak": 0.02258753776550293,
+          "rms": 0.002200144265602966
+        },
+        {
+          "part": 13,
+          "peak": 0.06432998180389404,
+          "rms": 0.005865915369307472
+        },
+        {
+          "part": 14,
+          "peak": 0.06527245044708252,
+          "rms": 0.00607659706070433
+        },
+        {
+          "part": 15,
+          "peak": 0.07792425155639648,
+          "rms": 0.004898029952047226
+        },
+        {
+          "part": 16,
+          "peak": 0.06716883182525635,
+          "rms": 0.006434425099801136
+        }
+      ]
+    },
+    "md-track2-scan": {
+      "parallel": false,
+      "measurementStartSeconds": 0.0,
+      "deviceXrunsAfterMeasurementStart": -1,
+      "xrunMeasurementStartFrame": -1,
+      "measuredBlocks": 3000,
+      "measuredRenderSeconds": 19.74013770833335,
+      "measuredMaxBlockSeconds": 0.01330825,
+      "measuredBlocksOverBudget": 2,
+      "p50BlockSeconds": 0.006587625,
+      "p99BlockSeconds": 0.007460958333333333,
+      "callbackBudgetSeconds": 0.01066666666666667,
+      "startupSeconds": 0.84593625,
+      "renderWallSeconds": 19.79116895833333,
+      "reportedDeviceOutputLatencySamples": 0,
+      "deviceXruns": -1,
+      "rate": 48000.0,
+      "block": 512,
+      "frames": 1536000,
+      "parameterEventsDelivered": 0,
+      "eventsDelivered": 112,
+      "blocks": 3000,
+      "renderSeconds": 19.74013770833335,
+      "maxBlockSeconds": 0.01330825,
+      "blocksOverBudget": 2,
+      "device": "offline",
+      "mixGainPerInstance": 0.25,
+      "peak": 0.1404032111167908,
+      "plugins": [
+        {
+          "name": "Gearmulator MD",
+          "version": "2.2.9",
+          "identifier": "VST3-Gearmulator MD-edd6707f-49123446",
+          "latencySamples": 32,
+          "stateBytes": 12587700
+        }
+      ],
+      "windows": [
+        {
+          "note": 24,
+          "rms": 0.0,
+          "peak": 0.0
+        },
+        {
+          "note": 25,
+          "rms": 0.0,
+          "peak": 0.0
+        },
+        {
+          "note": 26,
+          "rms": 0.0,
+          "peak": 0.0
+        },
+        {
+          "note": 27,
+          "rms": 0.0,
+          "peak": 0.0
+        },
+        {
+          "note": 28,
+          "rms": 0.0,
+          "peak": 0.0
+        },
+        {
+          "note": 29,
+          "rms": 0.0,
+          "peak": 0.0
+        },
+        {
+          "note": 30,
+          "rms": 0.0,
+          "peak": 0.0
+        },
+        {
+          "note": 31,
+          "rms": 0.0,
+          "peak": 0.0
+        },
+        {
+          "note": 32,
+          "rms": 0.0,
+          "peak": 0.0
+        },
+        {
+          "note": 33,
+          "rms": 0.0,
+          "peak": 0.0
+        },
+        {
+          "note": 34,
+          "rms": 0.0,
+          "peak": 0.0
+        },
+        {
+          "note": 35,
+          "rms": 0.0,
+          "peak": 0.0
+        },
+        {
+          "note": 36,
+          "rms": 0.0,
+          "peak": 0.0
+        },
+        {
+          "note": 37,
+          "rms": 0.01694672172085249,
+          "peak": 0.140403151512146
+        },
+        {
+          "note": 38,
+          "rms": 1.2791944622023886e-06,
+          "peak": 1.3113021850585938e-05
+        },
+        {
+          "note": 39,
+          "rms": 1.267182926001419e-07,
+          "peak": 3.5762786865234375e-07
+        },
+        {
+          "note": 40,
+          "rms": 1.2046001382969702e-07,
+          "peak": 2.384185791015625e-07
+        },
+        {
+          "note": 41,
+          "rms": 1.1955338229855425e-07,
+          "peak": 2.384185791015625e-07
+        },
+        {
+          "note": 42,
+          "rms": 1.1920928955078125e-07,
+          "peak": 1.1920928955078125e-07
+        },
+        {
+          "note": 43,
+          "rms": 1.1920928955078125e-07,
+          "peak": 1.1920928955078125e-07
+        },
+        {
+          "note": 44,
+          "rms": 1.1920928955078125e-07,
+          "peak": 1.1920928955078125e-07
+        },
+        {
+          "note": 45,
+          "rms": 1.1920928955078125e-07,
+          "peak": 1.1920928955078125e-07
+        },
+        {
+          "note": 46,
+          "rms": 1.1920928955078125e-07,
+          "peak": 1.1920928955078125e-07
+        },
+        {
+          "note": 47,
+          "rms": 1.1920928955078125e-07,
+          "peak": 1.1920928955078125e-07
+        },
+        {
+          "note": 48,
+          "rms": 1.1920928955078125e-07,
+          "peak": 1.1920928955078125e-07
+        },
+        {
+          "note": 49,
+          "rms": 1.1920928955078125e-07,
+          "peak": 1.1920928955078125e-07
+        },
+        {
+          "note": 50,
+          "rms": 1.1920928955078125e-07,
+          "peak": 1.1920928955078125e-07
+        },
+        {
+          "note": 51,
+          "rms": 1.1920928955078125e-07,
+          "peak": 1.1920928955078125e-07
+        },
+        {
+          "note": 52,
+          "rms": 1.1920928955078125e-07,
+          "peak": 1.1920928955078125e-07
+        },
+        {
+          "note": 53,
+          "rms": 1.1920928955078125e-07,
+          "peak": 1.1920928955078125e-07
+        },
+        {
+          "note": 54,
+          "rms": 1.1920928955078125e-07,
+          "peak": 1.1920928955078125e-07
+        },
+        {
+          "note": 55,
+          "rms": 1.1920928955078125e-07,
+          "peak": 1.1920928955078125e-07
+        },
+        {
+          "note": 56,
+          "rms": 1.1920928955078125e-07,
+          "peak": 1.1920928955078125e-07
+        },
+        {
+          "note": 57,
+          "rms": 1.1920928955078125e-07,
+          "peak": 1.1920928955078125e-07
+        },
+        {
+          "note": 58,
+          "rms": 1.1920928955078125e-07,
+          "peak": 1.1920928955078125e-07
+        },
+        {
+          "note": 59,
+          "rms": 1.1920928955078125e-07,
+          "peak": 1.1920928955078125e-07
+        },
+        {
+          "note": 60,
+          "rms": 1.1920928955078125e-07,
+          "peak": 1.1920928955078125e-07
+        },
+        {
+          "note": 61,
+          "rms": 1.1920928955078125e-07,
+          "peak": 1.1920928955078125e-07
+        },
+        {
+          "note": 62,
+          "rms": 1.1920928955078125e-07,
+          "peak": 1.1920928955078125e-07
+        },
+        {
+          "note": 63,
+          "rms": 1.1920928955078125e-07,
+          "peak": 1.1920928955078125e-07
+        }
+      ]
+    }
+  },
+  "startupPreparationRuns": {
+    "control": {
+      "parallel": true,
+      "measurementStartSeconds": 8.0,
+      "deviceXrunsAfterMeasurementStart": 0,
+      "xrunMeasurementStartFrame": 386048,
+      "measuredBlocks": 2063,
+      "measuredRenderSeconds": 14.12509237500003,
+      "measuredMaxBlockSeconds": 0.008662583333333333,
+      "measuredBlocksOverBudget": 0,
+      "deadlineMisses": [
+        {
+          "frame": 24064,
+          "seconds": 0.01307370833333333
+        },
+        {
+          "frame": 25088,
+          "seconds": 0.01663070833333333
+        },
+        {
+          "frame": 47616,
+          "seconds": 0.01600079166666667
+        }
+      ],
+      "warmupSeconds": 0.0,
+      "warmupWallSeconds": 4.166666666666667e-08,
+      "warmupBlocks": 0,
+      "warmupBlocksOverBudget": 0,
+      "warmupMaxBlockSeconds": 0.0,
+      "p50BlockSeconds": 0.006777708333333334,
+      "p99BlockSeconds": 0.007728458333333334,
+      "callbackBudgetSeconds": 0.01066666666666667,
+      "startupSeconds": 2.228257166666667,
+      "renderWallSeconds": 30.09926366666667,
+      "reportedDeviceOutputLatencySamples": 1346,
+      "deviceXruns": 4,
+      "rate": 48000.0,
+      "block": 512,
+      "frames": 1440000,
+      "parameterEventsDelivered": 0,
+      "eventsDelivered": 44,
+      "blocks": 2813,
+      "renderSeconds": 19.1719722916667,
+      "maxBlockSeconds": 0.01663070833333333,
+      "blocksOverBudget": 3,
+      "device": "MacBook Pro Speakers",
+      "mixGainPerInstance": 0.25,
+      "peak": 0.1866770386695862
+    },
+    "paced-twelve-1024-fresh": {
+      "parallel": true,
+      "measurementStartSeconds": 8.0,
+      "deviceXrunsAfterMeasurementStart": 0,
+      "xrunMeasurementStartFrame": 384000,
+      "measuredBlocks": 5250,
+      "measuredRenderSeconds": 70.5075025833332,
+      "measuredMaxBlockSeconds": 0.01506020833333333,
+      "measuredBlocksOverBudget": 0,
+      "deadlineMisses": [],
+      "warmupSeconds": 12.0,
+      "warmupWallSeconds": 12.01176370833333,
+      "warmupBlocks": 563,
+      "warmupBlocksOverBudget": 2,
+      "warmupMaxBlockSeconds": 0.03345604166666667,
+      "p50BlockSeconds": 0.01338991666666667,
+      "p99BlockSeconds": 0.01420254166666667,
+      "callbackBudgetSeconds": 0.02133333333333333,
+      "startupSeconds": 12.950352625,
+      "renderWallSeconds": 120.0345899583333,
+      "reportedDeviceOutputLatencySamples": 1858,
+      "deviceXruns": 0,
+      "rate": 48000.0,
+      "block": 1024,
+      "frames": 5760000,
+      "parameterEventsDelivered": 0,
+      "eventsDelivered": 218,
+      "blocks": 5625,
+      "renderSeconds": 75.44328562499986,
+      "maxBlockSeconds": 0.01862304166666667,
+      "blocksOverBudget": 0,
+      "device": "MacBook Pro Speakers",
+      "mixGainPerInstance": 0.25,
+      "peak": 0.1756344735622406
+    },
+    "paced-twelve-fresh": {
+      "parallel": true,
+      "measurementStartSeconds": 8.0,
+      "deviceXrunsAfterMeasurementStart": 16,
+      "xrunMeasurementStartFrame": 385024,
+      "measuredBlocks": 10500,
+      "measuredRenderSeconds": 71.44085941666687,
+      "measuredMaxBlockSeconds": 0.01486216666666667,
+      "measuredBlocksOverBudget": 16,
+      "deadlineMisses": [
+        {
+          "frame": 4169728,
+          "seconds": 0.01278641666666667
+        },
+        {
+          "frame": 4358144,
+          "seconds": 0.01399758333333333
+        },
+        {
+          "frame": 4424192,
+          "seconds": 0.01121095833333333
+        },
+        {
+          "frame": 4425728,
+          "seconds": 0.01400841666666667
+        },
+        {
+          "frame": 4435968,
+          "seconds": 0.01269629166666667
+        },
+        {
+          "frame": 4467712,
+          "seconds": 0.013994375
+        },
+        {
+          "frame": 4517376,
+          "seconds": 0.01273279166666667
+        },
+        {
+          "frame": 4570112,
+          "seconds": 0.01110166666666667
+        },
+        {
+          "frame": 4585984,
+          "seconds": 0.01358183333333333
+        },
+        {
+          "frame": 4587520,
+          "seconds": 0.01312370833333333
+        },
+        {
+          "frame": 4726784,
+          "seconds": 0.01477325
+        },
+        {
+          "frame": 4797440,
+          "seconds": 0.011891875
+        },
+        {
+          "frame": 4816896,
+          "seconds": 0.01486216666666667
+        },
+        {
+          "frame": 4901888,
+          "seconds": 0.01186320833333333
+        },
+        {
+          "frame": 4911616,
+          "seconds": 0.01111454166666667
+        },
+        {
+          "frame": 5071360,
+          "seconds": 0.011929875
+        }
+      ],
+      "warmupSeconds": 12.0,
+      "warmupWallSeconds": 12.00077825,
+      "warmupBlocks": 1125,
+      "warmupBlocksOverBudget": 9,
+      "warmupMaxBlockSeconds": 0.02834233333333333,
+      "p50BlockSeconds": 0.006769708333333333,
+      "p99BlockSeconds": 0.007319,
+      "callbackBudgetSeconds": 0.01066666666666667,
+      "startupSeconds": 13.18002729166667,
+      "renderWallSeconds": 120.25706225,
+      "reportedDeviceOutputLatencySamples": 1346,
+      "deviceXruns": 16,
+      "rate": 48000.0,
+      "block": 512,
+      "frames": 5760000,
+      "parameterEventsDelivered": 0,
+      "eventsDelivered": 218,
+      "blocks": 11250,
+      "renderSeconds": 76.45061045833329,
+      "maxBlockSeconds": 0.01486216666666667,
+      "blocksOverBudget": 16,
+      "device": "MacBook Pro Speakers",
+      "mixGainPerInstance": 0.25,
+      "peak": 0.1733013689517975
+    },
+    "paced-twelve-recall": {
+      "parallel": true,
+      "measurementStartSeconds": 8.0,
+      "deviceXrunsAfterMeasurementStart": 14,
+      "xrunMeasurementStartFrame": 384000,
+      "measuredBlocks": 10500,
+      "measuredRenderSeconds": 71.12141916666677,
+      "measuredMaxBlockSeconds": 0.01509816666666667,
+      "measuredBlocksOverBudget": 17,
+      "deadlineMisses": [
+        {
+          "frame": 1501696,
+          "seconds": 0.01286904166666667
+        },
+        {
+          "frame": 1509376,
+          "seconds": 0.01085791666666667
+        },
+        {
+          "frame": 2396160,
+          "seconds": 0.01197591666666667
+        },
+        {
+          "frame": 2507264,
+          "seconds": 0.01172491666666667
+        },
+        {
+          "frame": 3147776,
+          "seconds": 0.01426220833333333
+        },
+        {
+          "frame": 3289088,
+          "seconds": 0.014884625
+        },
+        {
+          "frame": 3326976,
+          "seconds": 0.013141
+        },
+        {
+          "frame": 3608064,
+          "seconds": 0.013096
+        },
+        {
+          "frame": 3825152,
+          "seconds": 0.01299083333333333
+        },
+        {
+          "frame": 4365824,
+          "seconds": 0.01080270833333333
+        },
+        {
+          "frame": 4371968,
+          "seconds": 0.014126
+        },
+        {
+          "frame": 4386816,
+          "seconds": 0.01509816666666667
+        },
+        {
+          "frame": 4399104,
+          "seconds": 0.013088
+        },
+        {
+          "frame": 4583424,
+          "seconds": 0.01072870833333333
+        },
+        {
+          "frame": 4788736,
+          "seconds": 0.01462054166666667
+        },
+        {
+          "frame": 4791296,
+          "seconds": 0.01422795833333333
+        },
+        {
+          "frame": 4899840,
+          "seconds": 0.014512125
+        }
+      ],
+      "warmupSeconds": 12.0,
+      "warmupWallSeconds": 12.00092508333333,
+      "warmupBlocks": 1125,
+      "warmupBlocksOverBudget": 8,
+      "warmupMaxBlockSeconds": 0.02747791666666667,
+      "p50BlockSeconds": 0.006730708333333333,
+      "p99BlockSeconds": 0.007322583333333334,
+      "callbackBudgetSeconds": 0.01066666666666667,
+      "startupSeconds": 13.66678466666667,
+      "renderWallSeconds": 120.217536375,
+      "reportedDeviceOutputLatencySamples": 1346,
+      "deviceXruns": 14,
+      "rate": 48000.0,
+      "block": 512,
+      "frames": 5760000,
+      "parameterEventsDelivered": 0,
+      "eventsDelivered": 218,
+      "blocks": 11250,
+      "renderSeconds": 76.09563320833361,
+      "maxBlockSeconds": 0.01509816666666667,
+      "blocksOverBudget": 17,
+      "device": "MacBook Pro Speakers",
+      "mixGainPerInstance": 0.25,
+      "peak": 0.1867453306913376
+    },
+    "warm-eight-1": {
+      "parallel": true,
+      "measurementStartSeconds": 8.0,
+      "deviceXrunsAfterMeasurementStart": 0,
+      "xrunMeasurementStartFrame": 384512,
+      "measuredBlocks": 10500,
+      "measuredRenderSeconds": 71.30195074999995,
+      "measuredMaxBlockSeconds": 0.008008958333333333,
+      "measuredBlocksOverBudget": 0,
+      "deadlineMisses": [],
+      "warmupSeconds": 8.0,
+      "warmupWallSeconds": 5.1984165,
+      "warmupBlocks": 750,
+      "warmupBlocksOverBudget": 16,
+      "warmupMaxBlockSeconds": 0.06617966666666666,
+      "p50BlockSeconds": 0.00674675,
+      "p99BlockSeconds": 0.007518583333333334,
+      "callbackBudgetSeconds": 0.01066666666666667,
+      "startupSeconds": 6.687499,
+      "renderWallSeconds": 120.0440820833333,
+      "reportedDeviceOutputLatencySamples": 1346,
+      "deviceXruns": 0,
+      "rate": 48000.0,
+      "block": 512,
+      "frames": 5760000,
+      "parameterEventsDelivered": 0,
+      "eventsDelivered": 218,
+      "blocks": 11250,
+      "renderSeconds": 76.23956941666675,
+      "maxBlockSeconds": 0.009727125,
+      "blocksOverBudget": 0,
+      "device": "MacBook Pro Speakers",
+      "mixGainPerInstance": 0.25,
+      "peak": 0.1871229559183121
+    },
+    "warm-eight-fresh": {
+      "parallel": true,
+      "measurementStartSeconds": 8.0,
+      "deviceXrunsAfterMeasurementStart": 0,
+      "xrunMeasurementStartFrame": 385024,
+      "measuredBlocks": 10500,
+      "measuredRenderSeconds": 71.69774099999977,
+      "measuredMaxBlockSeconds": 0.007950625,
+      "measuredBlocksOverBudget": 0,
+      "deadlineMisses": [
+        {
+          "frame": 167424,
+          "seconds": 0.04270025
+        },
+        {
+          "frame": 183296,
+          "seconds": 0.040411
+        }
+      ],
+      "warmupSeconds": 8.0,
+      "warmupWallSeconds": 5.40742475,
+      "warmupBlocks": 750,
+      "warmupBlocksOverBudget": 10,
+      "warmupMaxBlockSeconds": 0.03895625,
+      "p50BlockSeconds": 0.006804666666666666,
+      "p99BlockSeconds": 0.007453041666666667,
+      "callbackBudgetSeconds": 0.01066666666666667,
+      "startupSeconds": 6.584096458333334,
+      "renderWallSeconds": 120.1189057916667,
+      "reportedDeviceOutputLatencySamples": 1346,
+      "deviceXruns": 2,
+      "rate": 48000.0,
+      "block": 512,
+      "frames": 5760000,
+      "parameterEventsDelivered": 0,
+      "eventsDelivered": 218,
+      "blocks": 11250,
+      "renderSeconds": 76.8446676249999,
+      "maxBlockSeconds": 0.04270025,
+      "blocksOverBudget": 2,
+      "device": "MacBook Pro Speakers",
+      "mixGainPerInstance": 0.25,
+      "peak": 0.1816892325878143
+    }
   }
 }

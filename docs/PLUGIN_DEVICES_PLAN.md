@@ -427,3 +427,45 @@ a firm release date before P1 resolves the native hosting and timing unknowns.
   ownership; full musical state recall; acceptable two-plugin realtime processing;
   real rate/buffer/editor matrix, measured onset jitter/output latency and sustained
   stability. P2–P7 have not started. No helper/plugin/ROM added to packaging.
+
+
+### 2026-09-15 — P1 MD routing and sustained callback overload follow-up
+
+- Fixed the Gearmulator-specific MD note map in the launcher and probes. The
+  emulator intercepts consecutive notes 36–51 as panel pads, overriding firmware
+  mappings in that range. The hardware-style map was triggering other muted parts.
+  Fresh original-kit verification passes all 16 parts with 16 silent controls.
+- Added opt-in persistent concurrent rendering (`--parallel` / `parallel: true`),
+  callback percentiles/budget, exact post-startup callback counters, and approximate
+  post-startup device-xrun counters with their actual starting frame.
+- Two-minute 48k/512 speaker runs, including both editors and repeated notes,
+  demonstrate zero steady-state overruns/xruns with approximately 7 ms callbacks
+  against a 10.67 ms deadline. Startup overrun/xrun remains recorded; this is a
+  bounded configuration result, not a full realtime qualification or P1 exit pass.
+- Added direct MIDI CC/SysEx diagnostics and a 16-part positive/silent-control
+  runner. Native regression proof passes serial and concurrent rate/block matrices,
+  state recall, transport, exact timing/mix and invalid-input checks. No Rust/shared
+  DRS contracts or physical MIDI hardware were changed.
+- Remaining: startup readiness, host-play sequencing ownership, velocity/channel
+  semantics of the emulator pad path, full changed-kit/sample recall, latency/jitter,
+  other buffer/rate combinations and long-duration stability. P2–P7 remain unopened.
+- Detailed measurements and failed diagnostic controls are preserved in
+  [P1 evidence](PLUGIN_HOST_P1_EVIDENCE.md) and the JSON summary.
+
+
+### 2026-09-15 — Startup dropout follow-up
+
+- Added explicit silent preparation before opening the audio device, keeping the
+  GUI message loop active and preserving frame-zero scheduled MIDI/parameters and
+  transport. Gearmulator launcher defaults to twelve paced seconds; raw scenarios
+  remain opt-in. Preparation time and hypothetical misses are separately reported.
+- Cold-start control reproduced three deadline misses and four CoreAudio xruns.
+  Paced fresh boot eliminated the early misses but recorded 16 later misses/xruns
+  at 87–106 seconds. Both the positive restored-state evidence and failed fresh-boot
+  stability run are retained. Counts include every callback from device startup.
+- A final 48k/1024 fresh-boot run passed 120 seconds / 5,625 callbacks / 218 events
+  with zero deadline misses and zero device xruns. This is a provisional working
+  configuration, adding 512 samples of reported device output latency versus 512.
+- Early startup behavior improved; dropout-free qualification and P1 remain incomplete
+  for the other gates. See the startup section of `PLUGIN_HOST_P1_EVIDENCE.md` and
+  `startupPreparationRuns` in the JSON summary. No P2–P7 work opened.

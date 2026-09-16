@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Optional real-plugin routing probe. Requires a completed run directory with states.
 Solo each expected part with wrapper mute parameters, then address its candidate
-MIDI destination. A nonzero window is evidence, not an onset/latency measurement.
+Gearmulator MIDI destination. A nonzero window is evidence, not an onset/latency measurement.
 """
 import argparse,json,os,subprocess,wave,math
 from pathlib import Path
@@ -14,7 +14,8 @@ parameters={p['name']:p['id'] for p in report['plugins'][index]['parameters']}
 spec=cfg['plugins'][index];spec['stateIn']=str(base/f'instance-{index}.state')
 cfg.update(plugins=[spec],editors=False,output=str(out),seconds=60,events=[],parameterEvents=[]);cfg.pop('device',None)
 count=16 if a.model=='MD' else 6
-notes=[36,38,40,41,43,45,47,48,50,52,53,55,57,59,60,62]
+# Gearmulator intercepts this chromatic range as consecutive panel pads.
+notes=list(range(36,52))
 for part in range(count):
     start=10+part*3;sample=int(start*cfg['rate']);control=(sample//cfg['block']-2)*cfg['block']
     for other in range(count):

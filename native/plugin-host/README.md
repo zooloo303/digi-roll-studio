@@ -83,6 +83,20 @@ The executable accepts one absolute JSON path. Required keys: `output` (existing
 absolute directory), `plugins` (1–8 objects with absolute VST3 `path`). Optional:
 
 - `rate` (default 48000), `block` (256), `seconds` (10, maximum 120), `editors`.
+- `parallel` (default false): persistent realtime-priority workers process instances
+  2–8 while the callback processes instance 1, then mix the same frame buffers.
+  No extra audio buffering latency is added. Workers synchronize at every block;
+  their waits and third-party code remain a hard-realtime limitation.
+- `warmupSeconds` (default 0 in raw scenarios): process silent blocks with stopped
+  transport before opening the device or beginning offline capture. Range 0–30
+  rendered seconds, rounded up to full blocks. The message loop stays available.
+  No scheduled MIDI, parameter events, transport changes or capture frames are
+  consumed; the authored timeline still starts at frame zero. This advances plugin
+  internal state, so it is opt-in for generic scenarios, not a transparent reset.
+  The Gearmulator launcher defaults to **12 seconds**; use `--warmup-seconds 0`
+  for a cold-start control. Preparation is paced to at least realtime so delayed boot work can settle.
+- `measurementStartSeconds` (default 0): also report callback counts, work and
+  maximum after this render-frame time. Whole-run counts always include startup.
 - `device`: exact CoreAudio output name; omit for offline rendering.
 - Plugin `stateIn`: absolute state path restored into a fresh instance before
   prepare. Plugin `parameters`: initial `{index,value}` pairs, normalized 0–1.
@@ -90,6 +104,11 @@ absolute directory), `plugins` (1–8 objects with absolute VST3 `path`). Option
 - `events`: `{sample,instance,channel,note,velocity}`. Absolute render-frame
   timestamp, zero-based instance, MIDI channel 1–16, note/velocity 0–127; velocity
   zero is note-off. Stable order, at most 4096 events, delivered at block offsets.
+- An `events` entry may also contain `{sample,instance,channel,cc,value}` for
+  a direct MIDI controller message (cc/value 0–127).
+- An `events` entry may instead contain `{sample,instance,sysex:[...]}` with
+  1–1024 seven-bit payload bytes, excluding F0/F7. These messages address only
+  the hosted plugin. MIDI buffers are sized before processing for the schedule.
 - `parameterEvents`: `{sample,instance,id,value}`. Native VST3 parameter ID string,
   normalized value, block-aligned render frame. At most 4096 events; controls are
   applied before notes in that block. Sample-accurate parameter automation is not
@@ -147,3 +166,46 @@ baseline's isolated `gearmulator` folder so its firmware symlinks remain availab
 Run `"$host_bin" /absolute/new-scenario.json`. Pass the resulting directory as the
 mutated-state argument. The recall script asserts values against each saved run's
 report after rendering fresh instances for twelve seconds.
+
+## Follow-up diagnostics
+
+Pass `--parallel` to `run-gearmulator.py` for concurrent processing. Reports now
+include the callback budget, median/p99 callback time, and optional post-startup
+measurements. `deviceXrunsAfterMeasurementStart` uses the first UI timer poll after
+the configured boundary; `xrunMeasurementStartFrame` records that approximate
+window start. `-1` means unavailable. The whole-run device xrun count is retained. The final partial offline block uses the full requested callback
+period when checking deadlines.
+
+Use level isolation and paired silent controls for the MD part gate:
+
+```sh
+python3 native/plugin-host/tests/gearmulator_md_parts.py "$host_bin" \
+  local/plugin-host/live-01 local/plugin-host/md-level-proof
+# Add --known-kit to replace all 16 machines with synthesized TRX-BD in the test instance.
+```
+
+The tested Gearmulator MD maps consecutive notes 36–51 to pads 1–16, overriding
+the firmware note map in that range. Both MD probes and the launcher use this
+plugin-specific map. `--midi-cc` compares direct firmware controls with wrapper
+parameters; the default uses wrapper parameters.
+
+This test requires all sixteen positive windows to exceed RMS 0.0001 and all
+sixteen level-zero controls to remain below RMS 0.000001. The original bulk-mute
+probe also uses the corrected map. Historical results with the physical-device
+map are retained in the evidence document as failed diagnostic runs.
+
+Startup reports include `warmupSeconds`, `warmupWallSeconds`, `warmupBlocks`,
+`warmupBlocksOverBudget` and `warmupMaxBlockSeconds`. Preparation deadline counts
+are hypothetical (no device is open). `startupSeconds` includes preparation.
+`blocksOverBudget` and `deviceXruns` cover the whole device run, including its first
+callback; neither is reset after preparation. `deadlineMisses` lists render frames
+and elapsed seconds for every missed callback deadline. Preparation does not
+certify firmware readiness: the duration is an experimentally selected Gearmulator
+setting, not a readiness handshake or a guarantee for other plugins/states.
+
+The provisional clean configuration from the startup follow-up is `--parallel
+--rate 48000 --block 1024 --warmup-seconds 12 --editors --device 'MacBook Pro Speakers'`.
+One 120-second fresh-boot run passed with zero callback misses and device xruns.
+At 512 samples, paced preparation removed the early misses but later intermittent
+misses remained. See the evidence document for all runs and the latency tradeoff;
+this is not a full P1 qualification.
