@@ -295,3 +295,104 @@ ordering, transport context, and rejected negative/excessive preparation duratio
 Raw scenarios, logs, WAVs, snapshots and reports are preserved under ignored
 `local/plugin-host/p1-startup-2026-09-15/`; scenarios retain temporary output paths.
 Compact metrics are in `startupPreparationRuns` in the tracked results JSON.
+
+## Transport ownership proof — 2026-09-15
+
+The real-plugin proof now distinguishes internal pattern playback from authored
+notes. All runs use the pinned alpha.11 binaries, original `live-01` states,
+48 kHz/1024, twelve seconds of preparation, and isolated plugin-only MIDI. No
+shared DRS model, scheduler, hardware routing or host executable changed.
+
+- **MD original-state negative control fails ownership:** with zero authored
+  notes, Play produces factory-pattern audio (peak 0.1530). Stop leaves tails,
+  then the capture reaches the 24-bit noise floor. Playing flags cannot simply
+  be enabled on arbitrary MD states.
+- **MD H16 selection control:** send the model-specific Set Status message
+  `00 20 3c 02 00 71 04 7f` (payload without F0/F7) while stopped. The resulting
+  state produces digital silence through play, tempo changes, seek, stop and
+  restart without authored notes. This is a measured setup for this baseline,
+  not a guarantee that H16 is empty in someone else's project. No pattern dump
+  was read back; silence is the behavioral evidence.
+- **MM original-state control:** all 36 seconds remain digitally silent without
+  authored notes, including the playing intervals. This establishes the tested
+  state's behavior, not whether transport receive is disabled or its pattern is
+  empty, and is not a guarantee for arbitrary MM projects.
+- **Positive speaker tests:** ten authored notes per instrument, before play,
+  during play, after tempo change, after a backward seek, while stopped and after
+  resume. MD uses the H16 selection; MM uses its original restored state. Both
+  36-second runs deliver all events with zero callback deadline misses and zero
+  CoreAudio xruns. These are separate single-instrument runs, not a new combined
+  two-plugin stability qualification. Editors are closed.
+
+The positive scenarios preserve PPQ at the tempo-only change, explicitly seek
+backward at 16 seconds, freeze PPQ on stop, and resume from the stopped position.
+Earlier no-note controls used a rounded PPQ at the tempo boundary; their saved
+scenarios remain intact and are evidence of silence/activity, not exact clock
+continuity. The test host still uses immutable render-frame schedules: notes
+while stopped are deliberate audition events, and no queue cancellation or held
+note cleanup on stop/seek is claimed. Those production behaviors remain P3 work.
+
+Reproduce with `native/plugin-host/tests/gearmulator_transport.py` and analyze
+with `native/plugin-host/tests/analyze_gearmulator_transport.py`; commands and
+options are in the native README. Scenarios, captures, original reports and local
+snapshots are under `local/plugin-host/p1-transport-2026-09-15/`. Captures/states
+remain untracked. RMS windows demonstrate signal and quiet intervals; they cannot
+exclude an extra trigger hidden inside an already sounding note or certify
+sample-accurate timing. Rendered threshold onset is not acoustic latency.
+
+### Positive-window measurements and MD semantics
+
+Both single-instrument positives have 10/10 first-second response windows above
+RMS 0.0001 and 10/10 late-gap windows below RMS 0.000001. MD's rendered threshold
+onsets span 3.52–6.54 ms; MM's span 2.33–2.73 ms. These numbers include sound
+attack, plugin processing and threshold effects; they are not a jitter or
+end-to-end latency qualification. No held-note-at-stop test was performed.
+
+The 96-second MD semantic probe restores `md-h16-notes/instance-0.state` into a
+fresh instance, sends no pattern-selection command, and runs transport while
+probing pad 1. All eleven positive windows sound and their late gaps reach the
+noise floor. The note-off-only control at 72 seconds stays at the noise floor,
+as does the final stopped interval. Thus the quiet setup survived this recall;
+this does not close the separate full changed-kit/user-sample recall gate.
+
+- Velocities 1/32/64/100/127: first-second RMS 0.017375–0.017415 (less than 0.24%
+  spread). This path does not provide velocity-scaled hits in the tested kit.
+- Channels 1/2/6/10/16 all trigger the same pad; channel selection does not isolate
+  MD parts on this path. Use the pad note and plugin instance as destination.
+- Note-off after 20 ms versus 1.5 seconds: first-second RMS 0.017379 versus
+  0.017409. Both play the same decaying one-shot; duration is not a demonstrated
+  control. Do not extrapolate this test to sustained/sample machines.
+
+The previously inspected source at `e35ef142` corroborates this mechanism:
+`mdLib/mdhardware.cpp`, `pumpScheduledMidi`, maps notes 36–51 to panel pulses
+without using channel or nonzero velocity magnitude, and consumes note-offs.
+That source is newer than the tested alpha.11 binary; the audio results above
+are the evidence for the installed binary. Full per-note velocity support needs
+a separately proven firmware MIDI route or an upstream change, not a blanket
+claim that the normal MIDI semantics already work.
+
+Native `ctest` passes: 1/1 consolidated VST3 proof, 5.36 seconds.
+
+### Combined transport confirmation and verification
+
+`both-transport-live` combines the two positive schedules in one parallel host,
+restoring MD's H16 snapshot and MM's original snapshot. Both receive the same
+transport and their own ten note-on/off pairs. At 48k/1024 with twelve-second
+preparation, the 36-second speaker run delivered all 40 events across 1,688
+callbacks with **zero deadline misses and zero device xruns**. Maximum callback
+was 18.443 ms; p99 was 13.462 ms, against a 21.333 ms deadline. Peak mixed audio
+was 0.06225. This remains a short bounded run, not sustained qualification.
+
+To reproduce the combined scenario, use the MD positive scenario with its saved
+state as `stateIn`, remove the pattern-selection SysEx, append the MM positive
+plugin specification, append its events with `instance: 1`, and set `parallel:
+true` with a new output directory. The complete executed JSON is retained with
+the local capture. The analyzer rejects mixed-instance captures because mixed
+audio cannot identify the response of each individual plugin.
+
+Explicit capture checks pass for both silent controls and both authored-note
+tests. The original MD factory control correctly **fails** the silence check.
+The MD semantics/recall probe passes its eleven response/quiet-gap checks.
+Assertions also check delivered-event totals against every saved scenario.
+Compact measurements are in `transportOwnershipRuns` in the tracked JSON.
+The bounded P1 ownership proof is complete; overall P1 remains incomplete.

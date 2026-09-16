@@ -2962,5 +2962,1030 @@
       "mixGainPerInstance": 0.25,
       "peak": 0.1816892325878143
     }
+  },
+  "transportOwnershipRuns": {
+    "md-no-notes": {
+      "rate": 48000.0,
+      "block": 1024,
+      "frames": 1728000,
+      "parallel": false,
+      "warmupSeconds": 12.0,
+      "eventsDelivered": 0,
+      "blocks": 1688,
+      "blocksOverBudget": 0,
+      "deviceXruns": -1,
+      "device": "offline",
+      "p99BlockSeconds": 0.01390070833333333,
+      "maxBlockSeconds": 0.01530791666666667,
+      "callbackBudgetSeconds": 0.02133333333333333,
+      "peak": 0.1530323773622513,
+      "localEvidence": "local/plugin-host/p1-transport-2026-09-15/md-no-notes",
+      "transport": [
+        {
+          "sample": 0,
+          "ppq": 0,
+          "bpm": 120,
+          "playing": false
+        },
+        {
+          "sample": 192512,
+          "ppq": 0,
+          "bpm": 120,
+          "playing": true
+        },
+        {
+          "sample": 480256,
+          "ppq": 12,
+          "bpm": 90,
+          "playing": true
+        },
+        {
+          "sample": 768000,
+          "ppq": 0,
+          "bpm": 90,
+          "playing": true
+        },
+        {
+          "sample": 1055744,
+          "ppq": 9,
+          "bpm": 90,
+          "playing": false
+        },
+        {
+          "sample": 1248256,
+          "ppq": 9,
+          "bpm": 150,
+          "playing": true
+        },
+        {
+          "sample": 1439744,
+          "ppq": 19,
+          "bpm": 150,
+          "playing": false
+        }
+      ],
+      "analysis": {
+        "notes": [],
+        "wholeCapture": {
+          "peak": 0.1530323028564453,
+          "rms": 0.015173229522942765
+        },
+        "eventsDelivered": 0,
+        "blocksOverBudget": 0,
+        "deviceXruns": -1,
+        "device": "offline",
+        "interpretation": "Response/gap amplitudes and first threshold crossing only; no blanket no-doubling or latency certification.",
+        "passed": false
+      }
+    },
+    "mm-no-notes": {
+      "rate": 48000.0,
+      "block": 1024,
+      "frames": 1728000,
+      "parallel": false,
+      "warmupSeconds": 12.0,
+      "eventsDelivered": 0,
+      "blocks": 1688,
+      "blocksOverBudget": 0,
+      "deviceXruns": -1,
+      "device": "offline",
+      "p99BlockSeconds": 0.01153816666666667,
+      "maxBlockSeconds": 0.01191895833333333,
+      "callbackBudgetSeconds": 0.02133333333333333,
+      "peak": 0.0,
+      "localEvidence": "local/plugin-host/p1-transport-2026-09-15/mm-no-notes",
+      "transport": [
+        {
+          "sample": 0,
+          "ppq": 0,
+          "bpm": 120,
+          "playing": false
+        },
+        {
+          "sample": 192512,
+          "ppq": 0,
+          "bpm": 120,
+          "playing": true
+        },
+        {
+          "sample": 480256,
+          "ppq": 12,
+          "bpm": 90,
+          "playing": true
+        },
+        {
+          "sample": 768000,
+          "ppq": 0,
+          "bpm": 90,
+          "playing": true
+        },
+        {
+          "sample": 1055744,
+          "ppq": 9,
+          "bpm": 90,
+          "playing": false
+        },
+        {
+          "sample": 1248256,
+          "ppq": 9,
+          "bpm": 150,
+          "playing": true
+        },
+        {
+          "sample": 1439744,
+          "ppq": 19,
+          "bpm": 150,
+          "playing": false
+        }
+      ],
+      "analysis": {
+        "notes": [],
+        "wholeCapture": {
+          "peak": 0.0,
+          "rms": 0.0
+        },
+        "eventsDelivered": 0,
+        "blocksOverBudget": 0,
+        "deviceXruns": -1,
+        "device": "offline",
+        "interpretation": "Response/gap amplitudes and first threshold crossing only; no blanket no-doubling or latency certification.",
+        "passed": true
+      }
+    },
+    "md-h16-no-notes": {
+      "rate": 48000.0,
+      "block": 1024,
+      "frames": 1728000,
+      "parallel": false,
+      "warmupSeconds": 12.0,
+      "eventsDelivered": 1,
+      "blocks": 1688,
+      "blocksOverBudget": 0,
+      "deviceXruns": -1,
+      "device": "offline",
+      "p99BlockSeconds": 0.01322133333333333,
+      "maxBlockSeconds": 0.01362725,
+      "callbackBudgetSeconds": 0.02133333333333333,
+      "peak": 0.0,
+      "localEvidence": "local/plugin-host/p1-transport-2026-09-15/md-h16-no-notes",
+      "transport": [
+        {
+          "sample": 0,
+          "ppq": 0,
+          "bpm": 120,
+          "playing": false
+        },
+        {
+          "sample": 192512,
+          "ppq": 0,
+          "bpm": 120,
+          "playing": true
+        },
+        {
+          "sample": 480256,
+          "ppq": 12,
+          "bpm": 90,
+          "playing": true
+        },
+        {
+          "sample": 768000,
+          "ppq": 0,
+          "bpm": 90,
+          "playing": true
+        },
+        {
+          "sample": 1055744,
+          "ppq": 9,
+          "bpm": 90,
+          "playing": false
+        },
+        {
+          "sample": 1248256,
+          "ppq": 9,
+          "bpm": 150,
+          "playing": true
+        },
+        {
+          "sample": 1439744,
+          "ppq": 19,
+          "bpm": 150,
+          "playing": false
+        }
+      ],
+      "analysis": {
+        "notes": [],
+        "wholeCapture": {
+          "peak": 0.0,
+          "rms": 0.0
+        },
+        "eventsDelivered": 1,
+        "blocksOverBudget": 0,
+        "deviceXruns": -1,
+        "device": "offline",
+        "interpretation": "Response/gap amplitudes and first threshold crossing only; no blanket no-doubling or latency certification.",
+        "passed": true
+      }
+    },
+    "md-h16-notes": {
+      "rate": 48000.0,
+      "block": 1024,
+      "frames": 1728000,
+      "parallel": false,
+      "warmupSeconds": 12.0,
+      "eventsDelivered": 21,
+      "blocks": 1688,
+      "blocksOverBudget": 0,
+      "deviceXruns": 0,
+      "device": "MacBook Pro Speakers",
+      "p99BlockSeconds": 0.01314591666666667,
+      "maxBlockSeconds": 0.01941158333333333,
+      "callbackBudgetSeconds": 0.02133333333333333,
+      "peak": 0.05591873824596405,
+      "localEvidence": "local/plugin-host/p1-transport-2026-09-15/md-h16-notes",
+      "transport": [
+        {
+          "sample": 0,
+          "ppq": 0,
+          "bpm": 120,
+          "playing": false
+        },
+        {
+          "sample": 192512,
+          "ppq": 0,
+          "bpm": 120,
+          "playing": true
+        },
+        {
+          "sample": 480256,
+          "ppq": 11.989333333333333,
+          "bpm": 90,
+          "playing": true
+        },
+        {
+          "sample": 768000,
+          "ppq": 0,
+          "bpm": 90,
+          "playing": true
+        },
+        {
+          "sample": 1055744,
+          "ppq": 8.991999999999999,
+          "bpm": 90,
+          "playing": false
+        },
+        {
+          "sample": 1248256,
+          "ppq": 8.991999999999999,
+          "bpm": 150,
+          "playing": true
+        },
+        {
+          "sample": 1439744,
+          "ppq": 18.965333333333334,
+          "bpm": 150,
+          "playing": false
+        }
+      ],
+      "analysis": {
+        "notes": [
+          {
+            "sample": 96256,
+            "channel": 1,
+            "velocity": 100,
+            "note": 36,
+            "response": {
+              "peak": 0.05579531192779541,
+              "rms": 0.017415350099277572
+            },
+            "lateGap": {
+              "peak": 1.1920928955078125e-07,
+              "rms": 1.1920928955078125e-07
+            },
+            "renderedOnsetMs": 3.8125
+          },
+          {
+            "sample": 287744,
+            "channel": 1,
+            "velocity": 100,
+            "note": 36,
+            "response": {
+              "peak": 0.055732011795043945,
+              "rms": 0.017411089069100074
+            },
+            "lateGap": {
+              "peak": 1.1920928955078125e-07,
+              "rms": 1.1920928955078125e-07
+            },
+            "renderedOnsetMs": 4.6875
+          },
+          {
+            "sample": 384000,
+            "channel": 1,
+            "velocity": 100,
+            "note": 36,
+            "response": {
+              "peak": 0.05591881275177002,
+              "rms": 0.017374504721419607
+            },
+            "lateGap": {
+              "peak": 1.1920928955078125e-07,
+              "rms": 1.1920928955078125e-07
+            },
+            "renderedOnsetMs": 3.5208333333333335
+          },
+          {
+            "sample": 575488,
+            "channel": 1,
+            "velocity": 100,
+            "note": 36,
+            "response": {
+              "peak": 0.05578029155731201,
+              "rms": 0.017380873489790685
+            },
+            "lateGap": {
+              "peak": 1.1920928955078125e-07,
+              "rms": 1.1709732290599754e-07
+            },
+            "renderedOnsetMs": 5.875
+          },
+          {
+            "sample": 671744,
+            "channel": 1,
+            "velocity": 100,
+            "note": 36,
+            "response": {
+              "peak": 0.05581939220428467,
+              "rms": 0.017409118826424902
+            },
+            "lateGap": {
+              "peak": 1.1920928955078125e-07,
+              "rms": 1.1920928955078125e-07
+            },
+            "renderedOnsetMs": 4.6875
+          },
+          {
+            "sample": 864256,
+            "channel": 1,
+            "velocity": 100,
+            "note": 36,
+            "response": {
+              "peak": 0.05588364601135254,
+              "rms": 0.01740697520611119
+            },
+            "lateGap": {
+              "peak": 1.1920928955078125e-07,
+              "rms": 1.1920928955078125e-07
+            },
+            "renderedOnsetMs": 6.020833333333334
+          },
+          {
+            "sample": 960512,
+            "channel": 1,
+            "velocity": 100,
+            "note": 36,
+            "response": {
+              "peak": 0.05582380294799805,
+              "rms": 0.017387202823723188
+            },
+            "lateGap": {
+              "peak": 1.1920928955078125e-07,
+              "rms": 1.1920928955078125e-07
+            },
+            "renderedOnsetMs": 5.583333333333333
+          },
+          {
+            "sample": 1152000,
+            "channel": 1,
+            "velocity": 100,
+            "note": 36,
+            "response": {
+              "peak": 0.0558089017868042,
+              "rms": 0.017399801277377818
+            },
+            "lateGap": {
+              "peak": 1.1920928955078125e-07,
+              "rms": 1.1920928955078125e-07
+            },
+            "renderedOnsetMs": 4.25
+          },
+          {
+            "sample": 1343488,
+            "channel": 1,
+            "velocity": 100,
+            "note": 36,
+            "response": {
+              "peak": 0.05582761764526367,
+              "rms": 0.01741121259098367
+            },
+            "lateGap": {
+              "peak": 1.1920928955078125e-07,
+              "rms": 1.1920928955078125e-07
+            },
+            "renderedOnsetMs": 6.541666666666667
+          },
+          {
+            "sample": 1536000,
+            "channel": 1,
+            "velocity": 100,
+            "note": 36,
+            "response": {
+              "peak": 0.05590534210205078,
+              "rms": 0.01737751028754635
+            },
+            "lateGap": {
+              "peak": 1.1920928955078125e-07,
+              "rms": 1.1920928955078125e-07
+            },
+            "renderedOnsetMs": 5.729166666666666
+          }
+        ],
+        "wholeCapture": {
+          "peak": 0.05591881275177002,
+          "rms": 0.009169221918223317
+        },
+        "eventsDelivered": 21,
+        "blocksOverBudget": 0,
+        "deviceXruns": 0,
+        "device": "MacBook Pro Speakers",
+        "interpretation": "Response/gap amplitudes and first threshold crossing only; no blanket no-doubling or latency certification.",
+        "passed": true
+      }
+    },
+    "mm-notes": {
+      "rate": 48000.0,
+      "block": 1024,
+      "frames": 1728000,
+      "parallel": false,
+      "warmupSeconds": 12.0,
+      "eventsDelivered": 20,
+      "blocks": 1688,
+      "blocksOverBudget": 0,
+      "deviceXruns": 0,
+      "device": "MacBook Pro Speakers",
+      "p99BlockSeconds": 0.01128575,
+      "maxBlockSeconds": 0.01759429166666667,
+      "callbackBudgetSeconds": 0.02133333333333333,
+      "peak": 0.02742373757064342,
+      "localEvidence": "local/plugin-host/p1-transport-2026-09-15/mm-notes",
+      "transport": [
+        {
+          "sample": 0,
+          "ppq": 0,
+          "bpm": 120,
+          "playing": false
+        },
+        {
+          "sample": 192512,
+          "ppq": 0,
+          "bpm": 120,
+          "playing": true
+        },
+        {
+          "sample": 480256,
+          "ppq": 11.989333333333333,
+          "bpm": 90,
+          "playing": true
+        },
+        {
+          "sample": 768000,
+          "ppq": 0,
+          "bpm": 90,
+          "playing": true
+        },
+        {
+          "sample": 1055744,
+          "ppq": 8.991999999999999,
+          "bpm": 90,
+          "playing": false
+        },
+        {
+          "sample": 1248256,
+          "ppq": 8.991999999999999,
+          "bpm": 150,
+          "playing": true
+        },
+        {
+          "sample": 1439744,
+          "ppq": 18.965333333333334,
+          "bpm": 150,
+          "playing": false
+        }
+      ],
+      "analysis": {
+        "notes": [
+          {
+            "sample": 96256,
+            "channel": 1,
+            "velocity": 100,
+            "note": 60,
+            "response": {
+              "peak": 0.027423739433288574,
+              "rms": 0.0018743709560649169
+            },
+            "lateGap": {
+              "peak": 1.1920928955078125e-07,
+              "rms": 7.202643858513323e-08
+            },
+            "renderedOnsetMs": 2.625
+          },
+          {
+            "sample": 287744,
+            "channel": 1,
+            "velocity": 100,
+            "note": 60,
+            "response": {
+              "peak": 0.013391256332397461,
+              "rms": 0.0015275017752229409
+            },
+            "lateGap": {
+              "peak": 7.152557373046875e-07,
+              "rms": 1.0315425541446227e-07
+            },
+            "renderedOnsetMs": 2.5625
+          },
+          {
+            "sample": 384000,
+            "channel": 1,
+            "velocity": 100,
+            "note": 60,
+            "response": {
+              "peak": 0.013896346092224121,
+              "rms": 0.0014771502625057732
+            },
+            "lateGap": {
+              "peak": 1.1920928955078125e-07,
+              "rms": 7.071980194486509e-08
+            },
+            "renderedOnsetMs": 2.4375
+          },
+          {
+            "sample": 575488,
+            "channel": 1,
+            "velocity": 100,
+            "note": 60,
+            "response": {
+              "peak": 0.013968944549560547,
+              "rms": 0.0015876836782072641
+            },
+            "lateGap": {
+              "peak": 5.960464477539062e-07,
+              "rms": 1.0392831889221898e-07
+            },
+            "renderedOnsetMs": 2.5833333333333335
+          },
+          {
+            "sample": 671744,
+            "channel": 1,
+            "velocity": 100,
+            "note": 60,
+            "response": {
+              "peak": 0.014120101928710938,
+              "rms": 0.0014595626166383684
+            },
+            "lateGap": {
+              "peak": 1.1920928955078125e-07,
+              "rms": 7.192066420363261e-08
+            },
+            "renderedOnsetMs": 2.520833333333333
+          },
+          {
+            "sample": 864256,
+            "channel": 1,
+            "velocity": 100,
+            "note": 60,
+            "response": {
+              "peak": 0.014929056167602539,
+              "rms": 0.0015578704270726015
+            },
+            "lateGap": {
+              "peak": 8.344650268554688e-07,
+              "rms": 1.0462998344624247e-07
+            },
+            "renderedOnsetMs": 2.7291666666666665
+          },
+          {
+            "sample": 960512,
+            "channel": 1,
+            "velocity": 100,
+            "note": 60,
+            "response": {
+              "peak": 0.017239928245544434,
+              "rms": 0.0016398760389763833
+            },
+            "lateGap": {
+              "peak": 1.1920928955078125e-07,
+              "rms": 7.224923151985094e-08
+            },
+            "renderedOnsetMs": 2.3333333333333335
+          },
+          {
+            "sample": 1152000,
+            "channel": 1,
+            "velocity": 100,
+            "note": 60,
+            "response": {
+              "peak": 0.017769813537597656,
+              "rms": 0.0015906224018247032
+            },
+            "lateGap": {
+              "peak": 1.1920928955078125e-07,
+              "rms": 7.133610167914349e-08
+            },
+            "renderedOnsetMs": 2.458333333333333
+          },
+          {
+            "sample": 1343488,
+            "channel": 1,
+            "velocity": 100,
+            "note": 60,
+            "response": {
+              "peak": 0.02023160457611084,
+              "rms": 0.0015856187363560196
+            },
+            "lateGap": {
+              "peak": 1.1920928955078125e-07,
+              "rms": 7.238958955699872e-08
+            },
+            "renderedOnsetMs": 2.5833333333333335
+          },
+          {
+            "sample": 1536000,
+            "channel": 1,
+            "velocity": 100,
+            "note": 60,
+            "response": {
+              "peak": 0.014103174209594727,
+              "rms": 0.0016308609894598747
+            },
+            "lateGap": {
+              "peak": 1.1920928955078125e-07,
+              "rms": 7.096160016230673e-08
+            },
+            "renderedOnsetMs": 2.458333333333333
+          }
+        ],
+        "wholeCapture": {
+          "peak": 0.027423739433288574,
+          "rms": 0.0008416205314964974
+        },
+        "eventsDelivered": 20,
+        "blocksOverBudget": 0,
+        "deviceXruns": 0,
+        "device": "MacBook Pro Speakers",
+        "interpretation": "Response/gap amplitudes and first threshold crossing only; no blanket no-doubling or latency certification.",
+        "passed": true
+      }
+    },
+    "md-h16-semantics-recall": {
+      "rate": 48000.0,
+      "block": 1024,
+      "frames": 4608000,
+      "parallel": false,
+      "warmupSeconds": 12.0,
+      "eventsDelivered": 23,
+      "blocks": 4500,
+      "blocksOverBudget": 0,
+      "deviceXruns": -1,
+      "device": "offline",
+      "p99BlockSeconds": 0.01306875,
+      "maxBlockSeconds": 0.0168115,
+      "callbackBudgetSeconds": 0.02133333333333333,
+      "peak": 0.05593068152666092,
+      "localEvidence": "local/plugin-host/p1-transport-2026-09-15/md-h16-semantics-recall",
+      "transport": [
+        {
+          "sample": 0,
+          "ppq": 0,
+          "bpm": 120,
+          "playing": false
+        },
+        {
+          "sample": 192512,
+          "ppq": 0,
+          "bpm": 120,
+          "playing": true
+        },
+        {
+          "sample": 4224000,
+          "ppq": 168,
+          "bpm": 120,
+          "playing": false
+        }
+      ],
+      "analysis": {
+        "notes": [
+          {
+            "sample": 287744,
+            "channel": 1,
+            "velocity": 1,
+            "note": 36,
+            "response": {
+              "peak": 0.05577373504638672,
+              "rms": 0.017415349583908172
+            },
+            "lateGap": {
+              "peak": 1.1920928955078125e-07,
+              "rms": 1.1920928955078125e-07
+            },
+            "renderedOnsetMs": 5.4375
+          },
+          {
+            "sample": 575488,
+            "channel": 1,
+            "velocity": 32,
+            "note": 36,
+            "response": {
+              "peak": 0.055870890617370605,
+              "rms": 0.01739747510361524
+            },
+            "lateGap": {
+              "peak": 1.1920928955078125e-07,
+              "rms": 1.1920928955078125e-07
+            },
+            "renderedOnsetMs": 7.291666666666667
+          },
+          {
+            "sample": 864256,
+            "channel": 1,
+            "velocity": 64,
+            "note": 36,
+            "response": {
+              "peak": 0.055788397789001465,
+              "rms": 0.017404384113425465
+            },
+            "lateGap": {
+              "peak": 1.1920928955078125e-07,
+              "rms": 1.1920928955078125e-07
+            },
+            "renderedOnsetMs": 5.291666666666667
+          },
+          {
+            "sample": 1152000,
+            "channel": 1,
+            "velocity": 100,
+            "note": 36,
+            "response": {
+              "peak": 0.05574023723602295,
+              "rms": 0.017375006944547033
+            },
+            "lateGap": {
+              "peak": 1.1920928955078125e-07,
+              "rms": 1.1920928955078125e-07
+            },
+            "renderedOnsetMs": 4.25
+          },
+          {
+            "sample": 1439744,
+            "channel": 1,
+            "velocity": 127,
+            "note": 36,
+            "response": {
+              "peak": 0.0557558536529541,
+              "rms": 0.017415041865391858
+            },
+            "lateGap": {
+              "peak": 1.1920928955078125e-07,
+              "rms": 1.1920928955078125e-07
+            },
+            "renderedOnsetMs": 5.4375
+          },
+          {
+            "sample": 1728512,
+            "channel": 2,
+            "velocity": 100,
+            "note": 36,
+            "response": {
+              "peak": 0.0559307336807251,
+              "rms": 0.017381134706082595
+            },
+            "lateGap": {
+              "peak": 1.1920928955078125e-07,
+              "rms": 1.1920928955078125e-07
+            },
+            "renderedOnsetMs": 5.583333333333333
+          },
+          {
+            "sample": 2016256,
+            "channel": 6,
+            "velocity": 100,
+            "note": 36,
+            "response": {
+              "peak": 0.05571794509887695,
+              "rms": 0.017387172732080822
+            },
+            "lateGap": {
+              "peak": 1.1920928955078125e-07,
+              "rms": 1.1920928955078125e-07
+            },
+            "renderedOnsetMs": 6.770833333333334
+          },
+          {
+            "sample": 2304000,
+            "channel": 10,
+            "velocity": 100,
+            "note": 36,
+            "response": {
+              "peak": 0.055701375007629395,
+              "rms": 0.017374123084697112
+            },
+            "lateGap": {
+              "peak": 1.1920928955078125e-07,
+              "rms": 1.1920928955078125e-07
+            },
+            "renderedOnsetMs": 4.25
+          },
+          {
+            "sample": 2591744,
+            "channel": 16,
+            "velocity": 100,
+            "note": 36,
+            "response": {
+              "peak": 0.05567729473114014,
+              "rms": 0.017415718834395508
+            },
+            "lateGap": {
+              "peak": 1.1920928955078125e-07,
+              "rms": 1.1920928955078125e-07
+            },
+            "renderedOnsetMs": 5.4375
+          },
+          {
+            "sample": 2879488,
+            "channel": 1,
+            "velocity": 100,
+            "note": 36,
+            "response": {
+              "peak": 0.05591535568237305,
+              "rms": 0.017379346663637222
+            },
+            "lateGap": {
+              "peak": 1.1920928955078125e-07,
+              "rms": 1.1920928955078125e-07
+            },
+            "renderedOnsetMs": 5.875
+          },
+          {
+            "sample": 3168256,
+            "channel": 1,
+            "velocity": 100,
+            "note": 36,
+            "response": {
+              "peak": 0.05582833290100098,
+              "rms": 0.017409249673927468
+            },
+            "lateGap": {
+              "peak": 1.1920928955078125e-07,
+              "rms": 1.1920928955078125e-07
+            },
+            "renderedOnsetMs": 4.541666666666667
+          }
+        ],
+        "wholeCapture": {
+          "peak": 0.0559307336807251,
+          "rms": 0.00588851669184723
+        },
+        "eventsDelivered": 23,
+        "blocksOverBudget": 0,
+        "deviceXruns": -1,
+        "device": "offline",
+        "interpretation": "Response/gap amplitudes and first threshold crossing only; no blanket no-doubling or latency certification.",
+        "passed": true
+      },
+      "diagnosticCases": [
+        {
+          "second": 6,
+          "velocity": 1,
+          "channel": 1,
+          "duration": 0.25
+        },
+        {
+          "second": 12,
+          "velocity": 32,
+          "channel": 1,
+          "duration": 0.25
+        },
+        {
+          "second": 18,
+          "velocity": 64,
+          "channel": 1,
+          "duration": 0.25
+        },
+        {
+          "second": 24,
+          "velocity": 100,
+          "channel": 1,
+          "duration": 0.25
+        },
+        {
+          "second": 30,
+          "velocity": 127,
+          "channel": 1,
+          "duration": 0.25
+        },
+        {
+          "second": 36,
+          "velocity": 100,
+          "channel": 2,
+          "duration": 0.25
+        },
+        {
+          "second": 42,
+          "velocity": 100,
+          "channel": 6,
+          "duration": 0.25
+        },
+        {
+          "second": 48,
+          "velocity": 100,
+          "channel": 10,
+          "duration": 0.25
+        },
+        {
+          "second": 54,
+          "velocity": 100,
+          "channel": 16,
+          "duration": 0.25
+        },
+        {
+          "second": 60,
+          "velocity": 100,
+          "channel": 1,
+          "duration": 0.02
+        },
+        {
+          "second": 66,
+          "velocity": 100,
+          "channel": 1,
+          "duration": 1.5
+        },
+        {
+          "second": 72,
+          "velocity": 0,
+          "channel": 1,
+          "duration": 0.25
+        }
+      ]
+    },
+    "both-transport-live": {
+      "rate": 48000.0,
+      "block": 1024,
+      "frames": 1728000,
+      "parallel": true,
+      "warmupSeconds": 12.0,
+      "eventsDelivered": 40,
+      "blocks": 1688,
+      "blocksOverBudget": 0,
+      "deviceXruns": 0,
+      "device": "MacBook Pro Speakers",
+      "p99BlockSeconds": 0.01346175,
+      "maxBlockSeconds": 0.01844320833333333,
+      "callbackBudgetSeconds": 0.02133333333333333,
+      "peak": 0.06224625185132027,
+      "localEvidence": "local/plugin-host/p1-transport-2026-09-15/both-transport-live",
+      "transport": [
+        {
+          "sample": 0,
+          "ppq": 0,
+          "bpm": 120,
+          "playing": false
+        },
+        {
+          "sample": 192512,
+          "ppq": 0,
+          "bpm": 120,
+          "playing": true
+        },
+        {
+          "sample": 480256,
+          "ppq": 11.989333333333333,
+          "bpm": 90,
+          "playing": true
+        },
+        {
+          "sample": 768000,
+          "ppq": 0,
+          "bpm": 90,
+          "playing": true
+        },
+        {
+          "sample": 1055744,
+          "ppq": 8.991999999999999,
+          "bpm": 90,
+          "playing": false
+        },
+        {
+          "sample": 1248256,
+          "ppq": 8.991999999999999,
+          "bpm": 150,
+          "playing": true
+        },
+        {
+          "sample": 1439744,
+          "ppq": 18.965333333333334,
+          "bpm": 150,
+          "playing": false
+        }
+      ]
+    }
   }
 }

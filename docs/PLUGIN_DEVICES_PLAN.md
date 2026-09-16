@@ -201,7 +201,9 @@ does not auto-open hardware ports; default build and tests still work.
       Firmware selected through isolated ROM paths; chooser interaction untested.
 - [ ] Render continuously into the chosen audio device; mix both main stereo buses.
 - [ ] Send known MD trigger notes and all six MM channels; verify configured maps.
-- [ ] Supply transport data and demonstrate one sequencer owning note generation.
+- [x] Supply transport data and demonstrate one sequencer owning note generation.
+      Bounded real-plugin proof: MD after H16 selection, MM in the tested restored
+      state; arbitrary project setup and live queue/panic behavior remain open.
 - [x] Enumerate parameters and prove one level parameter changes through the host.
 - [ ] Save, mutate and restore state in fresh instances, checking kit/sound recall.
 - [ ] Record CPU, latency, startup behavior and audio stability at representative
@@ -469,3 +471,34 @@ a firm release date before P1 resolves the native hosting and timing unknowns.
 - Early startup behavior improved; dropout-free qualification and P1 remain incomplete
   for the other gates. See the startup section of `PLUGIN_HOST_P1_EVIDENCE.md` and
   `startupPreparationRuns` in the JSON summary. No P2–P7 work opened.
+
+
+### 2026-09-15 — Real-plugin transport ownership and MD trigger semantics
+
+- Added repeatable transport and capture-analysis diagnostics, leaving the native
+  host executable and shared DRS implementation unchanged.
+- MD factory playback starts on host Play even without authored notes. Selecting
+  H16 in the tested baseline silences that internal playback; MM's tested restored
+  state is already silent without authored notes. These are per-state conditions,
+  not universal factory-slot guarantees.
+- Each instrument responds to all ten authored notes across play, tempo change,
+  backward seek, stop/audition and resume, with ten quiet late gaps. Both individual
+  36-second speaker tests have zero deadline misses and zero device xruns at
+  48k/1024. The MD quiet setup survives fresh-instance state recall.
+- MD pad 1 at velocities 1..127 has essentially unchanged strength; channels
+  1/2/6/10/16 address the same pad, and short/long note-off timing does not shape
+  the tested one-shot. Future MD profiles must not promise velocity, channel
+  isolation or gated duration through this pad path. Other machines need their
+  own checks; full velocity support needs another verified MIDI route or an
+  upstream change.
+- The bounded P1 transport ownership checkbox is satisfied. Full musical
+  kit/sample recall, representative audio qualification and latency/jitter remain
+  open. P2/P3 implementation has not started; canceling stale events and cleaning
+  held notes on transport changes remain explicit P3 requirements.
+- Evidence and limits: `PLUGIN_HOST_P1_EVIDENCE.md`, `plugin-host-p1-results.json`,
+  and ignored `local/plugin-host/p1-transport-2026-09-15/`. Native regression suite
+  passes (5.36 seconds). No firmware, state or audio payload is tracked.
+
+- Final combined confirmation: MD+MM, same transport, 40 MIDI events, 36 seconds
+  at 48k/1024 parallel, zero misses/xruns. Maximum callback 18.443 ms against
+  21.333 ms. This short run does not close sustained audio qualification.

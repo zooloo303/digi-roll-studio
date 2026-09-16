@@ -209,3 +209,45 @@ One 120-second fresh-boot run passed with zero callback misses and device xruns.
 At 512 samples, paced preparation removed the early misses but later intermittent
 misses remained. See the evidence document for all runs and the latency tradeoff;
 this is not a full P1 qualification.
+
+## Real-plugin transport diagnostic
+
+Use the `host_bin` from above and a completed two-plugin baseline with original
+states and firmware symlinks:
+
+```sh
+python3 native/plugin-host/tests/gearmulator_transport.py "$host_bin" \
+  local/plugin-host/live-01 local/plugin-host/transport-md-control --model MD
+python3 native/plugin-host/tests/gearmulator_transport.py "$host_bin" \
+  local/plugin-host/live-01 local/plugin-host/transport-md-empty --model MD --pattern 127
+python3 native/plugin-host/tests/gearmulator_transport.py "$host_bin" \
+  local/plugin-host/live-01 local/plugin-host/transport-md-notes --model MD --pattern 127 \
+  --notes --device 'MacBook Pro Speakers'
+python3 native/plugin-host/tests/analyze_gearmulator_transport.py \
+  local/plugin-host/transport-md-notes
+```
+
+For MM use `--model MM`, omitting `--pattern 127`, and new output directories.
+Run the no-note control before the positive test: the original MD state plays a
+factory pattern on host Play. H16 was silent in the tested baseline; do not assume
+that slot is empty in arbitrary sessions. `--pattern` selects a pattern in the
+isolated plugin instance; it does not erase or author a pattern.
+
+`--state PATH` tests fresh-instance recall of a different snapshot. `--semantics`
+replaces the 36-second transport script with a 96-second probe of velocities
+1/32/64/100/127, channels 1/2/6/10/16, short/long note lengths and a note-off-only
+control. It probes pad 1 (MD) or note 60 (MM); changing MM channels can address
+other parts. It writes measurements, not universal compatibility assertions.
+
+The analyzer writes `analysis.json` with response and late-gap RMS/peak plus first
+rendered signal over amplitude 0.00001. Timing is relative to authored render
+frames, not a measurement of speaker latency. Neither diagnostic implements DRS
+scheduler integration, cancellation of queued events, or panic on stop/seek.
+
+Pass `--expect-silence` to the analyzer for a no-note control, or
+`--expect-authored` for the sparse positive sequence. These return failure on
+violated amplitude criteria and retain `analysis.json`. The latter requires
+all positive first-second windows above RMS 0.0001 and all final 350 ms gaps
+below RMS 0.000001. The original MD factory control must fail silence; the H16
+control and tested MM state pass. These checks do not detect every possible
+doubled onset inside an already sounding response window.
