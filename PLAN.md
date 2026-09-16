@@ -13,6 +13,9 @@ for renegotiation. Source comments across the workspace cite it by section —
 `PLAN.md §7 rule 3` and the like — and those numbers are stable. `DEVELOPMENT.md`
 is the companion: how the thing was built, and the lessons that kept repeating.
 
+Syntakt follow-up contributions after PR #7 are scoped in
+[SYNTAKT-CONTRIBUTOR-PLAN.md](SYNTAKT-CONTRIBUTOR-PLAN.md).
+
 > **On what this file used to be, and what it became.** Through development this
 > was a 4,000-line working document carrying every phase in full, plus a session
 > log beside it. Both were trimmed for the public repo — the blow-by-blow went,
