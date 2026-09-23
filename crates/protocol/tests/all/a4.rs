@@ -31,6 +31,20 @@
 
 use crate::common::{a4_pattern, a4_working_pattern, fixture_bytes};
 
+#[test]
+fn changing_only_the_loaded_kit_changes_only_the_kit_reference() {
+    // Same A05, Kit 2 then Kit 5, 2026-09-22. Both working-pattern reads
+    // matched these stored reads; switching back restored all original bytes.
+    let kit2 = a4_pattern("analogfour-A05-kit02-2026-09-22.syx");
+    let kit5 = a4_pattern("analogfour-A05-kit05-2026-09-22.syx");
+    assert_eq!((kit2.slot, kit5.slot), (4, 4));
+    let differences: Vec<_> = kit2.payload.iter().zip(&kit5.payload).enumerate()
+        .filter_map(|(i, (&a, &b))| (a != b).then_some((i, a, b)))
+        .collect();
+    assert_eq!(differences, vec![(12_962, 1, 4)]);
+    assert_eq!(digi_protocol::a4_pattern::KIT_INDEX, 12_962);
+}
+
 use digi_protocol::a4_pattern::{
     build_pattern, build_trig_probe, describe_offset, effective_length, effective_velocity, note_name, parse_pattern, read_track_states,
     read_track_trigs, set_note_trig, set_trig_condition, set_trig_length, set_trig_micro_timing,
@@ -272,8 +286,8 @@ fn one_deliberate_trigless_trig_is_two_bytes_and_byte_zero_is_not_one_of_them() 
     let trigless = a4_pattern(TRIGLESS).payload;
 
     let diffs: Vec<usize> = (0..PAYLOAD_LEN).filter(|&i| clear[i] != trigless[i]).collect();
-    // Byte 5 is SYN1 step 1's second trig byte; 12,962 is the slot marker, which
-    // moves because saving the pattern is what made the second capture possible.
+    // Byte 5 is SYN1 step 1's second trig byte; 12,962 is the kit reference,
+    // also changed between these captures (originally misnamed slot marker).
     assert_eq!(diffs, vec![5, 12_962], "two bytes in 12,974");
     assert_eq!((clear[4], clear[5]), (0x00, 0x00));
     assert_eq!((trigless[4], trigless[5]), (0x00, 0x02));

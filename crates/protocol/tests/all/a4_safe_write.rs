@@ -27,7 +27,7 @@ use std::rc::Rc;
 use crate::common::fixture_bytes;
 use digi_protocol::a4_pattern::{
     parse_pattern, read_track_trigs, track_base, CONDITION_LANE, DUMP_A4_PATTERN, LENGTH_LANE,
-    MICRO_TIMING_LANE, NOTE_LANE, NUM_STEPS, SLOT_MARKER, TRACK_STRIDE, VELOCITY_LANE,
+    KIT_INDEX, MICRO_TIMING_LANE, NOTE_LANE, NUM_STEPS, TRACK_STRIDE, VELOCITY_LANE,
 };
 use digi_protocol::backup_stash::Stash;
 use digi_protocol::device::{identity_from_responses, DeviceIdentity, DeviceResponse};
@@ -212,8 +212,7 @@ fn the_whole_ceremony_runs_in_order_and_verifies_byte_identical() {
 #[test]
 fn the_write_composes_on_the_destination_and_touches_only_the_named_lanes() {
     // The RMW promise, byte for byte: everything outside SYN2's four written
-    // lanes is the destination's own, plus the one slot-marker byte the box
-    // itself writes on every save.
+    // lanes is the destination's own, including the entire pattern tail.
     //
     // **The p-lock pool above all, and it is `plocks: None` that keeps it so.**
     // Since 2026-09-01 a write *can* rebuild the pool; this write does not ask
@@ -241,7 +240,7 @@ fn the_write_composes_on_the_destination_and_touches_only_the_named_lanes() {
     ];
     let differing: Vec<usize> = (0..before.len())
         .filter(|i| before[*i] != after[*i])
-        .filter(|i| !written.iter().any(|r| r.contains(i)) && *i != SLOT_MARKER)
+        .filter(|i| !written.iter().any(|r| r.contains(i)))
         .collect();
     assert!(
         differing.is_empty(),
@@ -251,6 +250,28 @@ fn the_write_composes_on_the_destination_and_touches_only_the_named_lanes() {
     );
     // And the untouched slot is untouched entirely.
     assert_eq!(box_.slots[&15], a4_payload(A16), "the other slot must not move");
+}
+
+#[test]
+fn a05_preserves_the_fetched_tail_when_its_kit_differs_from_the_pattern_number() {
+    // Real A05 / Kit 2 capture from the kit-only experiment on 2026-09-22,
+    // plus a synthetic FF case: even an unknown sentinel must be preserved.
+    for value in [1, 0xff] {
+        let mut before = a4_payload("analogfour-A05-kit02-2026-09-22.syx");
+        before[KIT_INDEX] = value;
+        let mut box_ = FakeA4::new();
+        box_.slots.insert(4, before.clone());
+        let stash = tmp_stash(&format!("a05-tail-{value}"));
+        let mut hooks = Recorder::default();
+        let result =
+            a4_safe_write_tracks(&mut box_, &stash, &[syn2_write(4)], &mut hooks, NOW).unwrap();
+
+        assert!(result.ok);
+        assert_eq!(result.written, 3);
+        assert_eq!(&box_.slots[&4][12_958..], &before[12_958..]);
+        assert_eq!(hooks.backups[0].payload, before);
+        assert_eq!(box_.log(), vec!["fetch 4", "send 4", "fetch 4"]);
+    }
 }
 
 #[test]

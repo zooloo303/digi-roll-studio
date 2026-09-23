@@ -50,7 +50,7 @@
 //!   0      4          header
 //!   4      6 × 751    tracks — SYN1..SYN4, FX, CV
 //!   4510   128 × 66   the p-lock pool (crate::a4_plocks)
-//!   12958  16         tail; the slot marker at +4 (byte 12,962)
+//!   12958  16         tail; kit reference at +4 (byte 12,962)
 //! ```
 //!
 //! Inside a 751-byte track, measured across 18 track-instances in three
@@ -454,8 +454,8 @@ pub fn describe_offset(off: usize) -> String {
     }
     let tracks_end = TRACK_BASE + NUM_TRACKS * TRACK_STRIDE;
     if off >= tracks_end {
-        if off == SLOT_MARKER {
-            return "pattern: slot marker".to_owned();
+        if off == KIT_INDEX {
+            return "pattern: kit reference".to_owned();
         }
         let rel = off - tracks_end;
         if rel < crate::a4_plocks::NUM_LANES * crate::a4_plocks::LANE_SIZE {
@@ -491,9 +491,14 @@ pub fn describe_offset(off: usize) -> String {
     format!("{name} +{rel} (per-track, unnamed)")
 }
 
-/// Byte 12,962 tracks the slot index — `FF` in a pattern the box has never
-/// saved, the zero-based slot in every dump taken after a save.
-pub const SLOT_MARKER: usize = 12_962;
+/// Zero-based kit reference. Hardware-confirmed 2026-09-22: switching A05
+/// from Kit 2 to Kit 5 and back changed only this byte, 1 → 4 → 1, in both
+/// stored and working pattern dumps. Preserve it on track writes, including
+/// `FF`, whose meaning has not been established by that experiment.
+pub const KIT_INDEX: usize = 12_962;
+
+/// Legacy name from captures whose pattern and kit numbers coincided.
+pub const SLOT_MARKER: usize = KIT_INDEX;
 
 /// Byte 1 bit 0: this trig plays a note.
 pub const TRIG_NOTE: u8 = 0x01;

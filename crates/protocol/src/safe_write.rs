@@ -962,7 +962,7 @@ pub fn a4_safe_write_tracks(
     use crate::a4_pattern::{
         clear_trig, read_track_trigs, set_note_trig, set_trig_arp_notes, set_trig_condition,
         set_trig_length, set_trig_micro_timing, set_trig_velocity, slot_name, trig_offset,
-        trig_state, TrigState, NUM_STEPS, NUM_TRACKS, PAYLOAD_LEN, SLOT_MARKER,
+        trig_state, TrigState, NUM_STEPS, NUM_TRACKS, PAYLOAD_LEN,
     };
 
     let gate = write_gate(device.identity());
@@ -1177,11 +1177,12 @@ pub fn a4_safe_write_tracks(
         }
     }
 
-    // The payload's own slot marker. Fetched from this very slot it already
-    // agrees — except on a slot the box has never saved, where it reads FF, and
-    // the box itself writes the slot here on every save. Doing the same is the
-    // one byte this write touches outside the named tracks' lanes.
-    payload[SLOT_MARKER] = index;
+    // Preserve the entire pattern tail from the fresh destination read. Byte
+    // 12,962 was previously forced to `index` as a presumed slot marker, but
+    // the 2026-09-22 kit-only captures prove it is the kit reference: A05 with
+    // Kit 2 / Kit 5 / Kit 2 changes only that byte, 1 / 4 / 1. Forcing it to 4
+    // selected Kit 5. The SysEx header already addresses the destination;
+    // track edits must not replace this byte (including an FF sentinel).
 
     hooks.on_status(&match writes {
         [only] => format!("Writing {label} T{}…", only.track_index + 1),

@@ -4084,6 +4084,32 @@ the warning meaningless.
 
 #### Why a pattern-to-kit link was looked for and not used
 
+**2026-09-22 correction, hardware-confirmed:** byte 12,962 is the zero-based
+kit reference, not the pattern slot. With A05 selected throughout, Neil loaded
+Kit 2 → Kit 5 → Kit 2. Both stored (`0x64`) and working (`0x6a`) pattern dumps
+changed exactly one byte, 12,962: `1 → 4 → 1`. The working kit (`0x68`)
+reported indices `1 → 4 → 1`; all three final payloads matched the original
+baseline byte for byte. Every capture passed checksum/count validation.
+The two distinct stored patterns are fixtures `analogfour-A05-kit02-2026-09-22.syx`
+and `analogfour-A05-kit05-2026-09-22.syx`; full captures/logs are under
+`local/a4-check/kit-assignment-2026-09-22/`.
+
+The safe-write path forced this byte to the pattern index, explaining A05
+switching to Kit 5. That replacement is removed; the entire destination tail
+is preserved from the fresh read. The regression uses the real Kit 2 capture
+and a synthetic `FF` sentinel (whose meaning remains unknown). Earlier claims
+that this is a pattern-slot marker, including the historical paragraph below,
+are superseded.
+
+**Patched write check:** Neil then reported writing A05 from the patched app
+and confirmed Kit 2 stayed selected. Post-write captures in
+`04-a05-after-patched-write/` passed checksum/count validation: kit reference
+remained `1`, and the full 2,410-byte working kit matched the pre-write capture
+byte for byte. Both pattern payloads also matched the pre-write capture, so
+this check records kit preservation after the reported write, not independent
+proof that a changed pattern was stored. No deliberate unsaved kit edit was
+introduced during this test.
+
 The obvious alternative — mirror the digis, ask for the kit belonging to the
 slot the picker names — needs the pattern to say which kit it uses. **No byte in
 the A4's 12,974-byte pattern payload does.** Scanned across all 128 patterns of
