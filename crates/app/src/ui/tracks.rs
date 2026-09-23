@@ -701,7 +701,7 @@ fn handle_clipboard_shortcuts(ui: &Ui, session: &mut Session, selection: Selecti
 /// the collision from both ends: the roll's own guard is "nothing holds
 /// focus", so a focused cell silences its Delete for exactly as long as the
 /// grid owns the key, and clicking back into the roll hands it straight back
-/// (egui surrenders focus on a press elsewhere).
+/// (the roll explicitly surrenders focus for pointer gestures, including drags).
 ///
 /// Shift+C/Shift+V need none of this — no other pane binds them — and stay on
 /// the selection, so a copy still works with the roll focused.

@@ -1755,6 +1755,18 @@ impl PianoRoll {
     ) -> bool {
         let mut changed = false;
 
+        // Dragging does not count as an outside click for egui's focus handling.
+        // Release the track cell (or edited field) as soon as a roll gesture
+        // starts, so Delete acts on the notes even after a marquee-only selection.
+        // The roll's shortcuts use no keyboard focus as their active state.
+        if response.is_pointer_button_down_on() {
+            response.ctx.memory_mut(|m| {
+                if let Some(id) = m.focused() {
+                    m.surrender_focus(id);
+                }
+            });
+        }
+
         // A press in the gutter is on the (future) keyboard, not on step 0 —
         // without this, `step_at` comes back negative there and the clamp below
         // would turn a gutter click into a note on the downbeat.
@@ -3073,6 +3085,60 @@ mod tests {
         want.sort();
         assert_eq!(ids(&roll), want, "both rows the band crossed");
         assert!(!roll.selected.contains(&c), "and not the row it never reached");
+    }
+
+    #[test]
+    fn marquee_after_track_focus_deletes_only_selected_notes() {
+        for key in [egui::Key::Delete, egui::Key::Backspace] {
+            let ctx = egui::Context::default();
+            let grid = live_grid();
+            let mut roll = PianoRoll::default();
+            let mut track = Track::new(0, TrackKind::Audio);
+            let (a, b, c) = spread(&mut track);
+            let cell = egui::Id::new("focused-track-cell");
+            let mut frame = |events, modifiers, focus_cell| {
+                let mut changed = false;
+                let mut all = vec![egui::Event::ModifiersChanged(modifiers)];
+                all.extend(events);
+                let mut output = ctx.run_ui(egui::RawInput {
+                    events: all,
+                    screen_rect: Some(TEST_RECT),
+                    ..Default::default()
+                }, |ui| {
+                    // Keep a real focusable track-cell stand-in alive across frames.
+                    let response = ui.interact(
+                        Rect::from_min_size(Pos2::ZERO, Vec2::splat(20.0)),
+                        cell,
+                        egui::Sense::click(),
+                    );
+                    if focus_cell {
+                        response.request_focus();
+                    }
+                    let response = ui.allocate_rect(TEST_RECT, egui::Sense::click_and_drag());
+                    changed = roll.interact(&response, &grid, &mut track, &Harmony::default());
+                });
+                output.textures_delta.clear();
+                changed
+            };
+            frame(vec![], egui::Modifiers::NONE, true);
+            assert_eq!(ctx.memory(|m| m.focused()), Some(cell));
+            let mods = egui::Modifiers::COMMAND;
+            let from = Pos2 { x: grid.x_of_step(1.5), y: grid.y_of_pitch(84) - 4.0 };
+            let to = Pos2 { x: grid.x_of_step(5.5), y: grid.y_of_pitch(83) + 4.0 };
+            frame(vec![egui::Event::PointerMoved(from), button_with(from, true, mods)], mods, false);
+            frame(vec![egui::Event::PointerMoved(to)], mods, false);
+            frame(vec![button_with(to, false, mods)], mods, false);
+            assert_eq!(ctx.memory(|m| m.focused()), None, "marquee must disarm track deletion");
+            assert!(frame(vec![egui::Event::Key {
+                key,
+                physical_key: None,
+                pressed: true,
+                repeat: false,
+                modifiers: egui::Modifiers::NONE,
+            }], egui::Modifiers::NONE, false));
+            assert_eq!(track.notes.iter().map(|n| n.id).collect::<Vec<_>>(), vec![c]);
+            assert!(!track.notes.iter().any(|n| n.id == a || n.id == b));
+        }
     }
 
     #[test]
