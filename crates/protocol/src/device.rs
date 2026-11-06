@@ -70,6 +70,28 @@ pub fn product_for_slug(slug: &str) -> Option<&'static Product> {
     PRODUCTS.iter().find(|p| p.slug == slug)
 }
 
+/// Boxes that answer the identity API under a name of their own but ride an
+/// existing row, because they are the same generation on the wire.
+///
+/// The Analog Keys is the Analog Four MKI with a keyboard: Elektron's own
+/// device-id list puts both on `0x06`, so its dumps are the gen-1 A4 format
+/// (`PLAN.md` §10, and the parameter appendix the A4 table was built from is
+/// the *Analog Keys* 1.51C manual). Its `0x01` product id has not been captured
+/// here, so the name is what seats it — deliberately on the `analogfour` slug,
+/// so the A4 transfer, preset and write paths apply unchanged rather than
+/// growing a second model with its own copy of each.
+const NAME_ALIASES: &[(&str, &str)] = &[("analog keys", "analogfour")];
+
+/// The product a box reports a name for, for the rows in [`NAME_ALIASES`].
+/// Substring, case-insensitive, like [`product_from_port_name`].
+pub fn product_for_reported_name(name: &str) -> Option<&'static Product> {
+    let lower = name.to_lowercase();
+    NAME_ALIASES
+        .iter()
+        .find(|(alias, _)| lower.contains(alias))
+        .and_then(|(_, slug)| product_for_slug(slug))
+}
+
 /// Which box a dump *file* came off, from its family byte.
 ///
 /// The handshake is the real answer, but a pattern read off a `.syx` on disk
@@ -96,6 +118,9 @@ pub fn product_for_family(family: u8) -> Option<&'static Product> {
 /// every caller must treat that as "don't know" rather than as a default.
 pub fn product_from_port_name(port_name: &str) -> Option<&'static Product> {
     let lower = port_name.to_lowercase();
+    if let Some(alias) = product_for_reported_name(&lower) {
+        return Some(alias);
+    }
     let mut candidates: Vec<&Product> = PRODUCTS.iter().collect();
     candidates.sort_by_key(|p| std::cmp::Reverse(p.name.len()));
     candidates
@@ -253,11 +278,20 @@ pub fn parse_version_response(args: &[u8]) -> Result<(String, String), DeviceErr
 /// keys off. An unrecognised product keeps the name the box reported and is
 /// marked unsupported rather than being guessed into a default.
 pub fn identity_from_responses(dev: &DeviceResponse, build: String, version: String) -> DeviceIdentity {
-    let product = product_for_id(dev.product_id);
-    let name = product
-        .map(|p| p.name.to_string())
-        .or_else(|| (!dev.reported_name.is_empty()).then(|| dev.reported_name.clone()))
-        .unwrap_or_else(|| format!("Elektron device #{}", dev.product_id));
+    let by_id = product_for_id(dev.product_id);
+    let product = by_id.or_else(|| product_for_reported_name(&dev.reported_name));
+    // A box seated by name keeps its own name on screen: an Analog Keys that
+    // rides the analogfour row must not be labelled "Analog Four".
+    let name = match by_id {
+        Some(p) => p.name.to_string(),
+        None => {
+            if dev.reported_name.is_empty() {
+                format!("Elektron device #{}", dev.product_id)
+            } else {
+                dev.reported_name.clone()
+            }
+        }
+    };
     DeviceIdentity {
         product_id: dev.product_id,
         supported_ids: dev.supported_ids.clone(),
@@ -348,6 +382,22 @@ mod tests {
         assert_eq!(slug_from_port_name("digitakt ii"), Some("digitakt2"));
         assert_eq!(slug_from_port_name("Scarlett 2i2"), None);
         assert_eq!(slug_from_port_name(""), None);
+    }
+
+    // The Analog Keys shares the A4's gen-1 dump family but not its name, so it
+    // has to be seated by name or auto-connect never even asks who it is.
+    #[test]
+    fn an_analog_keys_rides_the_analog_four_row() {
+        assert_eq!(slug_from_port_name("Elektron Analog Keys"), Some("analogfour"));
+
+        let mut args = vec![99, 0];
+        args.extend_from_slice(b"Analog Keys\0");
+        let dev = parse_device_response(&args).unwrap();
+        let id = identity_from_responses(&dev, "0201".into(), "1.55D".into());
+        assert_eq!(id.slug, "analogfour");
+        assert_eq!(id.family, Some(FAMILY_ANALOG_FOUR));
+        assert_eq!(id.name, "Analog Keys", "the box's own name stays on screen");
+        assert!(id.supported());
     }
 
     #[test]

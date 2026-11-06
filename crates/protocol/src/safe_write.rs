@@ -91,6 +91,13 @@ pub const WRITE_ALLOWED_BUILDS: &[(&str, &[&str])] = &[
     // wrote — send, re-read and compare, at trig rather than byte granularity.
     // The full byte-for-byte verify is what `a4_safe_write_tracks` runs on
     // every write, so the first send through it completes this row's evidence.
+    //
+    // This row covers the Analog Keys too, which seats itself on the
+    // `analogfour` slug by name (`protocol::device::NAME_ALIASES`) because it
+    // shares the A4's gen-1 dump family. Its build is checked against these
+    // same two entries — an Analog Keys on any other build stays read-only
+    // until someone runs the round trip on it, for the same reason as any other
+    // box. No Analog Keys write has been run here.
     ("analogfour", &["0195", "0201"]), // 1.55B, 1.55D
     // 1.40. Verified 2026-09-11 on hardware, with a control: six sends into six
     // empty slots, each carrying a different edit, each read back and compared.
