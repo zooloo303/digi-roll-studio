@@ -117,16 +117,18 @@ fn main() {
 
     std::fs::create_dir_all(&dir).expect("could not make the capture folder");
     let previous = std::fs::read_to_string(dir.join("last.txt")).ok().map(|s| s.trim().to_string());
-    let stem = dir.join(&label);
-    std::fs::write(stem.with_extension("bin"), &first.payload).expect("could not write the payload");
-    std::fs::write(stem.with_extension("syx"), &first.raw).expect("could not write the frame");
+    // Named by hand, not `with_extension`: a label like `reso-53.27` has a dot
+    // in it that is not an extension.
+    let file = |label: &str, ext: &str| dir.join(format!("{label}.{ext}"));
+    std::fs::write(file(&label, "bin"), &first.payload).expect("could not write the payload");
+    std::fs::write(file(&label, "syx"), &first.raw).expect("could not write the frame");
     std::fs::write(dir.join("last.txt"), &label).expect("could not write last.txt");
     let meta = format!("{label}\tslot {index}\tbuild {}\tversion {}\n", id.build, id.version);
     let log = dir.join("captures.tsv");
     let mut all = std::fs::read_to_string(&log).unwrap_or_default();
     all.push_str(&meta);
     std::fs::write(&log, all).expect("could not write captures.tsv");
-    println!("saved {}", stem.with_extension("bin").display());
+    println!("saved {}", file(&label, "bin").display());
 
     let now = records(&first.payload);
     println!("\np-lock records in use: {}", now.len());
@@ -138,7 +140,10 @@ fn main() {
         println!("\n(first capture in this folder — nothing to compare)");
         return;
     };
-    let Ok(before) = std::fs::read(dir.join(&prev).with_extension("bin")) else { return };
+    let Ok(before) = std::fs::read(file(&prev, "bin")) else {
+        println!("\n(could not read {prev}.bin to compare)");
+        return;
+    };
     let changed: Vec<usize> = (0..first.payload.len().min(before.len())).filter(|&i| first.payload[i] != before[i]).collect();
     println!("\nsince {prev}: {} bytes changed", changed.len());
     let outside: Vec<usize> = changed.iter().copied().filter(|&i| !(PLOCK_POOL..PLOCK_POOL + PLOCK_RECORDS * PLOCK_RECORD_BYTES).contains(&i)).collect();
