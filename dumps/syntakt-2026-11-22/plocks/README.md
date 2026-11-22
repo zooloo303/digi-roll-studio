@@ -49,10 +49,16 @@ modes) while the third knob is SUS = 42.
   after RESO (29) on track 9 went in front of it (`11-…`).
 - Removing a lock by deleting and re-placing the trig returned the pattern
   **byte-identical** to the baseline (`04-back`, `08-back` = `00-baseline`).
-- **Deleting a trig clears its records**, twice: track 9's (nine records,
-  between `19` and `20`, an accidental TRIG press) and track 1's (six, `26`).
-  The step word left behind differed: `0x0000` for track 9, `0x0380` for
-  track 1 (only bit 0 cleared). Not explained.
+- **Deleting a trig clears its records**, both ways it was done:
+  - track 9's trig, removed alone with its TRIG key (an accidental press,
+    between `19` and `20`): nine records gone, and the step word went back to
+    `0x0000`;
+  - track 1's, removed by **clearing the sequence** (every track's trigs at
+    once, `26`): six records gone, and the step word was left at **`0x0380`** —
+    only bit 0 cleared, the other bits kept. Every other track was already
+    empty, so nothing else moved.
+  So a step word with residual bits and no trig bit is what a sequence clear
+  leaves; a single-trig delete leaves none.
 - A knob turned **without a trig held** changes the kit and **not one byte of
   the pattern** (`00b-…`, `08b-…`).
 

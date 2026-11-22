@@ -527,12 +527,13 @@ mod measured_plock_tests {
 
     #[test]
     fn deleting_a_trig_clears_its_locks() {
-        // Track 9's trig went (by accident) between 19 and 20, and its nine
-        // records with it; track 1's went at the end, and its six with it.
+        // Track 9's trig was removed alone with its TRIG key between 19 and
+        // 20 (nine records went with it); track 1's by clearing the whole
+        // sequence at the end (six went).
         assert!(plock_values(&capture("20-t1-sybits-amp-atk-51")).iter().all(|r| r.1 == 0));
         assert!(plock_values(&capture("26-final-cleared")).is_empty());
-        // What the step word is left holding differs: 0x0000 for track 9,
-        // 0x0380 for track 1 (only the low bit cleared). Not explained yet.
+        // A single-trig delete leaves the step word at 0x0000; a sequence
+        // clear only clears bit 0 and leaves 0x0380 — residue, not a trig.
         let t9 = capture("20-t1-sybits-amp-atk-51");
         assert_eq!(&t9[7868..7870], &[0x00, 0x00]);
         assert_eq!(&capture("26-final-cleared")[4..6], &[0x03, 0x80]);
