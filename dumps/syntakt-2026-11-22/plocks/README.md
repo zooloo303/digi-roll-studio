@@ -4,7 +4,7 @@ Contributor plan item 1 ("map a small useful set of p-lock parameters").
 Read-only: every file is a `0x61` reply (pattern alone, 27,136 bytes) for
 pattern **A01 (slot 0)**, taken with `crates/app/examples/syntakt_plock_capture.rs`,
 which reads twice and refuses to save if the two reads differ. Nothing was sent
-to the box but dump requests.
+to the box but the identity request and pattern dump requests.
 
 Box: Syntakt, product 30, **OS 1.42, build 0097**, USB, macOS.
 Track 1: **SY BITS** (digital). Track 9: **SD HARD** (analog).
@@ -23,9 +23,12 @@ Every lock is on **TRIG 1** of its track. `captures.tsv` lists the order.
 | 43 | AMP REL (ADSR) | raw / 256 | 1 |
 | 44 | AMP DELAY send | raw / 256 | 9 |
 | 45 | AMP REVERB send | raw / 256 | 9 |
-| 46 | AMP PAN | raw / 256 − 64 (L64 = 0x0000, R47 = 0x6F00) | 9 |
+| 46 | AMP PAN | raw / 256 − 64 (L64 = 0x0000, R47 = 0x6F00; centre not captured) | 9 |
 | 47 | AMP VOL | raw / 256 | 1, 9 |
 | 49 | AMP envelope mode (AMP page 2) | high byte: ADSR = 1. AHD = 0 is presumed, not captured, so the table leaves 0 unnamed | 1 |
+
+PAN was captured at L64 and R47 only. Centre = 64 (shown `C`) follows from
+those two points but was not captured itself.
 
 FREQ, RESO, ATK and VOL carry **the same ID on a digital and an analog
 machine**. The others were measured on one track each; do not assume more.

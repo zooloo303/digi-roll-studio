@@ -372,7 +372,8 @@ pub enum PlockScale {
     /// knob is turned finely; the screen truncates it to two decimals
     /// (`0x45b0` = 69.6875 shows as 69.68).
     Unsigned,
-    /// display = raw / 256 − 64: PAN, `L64` = 0, centre = 64, `R47` = 111.
+    /// display = raw / 256 − 64: PAN, `L64` = 0 and `R47` = 111 captured;
+    /// centre = 64 (shown `C`) follows from them but was not captured.
     Centred,
     /// The high byte picks an entry. An empty name is an entry not captured
     /// yet, shown by its number: envelope mode 1 = ADSR was captured, and 0 is

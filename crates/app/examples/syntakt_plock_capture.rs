@@ -2,15 +2,21 @@
 // plan, item 1 (SYNTAKT-CONTRIBUTOR-PLAN.md): "change one setting at a time;
 // capture before, after and return-to-baseline".
 //
-// **Read-only, structurally.** It asks for the stored pattern with `0x61`
-// through `fetch_dump`, whose guard admits only the 0x60–0x6e request range.
-// Nothing is ever stored to the box. The live pattern's slot reflects edits
+// **Read-only, structurally.** It sends two kinds of request and nothing
+// else: the identity request (to check the box is a Syntakt and record its
+// OS build), and the stored pattern with `0x61` through `fetch_dump`, whose
+// guard admits only the 0x60–0x6e request range. Nothing is ever stored to
+// the box. The live pattern's slot reflects edits
 // made on the box without saving (measured 2026-09-10, stride-H01).
 //
 // Each run reads the slot twice (two reads that disagree are refused — an
 // echo, or the box still settling), writes `<label>.bin` / `.syx` into the
 // capture folder, prints every p-lock record with its raw values, and prints
 // what changed since the previous capture in that folder.
+//
+// A capture is evidence, so it is never overwritten: a label already in the
+// folder is refused before the box is asked anything. A label is a file name
+// of letters, digits, `.`, `_` and `-` only; `--index` must be 0–127.
 //
 //   cargo run -p digi_roll_studio --example syntakt_plock_capture -- --slot H01 --label 00-baseline
 //   cargo run -p digi_roll_studio --example syntakt_plock_capture -- --slot H01 --label 01-reso-t1-s1-64
@@ -43,6 +49,14 @@ fn slot_index(slot: &str) -> Option<u8> {
     Some((bank as u8 - b'A') * 16 + n - 1)
 }
 
+/// A label that is safe as a file name in the capture folder: letters,
+/// digits, `.`, `_` and `-`, not starting with `.` (so never `..`).
+fn label_ok(label: &str) -> bool {
+    !label.is_empty()
+        && !label.starts_with('.')
+        && label.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-'))
+}
+
 /// `(record, param, track, [(step, raw)])` for every record in use.
 fn records(p: &[u8]) -> Vec<(usize, u8, u8, Vec<(usize, u16)>)> {
     (0..PLOCK_RECORDS)
@@ -72,18 +86,32 @@ fn show(values: &[(usize, u16)]) -> String {
 }
 
 fn main() {
-    let Some(index) = arg("--slot").and_then(|s| slot_index(&s)).or_else(|| arg("--index").and_then(|s| s.parse().ok())) else {
-        println!("say which pattern the box is on: --slot H01 (or --index 112)");
+    let index = arg("--slot")
+        .and_then(|s| slot_index(&s))
+        .or_else(|| arg("--index").and_then(|s| s.parse::<u8>().ok()).filter(|i| *i < 128));
+    let Some(index) = index else {
+        println!("say which pattern the box is on: --slot H01 (or --index 0–127)");
         return;
     };
     let Some(label) = arg("--label") else {
         println!("give the capture a name: --label 01-reso-t1-s1-64");
         return;
     };
+    if !label_ok(&label) {
+        println!("{label:?} is not a usable name — letters, digits, '.', '_' and '-' only, not starting with '.'");
+        return;
+    }
     let dir = PathBuf::from(arg("--dir").unwrap_or_else(|| {
         let today = std::process::Command::new("date").arg("+%Y-%m-%d").output().ok().map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string()).unwrap_or_default();
         format!("dumps/syntakt-{today}/plocks")
     }));
+    // Named by hand, not `with_extension`: a label like `reso-53.27` has a dot
+    // in it that is not an extension.
+    let file = |label: &str, ext: &str| dir.join(format!("{label}.{ext}"));
+    if file(&label, "bin").exists() || file(&label, "syx").exists() {
+        println!("{} already holds a capture called {label:?} — nothing asked, nothing saved. Pick a new label", dir.display());
+        return;
+    }
     let fragment = arg("--port").unwrap_or_else(|| "Syntakt".to_string());
 
     let inputs = list_inputs().expect("MIDI would not start");
@@ -117,11 +145,17 @@ fn main() {
 
     std::fs::create_dir_all(&dir).expect("could not make the capture folder");
     let previous = std::fs::read_to_string(dir.join("last.txt")).ok().map(|s| s.trim().to_string());
-    // Named by hand, not `with_extension`: a label like `reso-53.27` has a dot
-    // in it that is not an extension.
-    let file = |label: &str, ext: &str| dir.join(format!("{label}.{ext}"));
-    std::fs::write(file(&label, "bin"), &first.payload).expect("could not write the payload");
-    std::fs::write(file(&label, "syx"), &first.raw).expect("could not write the frame");
+    // `create_new`: refused again here, in case the label appeared while the
+    // box was being read.
+    let new = |path: PathBuf, bytes: &[u8]| {
+        use std::io::Write as _;
+        std::fs::OpenOptions::new().write(true).create_new(true).open(&path).and_then(|mut f| f.write_all(bytes))
+    };
+    if let Err(e) = new(file(&label, "bin"), &first.payload) {
+        println!("could not save {}: {e} — nothing saved", file(&label, "bin").display());
+        return;
+    }
+    new(file(&label, "syx"), &first.raw).expect("could not write the frame");
     std::fs::write(dir.join("last.txt"), &label).expect("could not write last.txt");
     let meta = format!("{label}\tslot {index}\tbuild {}\tversion {}\n", id.build, id.version);
     let log = dir.join("captures.tsv");
