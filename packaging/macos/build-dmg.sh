@@ -34,9 +34,17 @@ VERSION="$(sed -n '/^\[workspace\.package\]/,/^\[/p' Cargo.toml \
            | sed -n 's/^version *= *"\([^"]*\)".*/\1/p' | head -1)"
 [ -n "$VERSION" ] || { echo "could not read version from Cargo.toml" >&2; exit 1; }
 
-DIST="$ROOT/dist"
+DIST="${DRS_DIST_DIR:-$ROOT/dist}"
+BUNDLE_VERSION="${DRS_BUNDLE_VERSION:-$VERSION}"
+case "$DIST" in
+  /*) ;;
+  *) DIST="$ROOT/$DIST" ;;
+esac
+[[ "$BUNDLE_VERSION" =~ ^[0-9]+(\.[0-9]+)*$ ]] || {
+  echo "DRS_BUNDLE_VERSION must contain only dot-separated numbers" >&2; exit 1;
+}
 APP="$DIST/$APP_NAME.app"
-DMG="$DIST/Digi-Roll-Studio-$VERSION-macOS-AppleSilicon.dmg"
+DMG="$DIST/Digi-Roll-Studio-$BUNDLE_VERSION-macOS-AppleSilicon.dmg"
 
 say() { printf '\033[1m==>\033[0m %s\n' "$*"; }
 
@@ -112,7 +120,7 @@ cat > "$APP/Contents/Info.plist" <<PLIST
 	<key>CFBundleExecutable</key>			<string>$APP_NAME</string>
 	<key>CFBundleIconFile</key>			<string>AppIcon</string>
 	<key>CFBundleShortVersionString</key>		<string>$VERSION</string>
-	<key>CFBundleVersion</key>			<string>$VERSION</string>
+	<key>CFBundleVersion</key>			<string>$BUNDLE_VERSION</string>
 	<key>LSMinimumSystemVersion</key>		<string>$MIN_MACOS</string>
 	<key>LSApplicationCategoryType</key>		<string>$CATEGORY</string>
 	<!-- Without this the window is drawn at 1x and scaled up, which on a
@@ -126,6 +134,17 @@ PLIST
 # Classic-Mac vestige that the Finder still reads; four bytes, and cheap
 # insurance against an "unknown kind" bundle.
 printf 'APPL????' > "$APP/Contents/PkgInfo"
+
+# Check the executable macOS will actually launch, not just a binary copied
+# somewhere into MacOS/. A test bundle once retained the old spaced-name
+# executable while the new cargo-named binary sat unused beside it.
+LAUNCH_NAME="$(plutil -extract CFBundleExecutable raw -o - "$APP/Contents/Info.plist")"
+LAUNCH_BIN="$APP/Contents/MacOS/$LAUNCH_NAME"
+EXECUTABLES=("$APP/Contents/MacOS/"*)
+[ "${#EXECUTABLES[@]}" -eq 1 ] && [ -x "$LAUNCH_BIN" ] || {
+  echo "bundle must contain only its declared launch executable" >&2; exit 1;
+}
+cmp "$BIN" "$LAUNCH_BIN"
 
 # ------------------------------------------------------------------- signing
 # THIS MUST BE THE LAST THING DONE TO THE BUNDLE.
@@ -187,6 +206,7 @@ say "verifying the signature inside the image"
 MOUNT="$(mktemp -d)"
 hdiutil attach "$DMG" -mountpoint "$MOUNT" -nobrowse -quiet
 codesign --verify --deep --strict "$MOUNT/$APP_NAME.app"
+cmp "$LAUNCH_BIN" "$MOUNT/$APP_NAME.app/Contents/MacOS/$LAUNCH_NAME"
 hdiutil detach "$MOUNT" -quiet
 
 say "done"

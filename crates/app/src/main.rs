@@ -379,6 +379,10 @@ impl eframe::App for App {
             });
         let tool_outcome = panel.map(|r| r.inner).unwrap_or_default();
         if let Some(selection) = tool_outcome.selection {
+            if self.selection != selection {
+                self.roll.clear_selection();
+                self.workspace.cancel_gesture();
+            }
             self.selection = selection;
         }
         self.bars.tool_open = tool_open && !tool_outcome.close;

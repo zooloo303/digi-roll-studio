@@ -1,6 +1,6 @@
 //! Offline editor preview. Synthetic session, inert MIDI sink, no port scans.
 //! Run with `cargo run -p digi_roll_studio --example drum_steps_preview`.
-use digi_core::device::{Device, DT2};
+use digi_core::device::{Device, A4, DN2, DT2};
 use digi_core::history::{Content, History};
 use digi_core::{Note, PLockLane, Session, TrackScale};
 use digi_engine::{event::PortId, transport::PortSink};
@@ -95,7 +95,7 @@ impl Preview {
 
 fn main() -> eframe::Result {
     let mut session = Session::default();
-    let device = session.add_device(Device::new("Digitakt II", &DT2, 16));
+    let device = session.add_device(Device::new(DT2.key, &DT2, 16));
     session.tempo_bpm = 126.0;
     let pattern = session.device_mut(device).unwrap().pattern_mut(0).unwrap();
     pattern.name = "Night shift".into();
@@ -190,6 +190,8 @@ fn main() -> eframe::Result {
         )
         .unwrap(),
     );
+    session.add_device(Device::new(DN2.key, &DN2, 16));
+    session.add_device(Device::new(A4.key, &A4, 16));
     let mut workspace = Workspace::default();
     workspace.view = EditorView::DrumSteps;
     eframe::run_native(

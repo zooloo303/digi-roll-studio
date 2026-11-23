@@ -64,10 +64,13 @@ notes, never SysEx, and recording a take changes only the session.
 
 ## Status
 
-**v0.6.0** — 2026-11-23: Drum Steps, the track-led Kit Builder, and verified
-pattern writes for Digitakt II OS 1.17, Digitone II OS 1.12, and Analog Four
-OS 1.56. All three passed hardware write/readback and restore checks. The new
-editor interfaces passed offline interaction and visual checks; full Kit Builder
+**v0.6.1** — 2026-11-23: reliable left-click drum toggles during playback,
+Shift-drag velocity, uniformly sized Kit Builder tiles, shared BOX focus buttons,
+and verified macOS executable packaging. See [release notes](RELEASE-NOTES-0.6.1.md).
+Pattern writes remain verified for Digitakt II OS 1.17, Digitone II OS 1.12, and
+Analog Four OS 1.56; all three passed hardware write/readback and restore checks
+for v0.6.0. The editor fixes passed automated and native full-app checks, and the
+corrected macOS test build was confirmed by the user. Full Kit Builder
 audition/revert acceptance on these OS versions remains unverified.
 Still beta
 software that writes to hardware; the five write rules above are the reason that

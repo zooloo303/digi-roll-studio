@@ -214,6 +214,11 @@ ratio is fixed in this release; the regions adapt to window width. Track names
 are explicitly session/saved-pattern or last-operation observations, never an
 assertion about the current hardware buffer. No opening read is performed.
 
+The November 23 UI follow-up adds **BOX** buttons that update the shared device
+focus used by TRACKS and Drum Steps. All track tiles use the same exact width
+and 94px height within the responsive grid. Long names and status lines are
+truncated inside the tile; hovering shows the complete text.
+
 Recovery bytes are published from both existing load routes before a write can
 occur, so failed verification retains the first backup. Selected-track recovery
 narrows the existing worker input; successful partial recovery removes only

@@ -85,12 +85,9 @@
 //     that answers is not the slug the row names. This is `ui::write`'s
 //     `wrong_box` rule, kept for a read, because of what the read persists.
 //
-//  6. **It follows the roll's selected box, and has no picker of its own.** §10
-//     asks for "the selected box and track", and the desk already learned on
-//     2026-08-28 what two surfaces answering one question costs: a SEND row
-//     said A02, provenance said A01, and the write landed on A01. A picker here
-//     would be a second answer to "which box" with the track lanes' selection
-//     three inches away. A job in flight still names the box it was started
+//  6. **Its box buttons update the shared track selection.** There is one
+//     selected box across Kit builder, TRACKS and the note editors, never a
+//     separate destination. A job in flight still names the box it was started
 //     for, and [`PresetsPanel::poll`] enforces that rather than intending it.
 //
 //  7. **Closing the panel does not cancel the scan, and the worker is what
@@ -1634,6 +1631,15 @@ impl PresetsPanel {
         blocked: bool,
     ) -> Outcome {
         let mut out = Outcome::default();
+        let initial_selection = selection;
+        let mut selection = selection;
+        let context = session.devices.get(selection.device).map_or_else(
+            || "no box".to_string(),
+            |d| format!("{} · {}", d.name, self.view.label()),
+        );
+        out.close =
+            super::panel_title_bar(ui, "Kit builder", &context, &mut self.reference_visible);
+        super::device_focus::ui(ui, session, &mut selection);
         let selected = selection.device;
         let device = session.devices.get(selected);
 
@@ -1676,12 +1682,6 @@ impl PresetsPanel {
             ui.ctx().request_repaint_after(Duration::from_millis(100));
         }
 
-        let context = match device {
-            Some(d) => format!("{} · {}", d.name, self.view.label()),
-            None => String::from("no box"),
-        };
-        out.close =
-            super::panel_title_bar(ui, "Kit builder", &context, &mut self.reference_visible);
         if self.reference_visible {
             reference_prose(ui);
         }
@@ -1713,7 +1713,7 @@ impl PresetsPanel {
             ui.separator();
             self.browser(ui, session, device, destination, blocked);
         }
-        if destination != selection {
+        if destination != initial_selection {
             out.selection = Some(destination);
         }
         out
@@ -1775,13 +1775,7 @@ impl PresetsPanel {
                             ""
                         }
                     );
-                    if ui
-                        .add_sized(
-                            [tile_width, 94.0],
-                            egui::Button::new(label).selected(selected),
-                        )
-                        .clicked()
-                    {
+                    if kit_tile(ui, egui::vec2(tile_width, 94.0), &label, selected).clicked() {
                         *selection = target;
                     }
                     if (index + 1) % columns == 0 {
@@ -2840,6 +2834,40 @@ fn reference_prose(ui: &mut Ui) {
          Read and Close and nothing else — a load writes to the active kit, which is a \
          different place, and no button in this panel can write to or delete a preset.",
     );
+}
+
+/// Fixed-size tile with independently truncated lines. Neither selection text
+/// nor a long sound name can resize a grid column or hide the status lines.
+fn kit_tile(ui: &mut Ui, size: egui::Vec2, label: &str, selected: bool) -> egui::Response {
+    let (rect, response) = ui.allocate_exact_size(size, egui::Sense::click());
+    response.widget_info(|| {
+        egui::WidgetInfo::selected(egui::WidgetType::Button, ui.is_enabled(), selected, label)
+    });
+    if ui.is_rect_visible(rect) {
+        let visuals = ui.style().interact_selectable(&response, selected);
+        let painter = ui.painter_at(rect.intersect(ui.clip_rect()));
+        painter.rect_filled(rect, visuals.corner_radius, visuals.weak_bg_fill);
+        painter.rect_stroke(
+            rect,
+            visuals.corner_radius,
+            visuals.bg_stroke,
+            egui::StrokeKind::Inside,
+        );
+        let line_height = ui.text_style_height(&egui::TextStyle::Body);
+        let mut pos = egui::pos2(rect.left() + 8.0, rect.center().y - 2.0 * line_height);
+        for line in label.lines() {
+            let text: egui::WidgetText = line.into();
+            let galley = text.into_galley(
+                ui,
+                Some(egui::TextWrapMode::Truncate),
+                size.x - 16.0,
+                egui::TextStyle::Body,
+            );
+            painter.galley(pos, galley, visuals.text_color());
+            pos.y += line_height;
+        }
+    }
+    response.on_hover_text(label)
 }
 
 #[cfg(test)]

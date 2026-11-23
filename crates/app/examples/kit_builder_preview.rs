@@ -1,7 +1,8 @@
 //! Offline visual harness: synthetic names and all tags; no MIDI ports or engine.
 use digi_core::{
-    device::{Device, A4, DN2},
-    Session,
+    device::{Device, A4, DN2, DT2},
+    model::{PatchSound, TrackPatch},
+    Session, Source,
 };
 use digi_protocol::preset_index::{BankIndex, IndexEntry, PresetIndex};
 use digi_roll_studio::ui::{presets::PresetsPanel, tracks::Selection};
@@ -16,8 +17,6 @@ impl eframe::App for Preview {
     fn ui(&mut self, ui: &mut egui::Ui, _: &mut eframe::Frame) {
         ui.horizontal(|ui| {
             ui.label("Offline fixture preview");
-            ui.selectable_value(&mut self.selection.device, 0, "Digitone II");
-            ui.selectable_value(&mut self.selection.device, 1, "Analog Four");
             for (label, size) in [("Laptop", [1100.0, 760.0]), ("Narrow", [640.0, 700.0])] {
                 if ui.button(label).clicked() {
                     ui.ctx()
@@ -36,8 +35,29 @@ impl eframe::App for Preview {
 fn main() -> eframe::Result {
     let store = PresetIndex::at(std::env::temp_dir().join("digi-kit-builder-preview"));
     let mut session = Session::default();
-    for model in [&DN2, &A4] {
-        session.add_device(Device::new(model.display, model, 16));
+    for model in [&DN2, &A4, &DT2] {
+        let id = session.add_device(Device::new(model.key, model, 16));
+        session
+            .device_mut(id)
+            .unwrap()
+            .pattern_mut(0)
+            .unwrap()
+            .track_mut(0)
+            .unwrap()
+            .patch = Some(TrackPatch {
+            sound: PatchSound::Named(
+                "A deliberately long preset name to check uniform tiles".into(),
+            ),
+            kit_name: "Preview".into(),
+            kit_index: 0,
+            from: Source {
+                device_slug: model.slug.unwrap().into(),
+                bank: 0,
+                index: 0,
+            },
+            seen_at: 0,
+            live: false,
+        });
         for bank in ["A", "B"] {
             let mut index = BankIndex::new(
                 model.slug.unwrap(),

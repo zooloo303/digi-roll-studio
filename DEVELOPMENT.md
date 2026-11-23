@@ -1502,3 +1502,28 @@ and Kit Builder destination selection, tag/Match-all filtering and narrow A4
 layout. Real-device Kit Builder audition/revert and listening acceptance are
 still not claimed. The macOS package's ad-hoc signature verified on the bundle
 and again inside the disk image.
+
+## v0.6.1 editor and packaging validation — 2026-11-23
+
+Drum Steps now handles fast primary-button clicks during playback, reserves
+secondary/middle buttons, and supports Shift-drag velocity with the Piano Roll
+group/delta/clamp behavior. Regression coverage includes Follow boundaries,
+gesture cancellation, selection, undo, and shared device-focus changes.
+Kit Builder tiles have fixed dimensions with separately truncated text lines.
+
+The 0.6.0.1–0.6.0.3 local installers incorrectly added `digi_roll_studio` beside
+the old `Digi-Roll Studio` executable declared by `CFBundleExecutable`. Version
+metadata changed while macOS continued launching old code. The corrected
+0.6.0.4 package used the canonical build script, which now checks the declared
+executable against the compiled binary before signing and against the mounted
+DMG after signing. It also supports isolated test output and bundle versions.
+
+The complete app from that package was checked with MIDI and user recovery-data
+access blocked: uniform tiles, visible BOX buttons, and left-click 0-to-1-to-0
+step toggles during transport playback all passed. The user subsequently
+confirmed the corrected build works and requested release as 0.6.1.
+
+The versioned 0.6.1 workspace passed all 2,281 tests and
+`cargo clippy --workspace --all-targets -- -D warnings`. The canonical macOS
+packaging script passed its launch-executable comparison and both signature
+checks, including the mounted release disk image.

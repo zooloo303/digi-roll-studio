@@ -13,6 +13,10 @@ per row and sixteen steps per page. This is useful for sampled drums and synth
 percussion alike: no General MIDI mapping or conversion is involved. The two
 views share the same notes, selection, undo history, transport and session file.
 
+The **BOX** buttons switch device focus directly. They share the same selection
+as TRACKS and Kit Builder, and retain the track number where it exists on the
+new box (otherwise the last available track).
+
 - Track names and mute buttons stay beside the grid. Length and scale appear
   on two lines next to each name. Selecting a track reveals its row.
 - Four-step shading makes beats readable. Filled cyan cells are occupied;
@@ -35,11 +39,12 @@ views share the same notes, selection, undo history, transport and session file.
 
 | Action | Result |
 |---|---|
-| Click an empty cell | Add a one-step note using NEW NOTE pitch and VEL |
-| Click an occupied cell | Remove the notes whose starts fall in that cell |
-| Drag horizontally | Paint the initial cell's add/erase action across the row; revisiting a cell does not toggle it again |
-| Right-drag | Erase cells, including when the gesture starts on an empty cell |
+| Left-click an empty cell | Add a one-step note using NEW NOTE pitch and VEL |
+| Left-click an occupied cell | Remove the notes whose starts fall in that cell |
+| Left-drag horizontally | Paint the initial cell's add/erase action across the row; revisiting a cell does not toggle it again |
+| Right-click / middle-click / other mouse buttons | No edit; right-click is reserved for a future context menu |
 | Shift-click | Add/remove that cell's notes from the shared selection without changing them |
+| Shift + left-drag vertically | Change velocity: up is louder, down is softer, one unit per pixel; a selected cell brings the selected group, an unselected cell selects its own notes |
 | Delete / Backspace | Delete selected notes when no field has keyboard focus |
 | Drag the velocity lane | Set the cell's velocity; touching a selected cell applies it to the selection |
 | Click a track name | Select the track and show its detail lanes |
@@ -67,6 +72,12 @@ the engine and marks the session dirty. Undo, reload and device/pattern changes
 cancel held gestures. No new file format or MIDI/SysEx route is introduced.
 Hardware writes still use the existing explicit write workflow.
 
+Steps can be toggled with the left mouse button while transport playback
+continues. Fast clicks are handled even when press and release arrive in one UI
+frame. Follow holds the visible page through the click/paint or velocity
+gesture, then resumes following playback.
+Edits use the existing live engine snapshot and undo path.
+
 The view, page, Follow and new-note pitch defaults are transient UI preferences.
 Piano Roll remains the default at launch. This version is a view of one device
 at a time; it does not provide a cross-device drum rack, audio sample preview,
@@ -83,8 +94,14 @@ an inert MIDI sink. Its Play button runs the real engine without opening MIDI
 ports. Laptop/Narrow buttons expose the two checked window sizes, 1100 × 800
 and 700 × 680. The normal app exposes the view through its new editor selector.
 
-Eight focused tests exercise real egui pointer/key events, shared selection,
+Fourteen focused drum tests exercise real egui pointer/key events, shared selection,
 undo/redo, fast drags, erase, page offsets, short tracks, device changes,
-chords/off-grid notes, p-lock preservation and velocity edits. Native visual
-checks also cover page/view switching, add/undo and independent playheads.
-No hardware acceptance or new hardware write was performed.
+chords/off-grid notes, p-lock preservation, velocity edits, fast playback clicks
+and Follow page boundaries. They also check Shift-drag velocity, group/clamp/undo
+behavior and gesture cancellation on device changes. Right/middle/extra buttons
+cannot edit while left-click toggles both stopped and playing. A shared device
+switcher test checks focus and valid track selection without changing patterns.
+Native checks cover page/view switching, add/undo and independent playheads,
+plus playback toggles in the full packaged app. The corrected macOS test build
+was confirmed working by the user. No new hardware write was performed for
+these editor fixes.

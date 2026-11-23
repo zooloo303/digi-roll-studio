@@ -10,6 +10,7 @@
 use std::collections::HashMap;
 
 use digi_core::device::DeviceId;
+use digi_core::edit_ops::nudge_velocities;
 use digi_core::{Note, Session, Track};
 use egui::{Align2, Color32, FontId, Pos2, Rect, Sense, Stroke, StrokeKind, Ui, Vec2};
 
@@ -32,6 +33,14 @@ struct Paint {
     add: bool,
 }
 
+struct VelocityDrag {
+    row: usize,
+    anchor: Pos2,
+    cell_ids: Vec<u32>,
+    items: Vec<(u32, u8)>,
+    active: bool,
+}
+
 #[cfg(test)]
 mod tests {
     // This editor has no JS oracle. Assertions come from the shared model's
@@ -47,6 +56,7 @@ mod tests {
         selection: Selection,
         roll: PianoRoll,
         history: History,
+        position: Option<f64>,
     }
 
     impl Harness {
@@ -58,6 +68,7 @@ mod tests {
                 selection: Selection::default(),
                 roll: PianoRoll::default(),
                 history: History::default(),
+                position: None,
             };
             this.frame(vec![], egui::Modifiers::NONE);
             this
@@ -80,7 +91,7 @@ mod tests {
                         &mut self.session,
                         &mut self.selection,
                         &mut self.roll,
-                        None,
+                        self.position,
                         false,
                     );
                 },
@@ -171,6 +182,134 @@ mod tests {
     }
 
     #[test]
+    fn playback_clicks_toggle_once_even_when_press_and_release_share_a_frame() {
+        let mut h = Harness::new();
+        h.position = Some(2.0);
+        h.click(0, 4, false);
+        assert_eq!(
+            h.track().notes.len(),
+            1,
+            "ordinary playback click adds once"
+        );
+        let pos = h.cell(0, 4);
+        h.position = Some(3.0);
+        let tap = |button| {
+            vec![
+                egui::Event::PointerMoved(pos),
+                egui::Event::PointerButton {
+                    pos,
+                    button,
+                    pressed: true,
+                    modifiers: egui::Modifiers::NONE,
+                },
+                egui::Event::PointerButton {
+                    pos,
+                    button,
+                    pressed: false,
+                    modifiers: egui::Modifiers::NONE,
+                },
+            ]
+        };
+        assert!(h.frame(tap(egui::PointerButton::Primary), egui::Modifiers::NONE));
+        assert!(
+            h.track().notes.is_empty(),
+            "quick click removes during playback"
+        );
+        h.position = Some(4.0);
+        assert!(h.frame(tap(egui::PointerButton::Primary), egui::Modifiers::NONE));
+        assert_eq!(h.track().notes.len(), 1, "quick click adds during playback");
+        assert!(!h.frame(vec![], egui::Modifiers::NONE));
+        assert_eq!(h.track().notes.len(), 1, "repaint must not toggle again");
+        assert!(!h.frame(tap(egui::PointerButton::Secondary), egui::Modifiers::NONE));
+        assert_eq!(h.track().notes.len(), 1, "right-click is reserved");
+        assert!(h.frame(tap(egui::PointerButton::Primary), egui::Modifiers::NONE));
+        assert!(!h.frame(tap(egui::PointerButton::Secondary), egui::Modifiers::NONE));
+        assert!(h.track().notes.is_empty(), "right-click never edits");
+        assert!(h.history.undo(&mut h.session));
+        assert_eq!(h.track().notes.len(), 1, "one click is one undo step");
+    }
+
+    #[test]
+    fn only_left_click_toggles_and_other_buttons_cannot_paint() {
+        for position in [None, Some(3.0)] {
+            let mut h = Harness::new();
+            h.position = position;
+            let start = h.cell(1, 4);
+            let end = h.cell(1, 7);
+            for button in [
+                egui::PointerButton::Secondary,
+                egui::PointerButton::Middle,
+                egui::PointerButton::Extra1,
+                egui::PointerButton::Extra2,
+            ] {
+                let press = |pos, pressed| egui::Event::PointerButton {
+                    pos,
+                    button,
+                    pressed,
+                    modifiers: egui::Modifiers::NONE,
+                };
+                assert!(!h.frame(
+                    vec![egui::Event::PointerMoved(start), press(start, true)],
+                    egui::Modifiers::NONE
+                ));
+                assert!(!h.frame(vec![egui::Event::PointerMoved(end)], egui::Modifiers::NONE));
+                assert!(!h.frame(vec![press(end, false)], egui::Modifiers::NONE));
+                assert!(!h.frame(
+                    vec![
+                        egui::Event::PointerMoved(start),
+                        press(start, true),
+                        press(start, false),
+                    ],
+                    egui::Modifiers::NONE
+                ));
+                assert_eq!(h.selection.track, 0, "ignored buttons do not select tracks");
+                assert!(h.track().notes.is_empty());
+                assert!(!h.history.undo(&mut h.session));
+            }
+            h.click(1, 4, false);
+            assert_eq!(h.track().notes.len(), 1, "left-click adds");
+            h.click(1, 4, false);
+            assert!(h.track().notes.is_empty(), "left-click removes");
+        }
+    }
+
+    #[test]
+    fn a_quick_click_at_a_follow_boundary_edits_the_page_that_was_visible() {
+        let mut h = Harness::new();
+        tracks::track_mut(&mut h.session, h.selection)
+            .unwrap()
+            .length_steps = 64;
+        h.drums.follow = true;
+        h.position = Some(15.9);
+        h.frame(vec![], egui::Modifiers::NONE);
+        assert_eq!(h.drums.page, 0);
+        let pos = h.cell(0, 4);
+        h.position = Some(16.1);
+        assert!(h.frame(
+            vec![
+                egui::Event::PointerMoved(pos),
+                egui::Event::PointerButton {
+                    pos,
+                    button: egui::PointerButton::Primary,
+                    pressed: true,
+                    modifiers: egui::Modifiers::NONE
+                },
+                egui::Event::PointerButton {
+                    pos,
+                    button: egui::PointerButton::Primary,
+                    pressed: false,
+                    modifiers: egui::Modifiers::NONE
+                },
+            ],
+            egui::Modifiers::NONE
+        ));
+        assert_eq!(h.track().notes[0].step, 4.0);
+        assert_eq!(h.drums.page, 0);
+        h.frame(vec![], egui::Modifiers::NONE);
+        assert_eq!(h.drums.page, 1, "Follow resumes after the gesture");
+    }
+
+    #[test]
     fn fast_drag_paints_intervening_steps_once_as_one_undo() {
         let mut h = Harness::new();
         let start = h.cell(0, 0);
@@ -189,15 +328,15 @@ mod tests {
     }
 
     #[test]
-    fn right_drag_erases_without_adding_or_crossing_track_lengths() {
+    fn left_drag_erases_without_crossing_track_lengths() {
         let mut h = Harness::new();
         h.click(0, 2, false);
         h.click(0, 4, false);
-        let start = h.cell(0, 0);
+        let start = h.cell(0, 2);
         let end = h.cell(0, 5);
-        h.button(start, true, true, false);
+        h.button(start, true, false, false);
         h.frame(vec![egui::Event::PointerMoved(end)], egui::Modifiers::NONE);
-        h.button(end, false, true, false);
+        h.button(end, false, false, false);
         assert!(h.track().notes.is_empty());
         tracks::track_mut(&mut h.session, h.selection)
             .unwrap()
@@ -247,6 +386,116 @@ mod tests {
         assert_eq!(h.track().notes.len(), 1);
         assert_eq!(h.track().notes[0].step, 8.0);
         assert_eq!(h.track().plocks, locks);
+    }
+
+    #[test]
+    fn shift_drag_velocity_preserves_group_timing_and_undo_during_playback() {
+        let mut h = Harness::new();
+        h.position = Some(2.0);
+        let notes = vec![
+            Note::new(3.0, 36, 2.0, 90, -0.125),
+            Note::new(3.5, 43, 1.0, 65, 0.0),
+            Note::new(8.0, 60, 1.0, 120, 0.0),
+            Note::new(10.0, 62, 1.0, 40, 0.0),
+        ];
+        tracks::track_mut(&mut h.session, h.selection)
+            .unwrap()
+            .notes = notes.clone();
+        h.roll.select(notes[..3].iter().map(|n| n.id));
+        let selected = h.roll.selection();
+        let start = h.cell(0, 3);
+        h.button(start, true, false, true);
+        assert_eq!(
+            h.roll.selection(),
+            selected,
+            "selection waits for click or drag"
+        );
+        let up = start - Vec2::new(0.0, 20.0);
+        assert!(h.frame(vec![egui::Event::PointerMoved(up)], egui::Modifiers::SHIFT));
+        assert_eq!(
+            h.track()
+                .notes
+                .iter()
+                .map(|n| n.velocity)
+                .collect::<Vec<_>>(),
+            vec![110, 85, 127, 40]
+        );
+        // Repeated frames use the starting values, never accumulating delta.
+        assert!(!h.frame(vec![], egui::Modifiers::SHIFT));
+        let down = start + Vec2::new(0.0, 100.0);
+        assert!(h.frame(vec![egui::Event::PointerMoved(down)], egui::Modifiers::NONE));
+        assert_eq!(
+            h.track()
+                .notes
+                .iter()
+                .map(|n| n.velocity)
+                .collect::<Vec<_>>(),
+            vec![1, 1, 20, 40]
+        );
+        h.button(down, false, false, false);
+        assert_eq!(
+            h.roll.selection(),
+            selected,
+            "drag must not toggle selection on release"
+        );
+        assert_eq!(h.roll.default_velocity(), 1);
+        for (before, after) in notes.iter().zip(&h.track().notes) {
+            assert_eq!(
+                (before.step, before.pitch, before.len, before.micro),
+                (after.step, after.pitch, after.len, after.micro)
+            );
+        }
+        assert!(h.history.undo(&mut h.session));
+        assert_eq!(h.track().notes, notes);
+        assert!(!h.history.undo(&mut h.session), "whole drag is one undo");
+    }
+
+    #[test]
+    fn shift_drag_on_unselected_cell_and_empty_space_is_scoped() {
+        let mut h = Harness::new();
+        h.click(0, 3, false);
+        h.click(0, 8, false);
+        let start = h.cell(0, 3);
+        h.button(start, true, false, true);
+        let end = start - Vec2::new(0.0, 10.0);
+        h.frame(vec![egui::Event::PointerMoved(end)], egui::Modifiers::SHIFT);
+        h.button(end, false, false, true);
+        assert_eq!(
+            h.track()
+                .notes
+                .iter()
+                .map(|n| n.velocity)
+                .collect::<Vec<_>>(),
+            vec![110, 100]
+        );
+        let before = Content::of(&h.session);
+        let empty = h.cell(0, 1);
+        h.button(empty, true, false, true);
+        h.frame(
+            vec![egui::Event::PointerMoved(start)],
+            egui::Modifiers::SHIFT,
+        );
+        h.button(start, false, false, true);
+        assert_eq!(
+            Content::of(&h.session),
+            before,
+            "starting on empty does not paint or change velocity"
+        );
+    }
+
+    #[test]
+    fn switching_device_cancels_pending_velocity_drag() {
+        let mut h = Harness::new();
+        h.click(0, 3, false);
+        let start = h.cell(0, 3);
+        h.button(start, true, false, true);
+        h.selection.device = 1;
+        assert!(!h.frame(
+            vec![egui::Event::PointerMoved(start + Vec2::new(0.0, 30.0))],
+            egui::Modifiers::SHIFT
+        ));
+        assert!(h.drums.velocity_drag.is_none());
+        assert!(h.track().notes.is_empty());
     }
 
     #[test]
@@ -330,6 +579,7 @@ pub struct DrumSequencer {
     page: usize,
     follow: bool,
     paint: Option<Paint>,
+    velocity_drag: Option<VelocityDrag>,
     // Scene/slot changes cancel held gestures; no held mouse can edit a new song.
     context: Option<(DeviceId, usize)>,
     detail_track: Option<Selection>,
@@ -410,6 +660,17 @@ impl DrumSequencer {
         position: Option<f64>,
         recording: bool,
     ) -> bool {
+        if super::device_focus::ui(ui, session, selection) {
+            self.cancel_gesture();
+            roll.clear_selection();
+        }
+        if self
+            .velocity_drag
+            .as_ref()
+            .is_some_and(|d| d.row != selection.track)
+        {
+            self.cancel_gesture();
+        }
         let Some(device) = session.devices.get(selection.device) else {
             ui.weak("Add a box in Setup to start a drum pattern.");
             return false;
@@ -424,12 +685,19 @@ impl DrumSequencer {
             self.context = Some(context);
             self.page = 0;
             self.paint = None;
+            self.velocity_drag = None;
             self.reset_details();
         }
         self.sync_details(*selection);
         let pages = page_count(session, *selection);
         self.page = self.page.min(pages - 1);
-        if self.follow && self.paint.is_none() && !ui.input(|i| i.pointer.any_down()) {
+        // A fast click can press and release within one frame. Keep the page
+        // the user clicked visible even if playback just crossed a boundary.
+        if self.follow
+            && self.paint.is_none()
+            && self.velocity_drag.is_none()
+            && !ui.input(|i| i.pointer.any_down() || i.pointer.any_pressed())
+        {
             if let (Some(position), Some(track)) = (position, tracks::track(session, *selection)) {
                 let page = play_step(track, position) / PAGE;
                 if self.page != page {
@@ -451,6 +719,7 @@ impl DrumSequencer {
                     self.page = page;
                     self.follow = false;
                     self.paint = None;
+                    self.velocity_drag = None;
                     self.reset_details();
                 }
             }
@@ -507,8 +776,13 @@ impl DrumSequencer {
             }
         }
 
-        ui.label(egui::RichText::new("Click toggles · drag paints · right-drag erases · Shift-click selects · bars show velocity")
-            .small().color(super::TEXT_MUTED));
+        ui.label(
+            egui::RichText::new(
+                "Left-click toggles · drag paints · Shift-drag velocity · Shift-click selects",
+            )
+            .small()
+            .color(super::TEXT_MUTED),
+        );
         let lane_h = tracks::track(session, *selection)
             .map_or(0.0, |t| plocklane::strip_height(t).min(68.0));
         let details_h = VELOCITY_H + triglane::LANE_H + lane_h + 35.0;
@@ -601,8 +875,9 @@ impl DrumSequencer {
                     }
                 }
             });
-        if !ui.input(|i| i.pointer.any_down()) {
+        if !ui.input(|i| i.pointer.primary_down()) {
             self.paint = None;
+            self.velocity_drag = None;
         }
         if position.is_some() {
             ui.ctx().request_repaint();
@@ -617,6 +892,7 @@ impl DrumSequencer {
 
     pub fn cancel_gesture(&mut self) {
         self.paint = None;
+        self.velocity_drag = None;
         self.reset_details();
     }
 
@@ -674,7 +950,14 @@ impl DrumSequencer {
         };
         let mut changed = false;
         let pointer = ui.input(|i| i.pointer.interact_pos());
-        if response.is_pointer_button_down_on() {
+        // While playback repaints, press and release may arrive together.
+        // In that case the pointer is already up, but egui still reports the
+        // completed click. Keep the existing press-led brush so a normal
+        // click's release cannot toggle the cell a second time. Only the left
+        // button edits; right-click is reserved for future context actions.
+        if (response.is_pointer_button_down_on() && ui.input(|i| i.pointer.primary_down()))
+            || response.clicked_by(egui::PointerButton::Primary)
+        {
             if let Some((row, col)) = pointer
                 .filter(|p| ui.clip_rect().contains(*p))
                 .and_then(cell_at)
@@ -684,7 +967,7 @@ impl DrumSequencer {
                     device: selection.device,
                     track: row,
                 };
-                let pressed = ui.input(|i| i.pointer.any_pressed());
+                let pressed = ui.input(|i| i.pointer.button_pressed(egui::PointerButton::Primary));
                 if pressed {
                     // Drop TRACKS' clear-track focus before handling any note selection.
                     ui.ctx().memory_mut(|m| {
@@ -700,26 +983,33 @@ impl DrumSequencer {
                     if step < usize::from(track.length_steps) {
                         let ids = cell_notes(track, step);
                         if ui.input(|i| i.modifiers.shift) {
-                            let mut selected = roll.selection();
-                            if !ids.is_empty() && ids.iter().all(|id| selected.contains(id)) {
-                                selected.retain(|id| !ids.contains(id));
-                            } else {
-                                selected.extend(
-                                    ids.iter()
-                                        .filter(|id| !selected.contains(id))
-                                        .copied()
-                                        .collect::<Vec<_>>(),
-                                );
-                            }
-                            roll.select(selected);
-                            if let Some(note) = track.notes.iter().find(|n| ids.contains(&n.id)) {
-                                roll.set_default_velocity(note.velocity);
+                            // Defer selection toggling until release so this
+                            // press can become a velocity drag, as in Piano Roll.
+                            if !ids.is_empty() {
+                                let selected = roll.selection();
+                                let group = if ids.iter().all(|id| selected.contains(id)) {
+                                    selected
+                                } else {
+                                    ids.clone()
+                                };
+                                self.velocity_drag = Some(VelocityDrag {
+                                    row,
+                                    anchor: pointer.unwrap(),
+                                    cell_ids: ids,
+                                    items: track
+                                        .notes
+                                        .iter()
+                                        .filter(|n| group.contains(&n.id))
+                                        .map(|n| (n.id, n.velocity))
+                                        .collect(),
+                                    active: false,
+                                });
                             }
                         } else {
                             self.paint = Some(Paint {
                                 row,
                                 last: step,
-                                add: ids.is_empty() && !ui.input(|i| i.pointer.secondary_down()),
+                                add: ids.is_empty(),
                             });
                             roll.clear_selection();
                         }
@@ -747,6 +1037,53 @@ impl DrumSequencer {
                     }
                     paint.last = step;
                 }
+            }
+        }
+
+        // A velocity gesture stays on its starting track even when the pointer
+        // crosses another row or leaves the grid.
+        if let (Some(drag), Some(pos)) = (self.velocity_drag.as_mut(), pointer) {
+            if response.dragged_by(egui::PointerButton::Primary)
+                || response.drag_stopped_by(egui::PointerButton::Primary)
+            {
+                drag.active = true;
+                roll.select(drag.items.iter().map(|(id, _)| *id));
+            }
+            let track = tracks::track_mut(
+                session,
+                Selection {
+                    device: selection.device,
+                    track: drag.row,
+                },
+            )
+            .unwrap();
+            if drag.active {
+                let delta = (drag.anchor.y - pos.y).round() as i32;
+                let starts: Vec<u8> = drag.items.iter().map(|(_, v)| *v).collect();
+                for ((id, _), velocity) in drag.items.iter().zip(nudge_velocities(&starts, delta)) {
+                    if let Some(note) = track.notes.iter_mut().find(|n| n.id == *id) {
+                        if note.velocity != velocity {
+                            note.velocity = velocity;
+                            changed = true;
+                        }
+                    }
+                }
+                ui.ctx().set_cursor_icon(egui::CursorIcon::ResizeVertical);
+            } else if response.clicked_by(egui::PointerButton::Primary) {
+                let mut selected = roll.selection();
+                if drag.cell_ids.iter().all(|id| selected.contains(id)) {
+                    selected.retain(|id| !drag.cell_ids.contains(id));
+                } else {
+                    for id in &drag.cell_ids {
+                        if !selected.contains(id) {
+                            selected.push(*id);
+                        }
+                    }
+                }
+                roll.select(selected);
+            }
+            if let Some(note) = track.notes.iter().find(|n| drag.cell_ids.contains(&n.id)) {
+                roll.set_default_velocity(note.velocity);
             }
         }
 

@@ -49,6 +49,19 @@ to pick for themselves. Silent, and worth not doing.
 
 ## macOS: the re-signing step is not optional
 
+Use the same packaging script for local test builds, with an isolated output
+directory and a distinct bundle version:
+
+```sh
+DRS_DIST_DIR=dist/test-0.6.0.4 DRS_BUNDLE_VERSION=0.6.0.4 packaging/macos/build-dmg.sh
+```
+
+The script rebuilds the explicit Apple Silicon target and copies it under the
+name in `CFBundleExecutable`. It checks that this is the bundle's only executable,
+matches the build before signing, and survives the DMG round trip byte for byte.
+Do not update a copied bundle by adding the Cargo binary under its original name:
+macOS launches `Digi-Roll Studio`, not `digi_roll_studio`.
+
 `cargo build` produces a binary the linker has already ad-hoc signed. Copying it
 into `Contents/MacOS/` and then writing an `Info.plist` and an `AppIcon.icns`
 around it **invalidates that signature**, because the signature covers a code

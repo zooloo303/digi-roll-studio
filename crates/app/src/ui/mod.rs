@@ -154,6 +154,7 @@ use eframe::egui::{self, Color32, Ui};
 pub mod autoconnect;
 pub mod console;
 pub mod devices;
+pub mod device_focus;
 pub mod drums;
 pub mod edit;
 pub mod generate;
