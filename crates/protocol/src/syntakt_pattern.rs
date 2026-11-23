@@ -365,6 +365,197 @@ pub fn plock_lanes(payload: &[u8]) -> Vec<PlockLane> {
     lanes
 }
 
+/// How a measured parameter's 16-bit lock value reads on the box's screen.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PlockScale {
+    /// display = raw / 256. The low byte is the fraction the box keeps when a
+    /// knob is turned finely; the screen truncates it to two decimals
+    /// (`0x45b0` = 69.6875 shows as 69.68).
+    Unsigned,
+    /// display = raw / 256 − 64: PAN, `L64` = 0 and `R47` = 111 captured;
+    /// centre = 64 (shown `C`) follows from them but was not captured.
+    Centred,
+    /// The high byte picks an entry. An empty name is an entry not captured
+    /// yet, shown by its number: envelope mode 1 = ADSR was captured, and 0 is
+    /// presumably AHD but was not, so it stays unnamed.
+    Choice(&'static [&'static str]),
+}
+
+/// The p-lock parameter IDs measured on a Syntakt, OS 1.42 (build 0097),
+/// 2026-11-22 — `dumps/syntakt-2026-11-22/plocks/README.md`. Each was locked
+/// alone on a trig and read back with `0x61`. IDs not here are left unnamed.
+///
+/// Scope, as measured: FREQ, RESO, ATK and VOL on track 1 (SY BITS, digital)
+/// *and* track 9 (SD HARD, analog), the same IDs on both; HOLD, DEC, DELAY,
+/// REV and PAN on track 9 only; DEC (in both envelope modes), SUS, REL and the
+/// envelope mode on track 1 only.
+pub const MEASURED_PLOCKS: &[(u8, &str, PlockScale)] = &[
+    (28, "FLTR FREQ", PlockScale::Unsigned),
+    (29, "FLTR RESO", PlockScale::Unsigned),
+    (39, "AMP ATK", PlockScale::Unsigned),
+    (40, "AMP HOLD", PlockScale::Unsigned),
+    (41, "AMP DEC", PlockScale::Unsigned),
+    (42, "AMP SUS", PlockScale::Unsigned),
+    (43, "AMP REL", PlockScale::Unsigned),
+    (44, "AMP DELAY SEND", PlockScale::Unsigned),
+    (45, "AMP REVERB SEND", PlockScale::Unsigned),
+    (46, "AMP PAN", PlockScale::Centred),
+    (47, "AMP VOL", PlockScale::Unsigned),
+    (49, "AMP ENV MODE", PlockScale::Choice(&["", "ADSR"])),
+];
+
+/// The measured name and scale of a p-lock parameter ID, if it has one.
+pub fn measured_plock(param_id: u8) -> Option<(&'static str, PlockScale)> {
+    MEASURED_PLOCKS.iter().find(|(id, _, _)| *id == param_id).map(|(_, n, s)| (*n, *s))
+}
+
+/// What a raw lock value reads as on the screen, for a measured parameter.
+/// Kept as a number for the continuous scales; the raw value stays the truth.
+pub fn plock_display(scale: PlockScale, raw: u16) -> String {
+    match scale {
+        PlockScale::Unsigned => format!("{:.2}", (f64::from(raw) / 256.0 * 100.0).floor() / 100.0),
+        PlockScale::Centred => {
+            let v = (f64::from(raw) / 256.0 - 64.0).trunc() as i32;
+            match v {
+                0 => "C".into(),
+                v if v < 0 => format!("L{}", -v),
+                v => format!("R{v}"),
+            }
+        }
+        PlockScale::Choice(names) => match names.get(usize::from(raw >> 8)) {
+            Some(n) if !n.is_empty() => n.to_string(),
+            _ => format!("#{}", raw >> 8),
+        },
+    }
+}
+
+/// Every record in use with its raw values: `(param, track, [(step, raw)])`.
+pub fn plock_values(payload: &[u8]) -> Vec<(u8, usize, Vec<(usize, u16)>)> {
+    let mut out = Vec::new();
+    for record in 0..PLOCK_RECORDS {
+        let at = PLOCK_POOL + record * PLOCK_RECORD_BYTES;
+        let Some(bytes) = payload.get(at..at + PLOCK_RECORD_BYTES) else { break };
+        if bytes[..2] == PLOCK_FREE {
+            continue;
+        }
+        let values = (0..NUM_STEPS)
+            .filter_map(|s| {
+                let v = u16::from_be_bytes([bytes[2 + 2 * s], bytes[3 + 2 * s]]);
+                (v != PLOCK_NO_VALUE).then_some((s, v))
+            })
+            .collect();
+        out.push((bytes[0], usize::from(bytes[1]), values));
+    }
+    out
+}
+
+#[cfg(test)]
+mod measured_plock_tests {
+    use super::*;
+
+    const DIR: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../../dumps/syntakt-2026-11-22/plocks");
+
+    fn capture(name: &str) -> Vec<u8> {
+        std::fs::read(format!("{DIR}/{name}.bin")).unwrap()
+    }
+
+    /// The one record a capture adds over the previous one.
+    fn lock(name: &str) -> (u8, usize, u16) {
+        let lanes = plock_values(&capture(name));
+        let (p, t, v) = lanes.last().unwrap().clone();
+        assert_eq!(v.len(), 1, "{name}: one locked step");
+        assert_eq!(v[0].0, 0, "{name}: on TRIG 1");
+        (p, t, v[0].1)
+    }
+
+    #[test]
+    fn every_single_lock_capture_decodes_to_its_parameter_and_raw_value() {
+        // (capture, param, track (0-based), raw, what the screen showed)
+        for (name, param, track, raw, shown) in [
+            ("01-reso-min", 29, 0, 0x0000, "0.00"),
+            ("02-reso-80", 29, 0, 0x5002, "80.00"),
+            ("03-reso-127", 29, 0, 0x7f00, "127.00"),
+            ("05-freq-0", 28, 0, 0x0000, "0.00"),
+            ("06-freq-70", 28, 0, 0x4602, "70.00"),
+            ("07-freq-127", 28, 0, 0x7f00, "127.00"),
+            ("10-t9-sdhard-reso-53.27", 29, 8, 0x3546, "53.27"),
+        ] {
+            assert_eq!(lock(name), (param, track, raw), "{name}");
+            let (_, scale) = measured_plock(param).unwrap();
+            assert_eq!(plock_display(scale, raw), shown, "{name}");
+        }
+    }
+
+    #[test]
+    fn the_amp_page_and_the_envelope_mode() {
+        let find = |name: &str, param: u8, track: usize| -> u16 {
+            plock_values(&capture(name)).into_iter().find(|r| r.0 == param && r.1 == track).unwrap().2[0].1
+        };
+        for (name, param, track, raw, shown) in [
+            ("11-t9-freq-88.08", 28, 8, 0x5815, "88.08"),
+            ("12-t9-amp-atk-31", 39, 8, 0x1f00, "31.00"),
+            ("13-t9-amp-hold-40", 40, 8, 0x2800, "40.00"),
+            ("14-t9-amp-dec-92", 41, 8, 0x5c00, "92.00"),
+            ("15-t9-amp-delay-53.96", 44, 8, 0x35f6, "53.96"),
+            ("16-t9-amp-rev-69.68", 45, 8, 0x45b0, "69.68"),
+            ("17-t9-amp-pan-R47", 46, 8, 0x6f00, "R47"),
+            ("18-t9-amp-vol-80.21", 47, 8, 0x5037, "80.21"),
+            ("19-t9-amp-pan-L64", 46, 8, 0x0000, "L64"),
+            ("20-t1-sybits-amp-atk-51", 39, 0, 0x3300, "51.00"),
+            ("21-t1-sybits-amp-vol-27", 47, 0, 0x1b01, "27.00"),
+            ("22-t1-amp2-env-mode-adsr", 49, 0, 0x0100, "ADSR"),
+            ("23-t1-amp-rel-90-adsr", 43, 0, 0x5a00, "90.00"),
+            ("24-t1-amp-sus-77-adsr", 42, 0, 0x4d00, "77.00"),
+            ("25-t1-amp-dec-103-adsr", 41, 0, 0x6700, "103.00"),
+        ] {
+            assert_eq!(find(name, param, track), raw, "{name}");
+            assert_eq!(plock_display(measured_plock(param).unwrap().1, raw), shown, "{name}");
+        }
+    }
+
+    #[test]
+    fn records_stay_sorted_by_parameter_id() {
+        let ids: Vec<u8> = plock_values(&capture("25-t1-amp-dec-103-adsr")).iter().map(|r| r.0).collect();
+        assert_eq!(ids, vec![39, 41, 42, 43, 47, 49]);
+        // FREQ (28) was locked after RESO (29) on track 9 and went in front.
+        let ids: Vec<u8> = plock_values(&capture("11-t9-freq-88.08")).iter().map(|r| r.0).collect();
+        assert_eq!(ids, vec![28, 29]);
+    }
+
+    #[test]
+    fn removing_the_lock_returns_the_pattern_byte_for_byte_and_kit_edits_never_reach_it() {
+        assert_eq!(capture("04-back"), capture("00-baseline"));
+        assert_eq!(capture("08-back"), capture("00-baseline"));
+        // A knob turned with no trig held changes the kit, not the pattern.
+        assert_eq!(capture("00b-other-track-reso-kit-only"), capture("00-baseline"));
+        assert_eq!(capture("08b-t9-reso-kit-only-no-trig"), capture("08-back"));
+    }
+
+    #[test]
+    fn deleting_a_trig_clears_its_locks() {
+        // Track 9's trig was removed alone with its TRIG key between 19 and
+        // 20 (nine records went with it); track 1's by clearing the whole
+        // sequence at the end (six went).
+        assert!(plock_values(&capture("20-t1-sybits-amp-atk-51")).iter().all(|r| r.1 == 0));
+        assert!(plock_values(&capture("26-final-cleared")).is_empty());
+        // A single-trig delete leaves the step word at 0x0000; a sequence
+        // clear only clears bit 0 and leaves 0x0380 — residue, not a trig.
+        let t9 = capture("20-t1-sybits-amp-atk-51");
+        assert_eq!(&t9[7868..7870], &[0x00, 0x00]);
+        assert_eq!(&capture("26-final-cleared")[4..6], &[0x03, 0x80]);
+    }
+
+    #[test]
+    fn unmeasured_ids_and_entries_have_no_name() {
+        assert!(measured_plock(30).is_none());
+        assert!(measured_plock(48).is_none());
+        // Envelope mode 0 (presumably AHD) was not captured: shown by number.
+        let (_, mode) = measured_plock(49).unwrap();
+        assert_eq!(plock_display(mode, 0x0000), "#0");
+        assert_eq!(plock_display(mode, 0x0100), "ADSR");
+    }
+}
+
 // --- Trig conditions ---------------------------------------------------------
 
 /// Block-relative offset of the trig-condition lane, one byte per step.
