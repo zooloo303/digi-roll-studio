@@ -80,9 +80,7 @@
 
 use std::time::Duration;
 
-use digi_protocol::a4_kit::{
-    read_kit, sound_for_kit, sound_slot, splice_sound, A4Kit, NUM_SOUNDS,
-};
+use digi_protocol::a4_kit::{read_kit, sound_for_kit, sound_slot, splice_sound, A4Kit, NUM_SOUNDS};
 use digi_protocol::drive::{a4_preset_sound, decode_drive_preset, DriveError};
 
 use crate::preset_load::LoadReport;
@@ -169,7 +167,11 @@ pub enum A4LoadError {
     /// Not treated as a maybe. The box was written to and did not end up where
     /// it was asked to be, so the caller is told to reload the pattern rather
     /// than left to assume it worked.
-    NotVerified { track: u8, expected: String, found: String },
+    NotVerified {
+        track: u8,
+        expected: String,
+        found: String,
+    },
     /// Two reads of the kit disagreed, which is this end's own message echoing
     /// back rather than the box answering.
     Echo { first: String, second: String },
@@ -192,7 +194,11 @@ impl std::fmt::Display for A4LoadError {
                  and CV tracks sequence, and have no sound to load onto",
                 track + 1
             ),
-            Self::NotVerified { track, expected, found } => write!(
+            Self::NotVerified {
+                track,
+                expected,
+                found,
+            } => write!(
                 f,
                 "SYN{} reads {found:?} and not {expected:?} — the kit went out and did not \
                  take. Reload the pattern on the box, and do not save the kit",
@@ -263,8 +269,7 @@ fn read_kit_twice(io: &mut impl A4KitIo) -> Result<(A4Kit, u8, Vec<u8>), A4LoadE
 fn describe(index: u8, payload: &[u8]) -> String {
     match read_kit(index, payload) {
         Ok(kit) => {
-            let sounds: Vec<&str> =
-                (0..NUM_SOUNDS).filter_map(|n| kit.sound_name(n)).collect();
+            let sounds: Vec<&str> = (0..NUM_SOUNDS).filter_map(|n| kit.sound_name(n)).collect();
             format!("kit {} {} [{}]", index + 1, kit.name, sounds.join(", "))
         }
         Err(why) => format!("{} bytes that do not decode ({why})", payload.len()),
@@ -294,6 +299,17 @@ pub fn load_a4_preset_onto_track(
     path: &str,
     track: u8,
 ) -> Result<LoadReport, A4LoadError> {
+    load_a4_preset_onto_track_with_backup(io, path, track, |_, _| {})
+}
+
+/// As above, but publishes the recovery bytes before any possible write.
+/// The callback must retain the first backup across repeated auditions.
+pub fn load_a4_preset_onto_track_with_backup(
+    io: &mut impl A4KitIo,
+    path: &str,
+    track: u8,
+    mut backup_ready: impl FnMut(&str, &[u8]),
+) -> Result<LoadReport, A4LoadError> {
     // Ahead of every read, so a bad track costs no round trip. `splice_sound`
     // checks it again where it is a guard on the bytes rather than a courtesy.
     if usize::from(track) >= NUM_SOUNDS {
@@ -301,10 +317,15 @@ pub fn load_a4_preset_onto_track(
     }
 
     let (kit, index, payload) = read_kit_twice(io)?;
-    let replaced = kit.sound_name(usize::from(track)).unwrap_or_default().to_string();
+    let replaced = kit
+        .sound_name(usize::from(track))
+        .unwrap_or_default()
+        .to_string();
     let backup = sound_slot(&payload, usize::from(track))
         .map_err(|why| A4LoadError::Unspliceable { why })?
         .to_vec();
+
+    backup_ready(&replaced, &backup);
 
     let file = io.read_preset(path)?;
     let sound = a4_preset_sound(&file)?;
@@ -318,8 +339,7 @@ pub fn load_a4_preset_onto_track(
     // that looks like it worked and has thrown the user's track away.
     // `a4_kit::sound_for_kit` is the box's own two-byte conversion, measured
     // against 28 pairs of the same sound in both versions.
-    let for_kit =
-        sound_for_kit(sound).map_err(|why| A4LoadError::Unspliceable { why })?;
+    let for_kit = sound_for_kit(sound).map_err(|why| A4LoadError::Unspliceable { why })?;
     let spliced = splice_sound(&payload, usize::from(track), &for_kit)
         .map_err(|why| A4LoadError::Unspliceable { why })?;
 
@@ -327,11 +347,22 @@ pub fn load_a4_preset_onto_track(
     io.settle();
 
     let (after, _, _) = read_kit_twice(io)?;
-    let found = after.sound_name(usize::from(track)).unwrap_or_default().to_string();
+    let found = after
+        .sound_name(usize::from(track))
+        .unwrap_or_default()
+        .to_string();
     if found != loaded.trim() {
-        return Err(A4LoadError::NotVerified { track, expected: loaded, found });
+        return Err(A4LoadError::NotVerified {
+            track,
+            expected: loaded,
+            found,
+        });
     }
-    Ok(LoadReport { loaded, replaced, backup })
+    Ok(LoadReport {
+        loaded,
+        replaced,
+        backup,
+    })
 }
 
 /// Put a track's own sound back — audition mode's undo, for a caller holding a
@@ -367,9 +398,16 @@ pub fn revert_a4_track(
     io.settle();
 
     let (after, _, _) = read_kit_twice(io)?;
-    let found = after.sound_name(usize::from(track)).unwrap_or_default().to_string();
+    let found = after
+        .sound_name(usize::from(track))
+        .unwrap_or_default()
+        .to_string();
     if found != expected {
-        return Err(A4LoadError::NotVerified { track, expected, found });
+        return Err(A4LoadError::NotVerified {
+            track,
+            expected,
+            found,
+        });
     }
     Ok(found)
 }
@@ -378,7 +416,10 @@ pub fn revert_a4_track(
 /// against, read out of the bytes about to be sent rather than remembered.
 fn expected_name(payload: &[u8], track: u8) -> Result<String, A4LoadError> {
     let kit = read_kit(0, payload).map_err(|why| A4LoadError::UnreadableKit { why })?;
-    Ok(kit.sound_name(usize::from(track)).unwrap_or_default().to_string())
+    Ok(kit
+        .sound_name(usize::from(track))
+        .unwrap_or_default()
+        .to_string())
 }
 
 #[cfg(test)]
@@ -491,7 +532,11 @@ mod tests {
         load_a4_preset_onto_track(&mut a4, "/soundbanks/A/7", 0).unwrap();
 
         assert_eq!(a4.stored.len(), 1);
-        assert_eq!(a4.stored[0].1.len(), before.len(), "a whole kit, not a fragment");
+        assert_eq!(
+            a4.stored[0].1.len(),
+            before.len(),
+            "a whole kit, not a fragment"
+        );
     }
 
     /// **The kit goes back under the index the box gave it**, not under zero.
@@ -507,7 +552,11 @@ mod tests {
         revert_a4_track(&mut a4, 2, &report.backup).unwrap();
 
         assert_eq!(a4.stored.len(), 2);
-        assert!(a4.stored.iter().all(|(index, _)| *index == 1), "{:?}", a4.stored.iter().map(|s| s.0).collect::<Vec<_>>());
+        assert!(
+            a4.stored.iter().all(|(index, _)| *index == 1),
+            "{:?}",
+            a4.stored.iter().map(|s| s.0).collect::<Vec<_>>()
+        );
     }
 
     /// The other three sounds, the kit's name and every byte this crate cannot
@@ -584,7 +633,10 @@ mod tests {
         let err = load_a4_preset_onto_track(&mut a4, "/soundbanks/A/9", 0).unwrap_err();
 
         assert!(
-            matches!(err, A4LoadError::Preset(DriveError::NotTheBoxsOwnFormat { .. })),
+            matches!(
+                err,
+                A4LoadError::Preset(DriveError::NotTheBoxsOwnFormat { .. })
+            ),
             "{err}"
         );
         assert!(a4.stored.is_empty());
@@ -600,7 +652,11 @@ mod tests {
         let err = load_a4_preset_onto_track(&mut a4, "/soundbanks/A/1", 2).unwrap_err();
 
         match err {
-            A4LoadError::NotVerified { track: 2, expected, found } => {
+            A4LoadError::NotVerified {
+                track: 2,
+                expected,
+                found,
+            } => {
                 assert_eq!(expected, "THE SAW");
                 assert_eq!(found, "ALONE");
             }
@@ -634,7 +690,10 @@ mod tests {
         }
 
         let mut box_ = Echoing {
-            kits: vec![kit_payload(KIT00), kit_payload("analogfour-kit-01-2026-08-31.syx")],
+            kits: vec![
+                kit_payload(KIT00),
+                kit_payload("analogfour-kit-01-2026-08-31.syx"),
+            ],
             at: 0,
         };
 
@@ -670,5 +729,23 @@ mod tests {
 
         let err = load_a4_preset_onto_track(&mut Broken, "/soundbanks/A/1", 0).unwrap_err();
         assert!(matches!(err, A4LoadError::UnreadableKit { .. }), "{err}");
+    }
+    #[test]
+    fn a_failed_verification_still_delivers_recovery_bytes() {
+        let mut device = FakeA4::new();
+        device.deaf = true;
+        let mut recovery = None;
+        assert!(load_a4_preset_onto_track_with_backup(
+            &mut device,
+            "/soundbanks/A/1",
+            0,
+            |name, bytes| {
+                recovery = Some((name.to_string(), bytes.to_vec()));
+            }
+        )
+        .is_err());
+        let (name, bytes) = recovery.expect("pre-write backup survives failed verification");
+        assert!(!name.is_empty());
+        assert!(!bytes.is_empty());
     }
 }

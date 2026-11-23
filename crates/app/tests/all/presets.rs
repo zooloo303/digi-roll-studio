@@ -1248,3 +1248,49 @@ fn a_library_with_its_formats_read_is_finished() {
     assert!(!tagging.offers_scan());
     assert_eq!(tagging.caption(), "2 tagged");
 }
+
+#[test]
+fn kit_filters_combine_bank_name_and_any_or_all_tags() {
+    use digi_roll_studio::ui::presets::TagMatch;
+    let mut lib = library(&["A", "B"]);
+    let mut index = BankIndex::new("digitone2", &path("A"), "0050", 3);
+    index.insert(1, entry("LOW BOTH", 3, 319));
+    index.insert(2, entry("LOW ONE", 1, 319));
+    index.insert(3, entry("HIGH BOTH", 3, 319));
+    put(
+        &mut lib,
+        "A",
+        Some(listing_rows(
+            &path("A"),
+            &[
+                preset(1, "LOW BOTH", 319),
+                preset(2, "LOW ONE", 319),
+                preset(3, "HIGH BOTH", 319),
+                preset(4, "LOW UNREAD", 319),
+            ],
+        )),
+        Some(index),
+    );
+    let banks = vec![path("A")];
+    let any = lib.filtered_matching(&banks, 3, " low ", TagMatch::Any);
+    assert_eq!(any.rows.len(), 2);
+    assert_eq!(any.hidden_untagged, 1);
+    let all = lib.filtered_matching(&banks, 3, " low ", TagMatch::All);
+    assert_eq!(all.rows.iter().map(|r| r.slot).collect::<Vec<_>>(), vec![1]);
+    assert_eq!(all.hidden_untagged, 1);
+    assert_eq!(
+        lib.filtered_matching(&banks, 0, "low", TagMatch::All)
+            .rows
+            .len(),
+        3
+    );
+    assert!(lib
+        .filtered_matching(&[path("B")], 3, "low", TagMatch::Any)
+        .rows
+        .is_empty());
+    assert_eq!(lib.tag_cells_selected(&[path("B")], 3).len(), 2);
+    assert!(lib
+        .tag_cells_selected(&[path("B")], 3)
+        .iter()
+        .all(|(_, _, count)| *count == 0));
+}

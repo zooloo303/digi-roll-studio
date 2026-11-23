@@ -142,7 +142,11 @@ pub enum LoadError {
     /// The check the module doc is about. Every box measured says these agree;
     /// a box that says otherwise has found something nobody has mapped, and the
     /// honest response is to stop and report the two numbers.
-    LengthMismatch { track: u8, preset: usize, box_says: usize },
+    LengthMismatch {
+        track: u8,
+        preset: usize,
+        box_says: usize,
+    },
     /// `track` is outside a kit.
     NoSuchTrack { track: u8 },
     /// The store went out and the track does not read back as the preset.
@@ -150,10 +154,18 @@ pub enum LoadError {
     /// Not treated as a maybe: the box was written to and did not end up where
     /// it was asked to be, so the caller is told to reload the pattern rather
     /// than left to assume it worked.
-    NotVerified { track: u8, expected: String, found: String },
+    NotVerified {
+        track: u8,
+        expected: String,
+        found: String,
+    },
     /// Two reads of the same track disagreed, which is this end's own message
     /// echoing back rather than the box answering.
-    Echo { track: u8, first: String, second: String },
+    Echo {
+        track: u8,
+        first: String,
+        second: String,
+    },
 }
 
 impl std::fmt::Display for LoadError {
@@ -167,22 +179,38 @@ impl std::fmt::Display for LoadError {
                  up — refusing to load onto a track that cannot be put back",
                 track + 1
             ),
-            Self::LengthMismatch { track, preset, box_says } => write!(
+            Self::LengthMismatch {
+                track,
+                preset,
+                box_says,
+            } => write!(
                 f,
                 "this preset is {preset} bytes and track {} answers with {box_says} — \
                  refusing to store a length this box has never been measured wanting",
                 track + 1
             ),
             Self::NoSuchTrack { track } => {
-                write!(f, "a kit has tracks 1-{KIT_TRACKS}, and this is track {}", track + 1)
+                write!(
+                    f,
+                    "a kit has tracks 1-{KIT_TRACKS}, and this is track {}",
+                    track + 1
+                )
             }
-            Self::NotVerified { track, expected, found } => write!(
+            Self::NotVerified {
+                track,
+                expected,
+                found,
+            } => write!(
                 f,
                 "track {} reads {found:?} and not {expected:?} — the store went out and did \
                  not take. Reload the pattern on the box, and do not save it",
                 track + 1
             ),
-            Self::Echo { track, first, second } => write!(
+            Self::Echo {
+                track,
+                first,
+                second,
+            } => write!(
                 f,
                 "two reads of track {} disagree ({first:?} then {second:?}) — that is this \
                  app's own message coming home rather than the box, so nothing here can be \
@@ -222,7 +250,11 @@ fn read_track_name(io: &mut impl KitTrackIo, track: u8) -> Result<(String, Vec<u
     let (second, payload) = seen.pop().expect("two reads");
     let (first, _) = seen.pop().expect("two reads");
     if first != second {
-        return Err(LoadError::Echo { track, first, second });
+        return Err(LoadError::Echo {
+            track,
+            first,
+            second,
+        });
     }
     Ok((second, payload))
 }
@@ -249,6 +281,17 @@ pub fn load_preset_onto_track(
     path: &str,
     track: u8,
 ) -> Result<LoadReport, LoadError> {
+    load_preset_onto_track_with_backup(io, path, track, |_, _| {})
+}
+
+/// As above, but publishes the recovery bytes before any possible write.
+/// The callback must retain the first backup across repeated auditions.
+pub fn load_preset_onto_track_with_backup(
+    io: &mut impl KitTrackIo,
+    path: &str,
+    track: u8,
+    mut backup_ready: impl FnMut(&str, &[u8]),
+) -> Result<LoadReport, LoadError> {
     // Ahead of every read, so a bad index costs no round trip. The store checks
     // it again at the port, where it is a guard rather than a courtesy.
     if track >= KIT_TRACKS {
@@ -256,6 +299,8 @@ pub fn load_preset_onto_track(
     }
 
     let (replaced, backup) = read_track_name(io, track)?;
+
+    backup_ready(&replaced, &backup);
 
     let file = io.read_preset(path)?;
     let payload = preset_load_payload(&file)?;
@@ -276,9 +321,17 @@ pub fn load_preset_onto_track(
 
     let (found, _) = read_track_name(io, track)?;
     if found != loaded {
-        return Err(LoadError::NotVerified { track, expected: loaded, found });
+        return Err(LoadError::NotVerified {
+            track,
+            expected: loaded,
+            found,
+        });
     }
-    Ok(LoadReport { loaded, replaced, backup })
+    Ok(LoadReport {
+        loaded,
+        replaced,
+        backup,
+    })
 }
 
 /// Put a track's own bytes back — audition mode's undo, for a caller holding a
@@ -310,7 +363,11 @@ pub fn revert_track(
 
     let (found, _) = read_track_name(io, track)?;
     if found != expected {
-        return Err(LoadError::NotVerified { track, expected, found });
+        return Err(LoadError::NotVerified {
+            track,
+            expected,
+            found,
+        });
     }
     Ok(found)
 }
@@ -350,7 +407,9 @@ mod tests {
     /// sends, which on this format are the same shape.
     fn payload_of(name: &str) -> Vec<u8> {
         let file = fixture(name);
-        preset_load_payload(&file).expect("a native preset").to_vec()
+        preset_load_payload(&file)
+            .expect("a native preset")
+            .to_vec()
     }
 
     const HIDDEN: &str = "digitone2-soundbanks-A-1-HIDDEN-TEARS-2026-08-29.bin";
@@ -389,7 +448,10 @@ mod tests {
         }
 
         fn read_track_sound(&mut self, track: u8) -> Result<Vec<u8>, MidiError> {
-            self.tracks.get(track as usize).cloned().ok_or(MidiError::Timeout)
+            self.tracks
+                .get(track as usize)
+                .cloned()
+                .ok_or(MidiError::Timeout)
         }
 
         fn write_track_sound(&mut self, track: u8, payload: &[u8]) -> Result<(), MidiError> {
@@ -440,7 +502,11 @@ mod tests {
         load_preset_onto_track(&mut dn2, "/soundbanks/A/1", 7).unwrap();
 
         for track in 0..KIT_TRACKS {
-            let expect = if track == 7 { "HIDDEN TEARS" } else { "MONOLOW" };
+            let expect = if track == 7 {
+                "HIDDEN TEARS"
+            } else {
+                "MONOLOW"
+            };
             assert_eq!(name_on(&mut dn2, track), expect, "track {}", track + 1);
         }
     }
@@ -455,7 +521,10 @@ mod tests {
         let report = load_preset_onto_track(&mut dn2, "/soundbanks/A/1", 2).unwrap();
         assert_eq!(name_on(&mut dn2, 2), "HIDDEN TEARS");
 
-        assert_eq!(revert_track(&mut dn2, 2, &report.backup).unwrap(), "MONOLOW");
+        assert_eq!(
+            revert_track(&mut dn2, 2, &report.backup).unwrap(),
+            "MONOLOW"
+        );
         assert_eq!(dn2.tracks[2], before, "byte for byte, not merely by name");
     }
 
@@ -485,7 +554,10 @@ mod tests {
         let err = load_preset_onto_track(&mut dn2, "/soundbanks/C/1", 0).unwrap_err();
 
         assert!(
-            matches!(err, LoadError::Preset(DriveError::NotTheBoxsOwnFormat { .. })),
+            matches!(
+                err,
+                LoadError::Preset(DriveError::NotTheBoxsOwnFormat { .. })
+            ),
             "{err}"
         );
         assert!(dn2.stored.is_empty(), "a refusal must not reach the wire");
@@ -502,7 +574,11 @@ mod tests {
         let err = load_preset_onto_track(&mut dn2, "/soundbanks/A/9", 0).unwrap_err();
 
         match err {
-            LoadError::LengthMismatch { track: 0, preset: 1114, box_says: 364 } => {}
+            LoadError::LengthMismatch {
+                track: 0,
+                preset: 1114,
+                box_says: 364,
+            } => {}
             other => panic!("expected a length refusal, got {other}"),
         }
         assert!(dn2.stored.is_empty());
@@ -517,7 +593,11 @@ mod tests {
         let err = load_preset_onto_track(&mut dn2, "/soundbanks/A/1", 1).unwrap_err();
 
         match err {
-            LoadError::NotVerified { track: 1, expected, found } => {
+            LoadError::NotVerified {
+                track: 1,
+                expected,
+                found,
+            } => {
                 assert_eq!(expected, "HIDDEN TEARS");
                 assert_eq!(found, "MONOLOW");
             }
@@ -560,8 +640,10 @@ mod tests {
             fn settle(&mut self) {}
         }
 
-        let mut box_ =
-            Echoing { names: vec![payload_of(MONOLOW), payload_of(SEVENTH)], at: 0 };
+        let mut box_ = Echoing {
+            names: vec![payload_of(MONOLOW), payload_of(SEVENTH)],
+            at: 0,
+        };
 
         let err = load_preset_onto_track(&mut box_, "/soundbanks/A/1", 0).unwrap_err();
 
@@ -572,5 +654,23 @@ mod tests {
             }
             other => panic!("expected an echo refusal, got {other}"),
         }
+    }
+    #[test]
+    fn a_failed_verification_still_delivers_recovery_bytes() {
+        let mut device = FakeBox::dn2();
+        device.deaf = true;
+        let mut recovery = None;
+        assert!(load_preset_onto_track_with_backup(
+            &mut device,
+            "/soundbanks/A/1",
+            0,
+            |name, bytes| {
+                recovery = Some((name.to_string(), bytes.to_vec()));
+            }
+        )
+        .is_err());
+        let (name, bytes) = recovery.expect("pre-write backup survives failed verification");
+        assert!(!name.is_empty());
+        assert!(!bytes.is_empty());
     }
 }

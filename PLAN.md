@@ -16,6 +16,10 @@ is the companion: how the thing was built, and the lessons that kept repeating.
 Syntakt follow-up contributions after PR #7 are scoped in
 [SYNTAKT-CONTRIBUTOR-PLAN.md](SYNTAKT-CONTRIBUTOR-PLAN.md).
 
+The approved track-grid kit builder UI and its implementation checklist are in
+[KIT-BUILDER-PLAN.md](KIT-BUILDER-PLAN.md). It builds on §10's existing
+browse/load paths; complete-kit saving remains a separate phase.
+
 > **On what this file used to be, and what it became.** Through development this
 > was a 4,000-line working document carrying every phase in full, plus a session
 > log beside it. Both were trimmed for the public repo — the blow-by-blow went,
@@ -1001,6 +1005,51 @@ These are not up for renegotiation in the port.
 ---
 
 ## 9. Verification status
+
+### November OS compatibility and v0.6.0 — 2026-11-23
+
+| Device | OS | Build | Pattern / kit structs |
+|---|---|---|---|
+| Digitakt II | 1.17 | 0082 | 4 / 4 |
+| Digitone II | 1.12 | 0062 | 4 / 4 |
+| Analog Four MKI | 1.56 | 0204 | 9 / 11 |
+
+All original A01/A16 captures, A4 kit 0, and one +Drive preset per box decode
+with the existing formats. No struct offsets or format versions were changed.
+New fixture tests exercise decoding, note edits preserving the entire kit and
+other tracks, readback note/condition/p-lock values, and device-specific gates.
+Previously verified builds remain enabled; unknown builds remain read-only.
+
+Neil authorized A16 track 1 on all three devices in throwaway projects.
+`verify_firmware` passed writes and full-payload readback followed by
+byte-identical restore on DT2 at 21:49 UTC, DN2 at 21:50 UTC, and A4 at 21:56 UTC.
+The test content is the same notes/chords, velocity, length, micro-timing,
+conditions and filter p-locks as the September test below, plus digi track PROB.
+Zero dropped notes, warnings or mismatches in the successful runs.
+
+The first A4 run found a real blank-pattern edge case: kit reference byte
+12,962 was FF before the write, but hardware returned 0 after storing notes.
+Verification failed on that single byte and the original was restored exactly.
+The normal A4 track-write flow now refuses an unset kit reference before any
+send, with instructions to assign a saved kit and save the pattern. Raw backup
+restore remains available. Neil assigned/saved A16's kit, after which the test
+passed and restored the saved pattern byte-identically. No mismatch is ignored,
+and assigned kit references remain untouched (including when kit and pattern
+numbers differ).
+
+Evidence is in `crates/protocol/tests/fixtures/firmware-2026-11-23/`, with full
+local backup stashes in `local/firmware-2026-11-23/`. Initial captures precede
+the user's test preparation; the separately named pre-write captures are the
+actual backups used for restoration.
+
+The release also includes Kit Builder and Drum Steps at Neil's request, the
+committed A4 kit-assignment and piano-roll focus fixes, and merged Syntakt
+parameter-map contribution #11. Native offline checks covered Drum Steps at
+1100x800 and 700x680, add/undo; Kit Builder track selection, tag filtering,
+Match all, and the narrow A4 layout with FX/CV marked non-loadable. Firmware
+pattern acceptance does not establish real-device Kit Builder load/revert,
+full-editor performance acceptance, audibility, or Outbox 8 behavior.
+Complete-kit saving still belongs on the hardware.
 
 ### September OS compatibility — firmware 2026-09-09
 
@@ -2259,6 +2308,19 @@ check is what `decode_sound` happens to be built around.
 carry real names rather than blanked ones.
 
 ## 10. The kit builder, and the Analog Four protocol log
+
+**2026-11-12 implementation:** the approved [Kit builder](KIT-BUILDER-PLAN.md)
+now replaces the Presets entry (`K`). It adds the track grid, combined search /
+bank / Any-All tag filtering, scoped recovery and historical track observations.
+Pre-write recovery callbacks preserve backups on failed verification. Offline
+native visual review is complete; hardware acceptance remains pending. Saving
+a complete kit to +Drive remains a separate phase.
+
+
+**UI follow-up, 2026-11-11:** the approved kit grid with full text, bank and tag
+filtering is specified in [KIT-BUILDER-PLAN.md](KIT-BUILDER-PLAN.md). That plan
+adds Match all and selected-track revert to the existing browse/load behavior.
+It does not supersede the protocol evidence or enable complete-kit saving.
 
 Two things under one number, for the reason the map at the top of this file
 gives: this was scoped as the kit builder on 2026-08-26 (below), and the A4's

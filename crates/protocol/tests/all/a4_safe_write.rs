@@ -255,8 +255,8 @@ fn the_write_composes_on_the_destination_and_touches_only_the_named_lanes() {
 #[test]
 fn a05_preserves_the_fetched_tail_when_its_kit_differs_from_the_pattern_number() {
     // Real A05 / Kit 2 capture from the kit-only experiment on 2026-09-22,
-    // plus a synthetic FF case: even an unknown sentinel must be preserved.
-    for value in [1, 0xff] {
+    // plus other saved kit indices: the destination determines the kit.
+    for value in [1, 4, 127] {
         let mut before = a4_payload("analogfour-A05-kit02-2026-09-22.syx");
         before[KIT_INDEX] = value;
         let mut box_ = FakeA4::new();
@@ -638,4 +638,20 @@ fn a_write_keeps_a_trigless_trig_and_still_deletes_a_note_trig() {
     // The assertion that matters is that it no longer plays.
     assert_eq!(states[40], TrigState::Residue, "deleted: the note was on screen");
     assert!(!states[40].is_live(), "and the box shows nothing there");
+}
+
+#[test]
+fn a_pattern_with_no_saved_kit_is_refused_before_any_send() {
+    let before = a4_payload("firmware-2026-11-23/analogfour-1.56-0204-A16.syx");
+    assert_eq!(before[KIT_INDEX], 0xff);
+    let mut box_ = FakeA4::new();
+    box_.identity = Some(a4_identity("0204"));
+    box_.slots.insert(15, before.clone());
+    let stash = tmp_stash("unset-kit");
+    let mut hooks = Recorder::default();
+    let error = a4_safe_write_tracks(&mut box_, &stash, &[syn2_write(15)], &mut hooks, NOW).unwrap_err();
+    assert!(error.to_string().contains("A16 has no saved kit assignment"), "{error}");
+    assert_eq!(box_.log(), vec!["fetch 15"]);
+    assert_eq!(box_.slots[&15], before);
+    assert!(hooks.backups.is_empty());
 }

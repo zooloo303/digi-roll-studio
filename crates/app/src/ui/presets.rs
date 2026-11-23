@@ -213,9 +213,10 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use digi_core::device::{Device, PortRef, PresetLoad};
+use digi_core::model::{PatchSound, TrackKind};
 use digi_core::{DeviceId, Session};
-use digi_midi::a4_preset_load::{load_a4_preset_onto_track, revert_a4_track};
-use digi_midi::preset_load::{load_preset_onto_track, revert_track};
+use digi_midi::a4_preset_load::{load_a4_preset_onto_track_with_backup, revert_a4_track};
+use digi_midi::preset_load::{load_preset_onto_track_with_backup, revert_track};
 use digi_midi::preset_scan::{scan_bank, ScanError};
 use digi_midi::ElektronDevice;
 use digi_protocol::device::{product_for_slug, DeviceIdentity};
@@ -223,13 +224,13 @@ use digi_protocol::drive::{
     native_container_magic, parse_list_entries, ListEntry, A4_CONTAINER_MAGIC,
 };
 use digi_protocol::preset_index::{BankIndex, PresetIndex};
-use digi_protocol::sound::{tag_names_for, DN1_SOUND_MAGIC_HEAD, SOUND_MAGIC_HEAD};
 pub use digi_protocol::sound::tag_names;
+use digi_protocol::sound::{tag_names_for, DN1_SOUND_MAGIC_HEAD, SOUND_MAGIC_HEAD};
 use eframe::egui::{self, Ui};
 
-use crate::ui::Note;
 use crate::ui::tracks::Selection;
 use crate::ui::transfer::binding;
+use crate::ui::Note;
 
 /// The +Drive directory the preset banks live under. One constant rather than
 /// three literals, because the bank paths, the index keys and the worker's
@@ -267,6 +268,39 @@ pub struct Row {
     pub format: Option<u32>,
 }
 
+/// How selected tags combine; name and bank always combine with AND.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum TagMatch {
+    #[default]
+    Any,
+    All,
+}
+
+impl TagMatch {
+    pub fn matches(self, tags: u32, mask: u32) -> bool {
+        mask == 0
+            || match self {
+                Self::Any => tags & mask != 0,
+                Self::All => tags & mask == mask,
+            }
+    }
+}
+
+/// Session track data may describe a saved pattern, never the live working kit.
+pub fn destination_allowed(session: &Session, selection: Selection) -> bool {
+    let Some(device) = session.devices.get(selection.device) else {
+        return false;
+    };
+    selection.track < device.preset_load().slots()
+        && crate::ui::tracks::track(session, selection).is_some_and(|track| {
+            track.kind != TrackKind::Midi
+                && !matches!(
+                    track.patch.as_ref().map(|p| &p.sound),
+                    Some(PatchSound::Midi | PatchSound::NoSound)
+                )
+        })
+}
+
 /// What a filter pass produced, and what it had to leave out to produce it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Filtered {
@@ -289,7 +323,11 @@ pub enum Tagging {
     /// **not knowable yet** — a bank nothing has listed or indexed contributes
     /// no presets to `want`, so without this a library with one scanned bank
     /// and seven untouched ones would read as complete.
-    Partial { have: u32, want: u32, unread_banks: usize },
+    Partial {
+        have: u32,
+        want: u32,
+        unread_banks: usize,
+    },
     /// Everything in view is tagged. `unread_formats` is how many of those
     /// entries predate `IndexEntry::format` and so cannot say whether their
     /// preset can be loaded.
@@ -347,12 +385,24 @@ impl Tagging {
     pub fn caption(&self) -> String {
         match self {
             Self::NotScanned => "not scanned".into(),
-            Self::Partial { have, want, unread_banks: 0 } => format!("{have} of {want} tagged"),
-            Self::Partial { have, unread_banks, .. } => {
+            Self::Partial {
+                have,
+                want,
+                unread_banks: 0,
+            } => format!("{have} of {want} tagged"),
+            Self::Partial {
+                have, unread_banks, ..
+            } => {
                 format!("{have} tagged · {unread_banks} bank(s) unread")
             }
-            Self::Complete { count, unread_formats: 0 } => format!("{count} tagged"),
-            Self::Complete { count, unread_formats } => {
+            Self::Complete {
+                count,
+                unread_formats: 0,
+            } => format!("{count} tagged"),
+            Self::Complete {
+                count,
+                unread_formats,
+            } => {
                 format!("{count} tagged · {unread_formats} unread")
             }
             Self::Unavailable { .. } => "cannot be tagged".into(),
@@ -431,9 +481,12 @@ impl Library {
         for bank in banks {
             match self.data.get(bank) {
                 Some(data) if data.known() => {
-                    have += data.index.as_ref().map(|i| i.entries.len() as u32).unwrap_or(0);
-                    unread_formats +=
-                        data.index.as_ref().map(|i| i.unread_formats()).unwrap_or(0);
+                    have += data
+                        .index
+                        .as_ref()
+                        .map(|i| i.entries.len() as u32)
+                        .unwrap_or(0);
+                    unread_formats += data.index.as_ref().map(|i| i.unread_formats()).unwrap_or(0);
                     want += data.want();
                 }
                 // Neither listed nor indexed: this bank's size is not merely
@@ -449,9 +502,16 @@ impl Library {
             return Tagging::NotScanned;
         }
         if unread_banks == 0 && have >= want {
-            return Tagging::Complete { count: have, unread_formats };
+            return Tagging::Complete {
+                count: have,
+                unread_formats,
+            };
         }
-        Tagging::Partial { have, want, unread_banks }
+        Tagging::Partial {
+            have,
+            want,
+            unread_banks,
+        }
     }
 
     /// The rows to draw across `banks`, filtered by `mask` and a name substring.
@@ -464,17 +524,31 @@ impl Library {
     /// two-reads-one-row mismatch `IndexEntry`'s own doc was written to avoid.
     /// They have agreed in every capture taken so far.
     pub fn filtered(&self, banks: &[String], mask: u32, search: &str) -> Filtered {
+        self.filtered_matching(banks, mask, search, TagMatch::Any)
+    }
+
+    pub fn filtered_matching(
+        &self,
+        banks: &[String],
+        mask: u32,
+        search: &str,
+        mode: TagMatch,
+    ) -> Filtered {
         let needle = search.trim().to_ascii_uppercase();
         let mut base: Vec<Row> = Vec::new();
         for bank in banks {
-            let Some(data) = self.data.get(bank) else { continue };
+            let Some(data) = self.data.get(bank) else {
+                continue;
+            };
             match &data.listing {
                 Some(rows) => base.extend(rows.iter().map(|row| {
                     let found = data.index.as_ref().and_then(|i| i.entries.get(&row.slot));
                     Row {
                         bank: bank.clone(),
                         slot: row.slot,
-                        name: found.map(|e| e.name.clone()).unwrap_or_else(|| row.name.clone()),
+                        name: found
+                            .map(|e| e.name.clone())
+                            .unwrap_or_else(|| row.name.clone()),
                         size: found.map(|e| e.size).unwrap_or(row.size),
                         tags: found.map(|e| e.tag_mask),
                         format: found.and_then(|e| e.format),
@@ -503,7 +577,7 @@ impl Library {
                     return true;
                 }
                 match row.tags {
-                    Some(tags) => tags & mask != 0,
+                    Some(tags) => mode.matches(tags, mask),
                     // Not "does not match" — *cannot be asked*. Counted so the
                     // panel can say so instead of quietly showing a short list.
                     None => {
@@ -513,7 +587,11 @@ impl Library {
                 }
             })
             .collect();
-        Filtered { rows, hidden_untagged, total }
+        Filtered {
+            rows,
+            hidden_untagged,
+            total,
+        }
     }
 
     /// Every tag that at least one indexed preset in `banks` carries, as
@@ -524,6 +602,14 @@ impl Library {
     /// counts come from the index, so a library half-scanned shows the tags
     /// found so far and grows as the scan lands.
     pub fn tag_cells(&self, banks: &[String]) -> Vec<(usize, &'static str, usize)> {
+        self.tag_cells_selected(banks, 0)
+    }
+
+    pub fn tag_cells_selected(
+        &self,
+        banks: &[String],
+        selected: u32,
+    ) -> Vec<(usize, &'static str, usize)> {
         let Some(table) = tag_names_for(&self.slug) else {
             return Vec::new();
         };
@@ -533,9 +619,14 @@ impl Library {
                     .iter()
                     .filter_map(|b| self.data.get(b))
                     .filter_map(|d| d.index.as_ref())
-                    .map(|i| i.entries.values().filter(|e| e.tag_mask & (1u32 << bit) != 0).count())
+                    .map(|i| {
+                        i.entries
+                            .values()
+                            .filter(|e| e.tag_mask & (1u32 << bit) != 0)
+                            .count()
+                    })
                     .sum();
-                (count > 0).then_some((bit, table[bit], count))
+                (count > 0 || selected & (1u32 << bit) != 0).then_some((bit, table[bit], count))
             })
             .collect()
     }
@@ -633,7 +724,11 @@ pub fn foreign_format_reason(format: Option<u32>, native: Option<u32>) -> Option
             "This is {} preset, and this box's kit speaks its own format. It browses, \
              searches and tags here like any other — it just cannot be put on one of \
              these tracks. Load it on the box it belongs to.",
-            if format == A4_CONTAINER_MAGIC { "an Analog Four" } else { "a Digitakt or Digitone" }
+            if format == A4_CONTAINER_MAGIC {
+                "an Analog Four"
+            } else {
+                "a Digitakt or Digitone"
+            }
         ),
         magic => format!(
             "This preset's container is {magic:#010x}, which this build does not recognise. \
@@ -663,7 +758,8 @@ pub fn foreign_format_reason(format: Option<u32>, native: Option<u32>) -> Option
 /// What is left here is the box this build has no protocol for at all, which is
 /// a real category and the only honest thing this can still refuse.
 pub fn load_blocker(device: &Device) -> Option<String> {
-    if device.model.slug.is_none() || product_for_slug(device.model.slug.expect("checked")).is_none()
+    if device.model.slug.is_none()
+        || product_for_slug(device.model.slug.expect("checked")).is_none()
     {
         return Some(format!(
             "This build has no protocol for the {} beyond the names in this list, so it \
@@ -746,7 +842,9 @@ pub fn mismatched_box(
              would outlive the mistake",
             identity.name
         )),
-        None => Some(format!("{display} is not a box this build knows how to name an index for")),
+        None => Some(format!(
+            "{display} is not a box this build knows how to name an index for"
+        )),
     }
 }
 
@@ -888,7 +986,11 @@ enum Event {
     /// One bank finished and was written to disk. Sent per bank rather than once
     /// at the end, so a library scan stopped at bank D leaves A, B and C on
     /// screen as well as on disk — decision 7.
-    BankDone { bank: String, index: Box<BankIndex>, saved: Result<(), String> },
+    BankDone {
+        bank: String,
+        index: Box<BankIndex>,
+        saved: Result<(), String>,
+    },
     /// The whole run ended, completely or by cancel. `first_skip` is why the
     /// first passed-over preset was passed over — the thing a bare count of
     /// skips could not say.
@@ -908,11 +1010,24 @@ enum Event {
     /// keeps only the first one it is given per track — audition mode's whole
     /// mechanism, and decision 8 is why it arrives here rather than being
     /// fetched separately.
-    Loaded { track: u8, loaded: String, replaced: String, backup: Vec<u8> },
+    Loaded {
+        track: u8,
+        loaded: String,
+        replaced: String,
+        backup: Vec<u8>,
+    },
     /// Every track this panel had touched is back to what it found there.
     /// `failed` names the ones that did not take, which are the ones a person
     /// has to reload the pattern for.
-    Reverted { restored: Vec<u8>, failed: Vec<String> },
+    Reverted {
+        restored: Vec<u8>,
+        failed: Vec<String>,
+    },
+    Backup {
+        track: u8,
+        name: String,
+        bytes: Vec<u8>,
+    },
     Failed(String),
 }
 
@@ -930,9 +1045,14 @@ enum JobKind {
     /// A `0x5b` onto this track, with the preset's address for the progress
     /// line. Named rather than numbered: at four seconds a person wants to see
     /// *which* preset is going where.
-    Loading { track: u8, what: String },
+    Loading {
+        track: u8,
+        what: String,
+    },
     /// Putting every touched track back.
-    Reverting { tracks: usize },
+    Reverting {
+        tracks: usize,
+    },
 }
 
 impl JobKind {
@@ -1004,7 +1124,9 @@ fn open(
 /// workers need this and a listing that fails without saying *which* path
 /// failed is unhelpful in a run that touches nine of them.
 fn list(device: &mut ElektronDevice, path: &str) -> Result<Vec<ListEntry>, String> {
-    let reply = device.drive_list(path, 0, 0).map_err(|e| format!("could not list {path}: {e}"))?;
+    let reply = device
+        .drive_list(path, 0, 0)
+        .map_err(|e| format!("could not list {path}: {e}"))?;
     parse_list_entries(&reply.entry_bytes, reply.count)
         .map_err(|e| format!("{path} did not parse: {e}"))
 }
@@ -1245,15 +1367,31 @@ fn load_worker(
     // REVERT — is written against that report and not against a protocol.
     let outcome = match route {
         PresetLoad::KitTrackSound { .. } => {
-            load_preset_onto_track(&mut device, &path, track).map_err(|e| e.to_string())
+            load_preset_onto_track_with_backup(&mut device, &path, track, |name, bytes| {
+                let _ = events.send(Event::Backup {
+                    track,
+                    name: name.to_string(),
+                    bytes: bytes.to_vec(),
+                });
+            })
+            .map_err(|e| e.to_string())
         }
         PresetLoad::WorkingKitSplice { .. } => {
-            load_a4_preset_onto_track(&mut device, &path, track).map_err(|e| e.to_string())
+            load_a4_preset_onto_track_with_backup(&mut device, &path, track, |name, bytes| {
+                let _ = events.send(Event::Backup {
+                    track,
+                    name: name.to_string(),
+                    bytes: bytes.to_vec(),
+                });
+            })
+            .map_err(|e| e.to_string())
         }
         // Unreachable: `load_blocker` refuses this box before a port is opened.
         // Checked rather than asserted, because what is on the other side is a
         // write.
-        PresetLoad::None => Err(format!("{display}: this build has no load path for this box")),
+        PresetLoad::None => Err(format!(
+            "{display}: this build has no load path for this box"
+        )),
     };
     let _ = match outcome {
         Ok(report) => events.send(Event::Loaded {
@@ -1296,12 +1434,12 @@ fn revert_worker(
         // slot's 350 bytes on an A4. They are never mixed, because the map they
         // come out of is keyed by box.
         let put_back = match route {
-            PresetLoad::KitTrackSound { .. } => {
-                revert_track(&mut device, track, &bytes).map(|_| ()).map_err(|e| e.to_string())
-            }
-            PresetLoad::WorkingKitSplice { .. } => {
-                revert_a4_track(&mut device, track, &bytes).map(|_| ()).map_err(|e| e.to_string())
-            }
+            PresetLoad::KitTrackSound { .. } => revert_track(&mut device, track, &bytes)
+                .map(|_| ())
+                .map_err(|e| e.to_string()),
+            PresetLoad::WorkingKitSplice { .. } => revert_a4_track(&mut device, track, &bytes)
+                .map(|_| ())
+                .map_err(|e| e.to_string()),
             PresetLoad::None => Err("this build has no load path for this box".to_string()),
         };
         match put_back {
@@ -1317,6 +1455,7 @@ fn revert_worker(
 #[derive(Debug, Clone, Copy, Default)]
 pub struct Outcome {
     pub close: bool,
+    pub selection: Option<Selection>,
 }
 
 /// Which banks the browser is showing.
@@ -1362,6 +1501,7 @@ pub struct PresetsPanel {
     /// The tag filter, as a mask — §10.3's "a bit-mask test and nothing more".
     mask: u32,
     search: String,
+    tag_match: TagMatch,
     job: Option<Job>,
     /// What the last *read* said — LIST, READ TAGS — drawn under BANK beside
     /// the buttons that start them.
@@ -1395,6 +1535,9 @@ pub struct PresetsPanel {
     /// clicked — a LOAD button with no row picked is a button that cannot say
     /// what it would do.
     picked: Option<(String, u32)>,
+    backup_names: BTreeMap<(DeviceId, u8), String>,
+    // Historical observations, deliberately never presented as a live kit read.
+    observations: BTreeMap<(DeviceId, u8), (String, bool)>,
 }
 
 impl Default for PresetsPanel {
@@ -1404,17 +1547,23 @@ impl Default for PresetsPanel {
             showing: None,
             view: View::All,
             library: Library {
-                banks: DEFAULT_BANKS.iter().map(|b| format!("{SOUNDBANKS}/{b}")).collect(),
+                banks: DEFAULT_BANKS
+                    .iter()
+                    .map(|b| format!("{SOUNDBANKS}/{b}"))
+                    .collect(),
                 ..Library::default()
             },
             mask: 0,
             search: String::new(),
+            tag_match: TagMatch::Any,
             job: None,
             note: None,
             load_note: None,
             store: None,
             backups: BTreeMap::new(),
             picked: None,
+            backup_names: BTreeMap::new(),
+            observations: BTreeMap::new(),
         }
     }
 }
@@ -1423,7 +1572,10 @@ impl PresetsPanel {
     /// Point the index at a directory of the caller's choosing. Tests use it;
     /// the app leaves it alone and gets `PresetIndex::default_index`.
     pub fn with_store(store: PresetIndex) -> Self {
-        Self { store: Some(store), ..Self::default() }
+        Self {
+            store: Some(store),
+            ..Self::default()
+        }
     }
 
     /// Whether a read is in flight. The Setup panel's transfer and send buttons
@@ -1434,7 +1586,9 @@ impl PresetsPanel {
     }
 
     fn store(&self) -> Option<PresetIndex> {
-        self.store.clone().or_else(|| PresetIndex::default_index().ok())
+        self.store
+            .clone()
+            .or_else(|| PresetIndex::default_index().ok())
     }
 
     /// Load every bank's tags off disk. **The whole of an offline open** — no
@@ -1493,11 +1647,15 @@ impl PresetsPanel {
         if self.showing != device.map(|d| d.id) {
             self.showing = device.map(|d| d.id);
             self.library = Library {
-                banks: DEFAULT_BANKS.iter().map(|b| format!("{SOUNDBANKS}/{b}")).collect(),
+                banks: DEFAULT_BANKS
+                    .iter()
+                    .map(|b| format!("{SOUNDBANKS}/{b}"))
+                    .collect(),
                 ..Library::default()
             };
             self.view = View::All;
             self.mask = 0;
+            self.tag_match = TagMatch::Any;
             self.search.clear();
             self.note = None;
             // The picked row and the load's reply both name a preset on the box
@@ -1522,7 +1680,8 @@ impl PresetsPanel {
             Some(d) => format!("{} · {}", d.name, self.view.label()),
             None => String::from("no box"),
         };
-        out.close = super::panel_title_bar(ui, "Presets", &context, &mut self.reference_visible);
+        out.close =
+            super::panel_title_bar(ui, "Kit builder", &context, &mut self.reference_visible);
         if self.reference_visible {
             reference_prose(ui);
         }
@@ -1532,12 +1691,158 @@ impl PresetsPanel {
             return out;
         };
 
-        self.bank_section(ui, device, blocked);
-        ui.add_space(6.0);
-        self.tag_section(ui);
-        ui.add_space(6.0);
-        self.rows_section(ui, device, selection, blocked);
+        let mut destination = selection;
+        if ui.available_width() >= 700.0 {
+            let width = ui.available_width();
+            ui.horizontal_top(|ui| {
+                ui.allocate_ui_with_layout(
+                    egui::vec2(width * 0.56, 0.0),
+                    egui::Layout::top_down(egui::Align::Min),
+                    |ui| {
+                        self.kit_grid(ui, session, &mut destination);
+                    },
+                );
+                ui.separator();
+                ui.vertical(|ui| {
+                    ui.set_width((width * 0.44 - 24.0).max(280.0));
+                    self.browser(ui, session, device, destination, blocked);
+                });
+            });
+        } else {
+            self.kit_grid(ui, session, &mut destination);
+            ui.separator();
+            self.browser(ui, session, device, destination, blocked);
+        }
+        if destination != selection {
+            out.selection = Some(destination);
+        }
         out
+    }
+
+    fn kit_grid(&self, ui: &mut Ui, session: &Session, selection: &mut Selection) {
+        let Some(device) = session.devices.get(selection.device) else {
+            return;
+        };
+        ui.heading("Kit tracks");
+        ui.weak("Names are from the session or the last verified operation. Current hardware state is not monitored.");
+        if let Some(why) = load_blocker(device) {
+            ui.weak(why);
+        }
+        let count = session
+            .current_pattern(device.id)
+            .map_or(0, |p| p.tracks().len());
+        let columns = ((ui.available_width() / 130.0) as usize).clamp(1, 4);
+        let tile_width =
+            ((ui.available_width() - (columns - 1) as f32 * 8.0) / columns as f32).max(80.0);
+        egui::Grid::new("kit-tracks")
+            .num_columns(columns)
+            .spacing([8.0, 8.0])
+            .show(ui, |ui| {
+                for index in 0..count {
+                    let target = Selection {
+                        device: selection.device,
+                        track: index,
+                    };
+                    let track = crate::ui::tracks::track(session, target);
+                    let saved_name = match track.and_then(|t| t.patch.as_ref()).map(|p| &p.sound) {
+                        Some(PatchSound::Named(name)) => name.as_str(),
+                        Some(PatchSound::Midi) => "MIDI track",
+                        Some(PatchSound::NoSound) => "No sound destination",
+                        _ => "Sound unknown",
+                    };
+                    let observation = self.observations.get(&(device.id, index as u8));
+                    let name = observation.map_or(saved_name, |(name, _)| name.as_str());
+                    let provenance = match observation {
+                        Some((_, true)) => "Last operation verified",
+                        Some((_, false)) => "Hardware state uncertain",
+                        None if saved_name == "Sound unknown" => "Not read",
+                        None => "Session / saved pattern",
+                    };
+                    let allowed = destination_allowed(session, target);
+                    let auditioned = self.backups.contains_key(&(device.id, index as u8));
+                    let selected = selection.track == index;
+                    let label = format!(
+                        "{}Track {:02}\n{}\n{}\n{}",
+                        if selected { "Selected · " } else { "" },
+                        index + 1,
+                        name,
+                        provenance,
+                        if auditioned {
+                            "Audition backup available"
+                        } else if !allowed {
+                            "Cannot load sound"
+                        } else {
+                            ""
+                        }
+                    );
+                    if ui
+                        .add_sized(
+                            [tile_width, 94.0],
+                            egui::Button::new(label).selected(selected),
+                        )
+                        .clicked()
+                    {
+                        *selection = target;
+                    }
+                    if (index + 1) % columns == 0 {
+                        ui.end_row();
+                    }
+                }
+            });
+        ui.weak(
+            "Recovery backups last only until the app closes. Save a wanted kit on the hardware.",
+        );
+    }
+
+    fn clear_filters(&mut self) {
+        self.view = View::All;
+        self.mask = 0;
+        self.search.clear();
+        self.tag_match = TagMatch::Any;
+    }
+
+    fn browser(
+        &mut self,
+        ui: &mut Ui,
+        session: &Session,
+        device: &Device,
+        selection: Selection,
+        blocked: bool,
+    ) {
+        ui.heading(format!("Presets · Track {:02}", selection.track + 1));
+        ui.add(
+            egui::TextEdit::singleline(&mut self.search)
+                .hint_text("Search preset names")
+                .desired_width(f32::INFINITY),
+        );
+        self.bank_section(ui, device, blocked);
+        egui::ScrollArea::vertical()
+            .id_salt("kit-tags")
+            .max_height(160.0)
+            .show(ui, |ui| self.tag_section(ui));
+        ui.horizontal_wrapped(|ui| {
+            ui.selectable_value(&mut self.tag_match, TagMatch::Any, "Match any");
+            ui.selectable_value(&mut self.tag_match, TagMatch::All, "Match all");
+            if ui.button("Clear filters").clicked() {
+                self.clear_filters();
+            }
+        });
+        ui.weak(format!(
+            "{} · {} · {} tags · {:?}",
+            self.view.label(),
+            if self.search.trim().is_empty() {
+                "all names"
+            } else {
+                self.search.trim()
+            },
+            self.mask.count_ones(),
+            self.tag_match
+        ));
+        let allowed = destination_allowed(session, selection);
+        if !allowed {
+            ui.weak("This track has no loadable sound destination.");
+        }
+        self.rows_section(ui, device, selection, blocked, allowed);
     }
 
     /// The bank picker, the two reads, and whatever the last one said.
@@ -1560,20 +1865,14 @@ impl PresetsPanel {
         let mut picked = self.view.clone();
         ui.horizontal_wrapped(|ui| {
             egui::ComboBox::from_id_salt("preset-bank")
-                .selected_text(
-                    egui::RichText::new(self.view.label()).color(super::TEXT_DIMMER),
-                )
+                .selected_text(egui::RichText::new(self.view.label()).color(super::TEXT_DIMMER))
                 .width(56.0)
                 .show_ui(ui, |ui| {
                     // ALL first, because it is the default and the common case —
                     // decision 1.
                     ui.selectable_value(&mut picked, View::All, "ALL");
                     for bank in &self.library.banks {
-                        ui.selectable_value(
-                            &mut picked,
-                            View::One(bank.clone()),
-                            bank_label(bank),
-                        );
+                        ui.selectable_value(&mut picked, View::One(bank.clone()), bank_label(bank));
                     }
                 });
 
@@ -1725,10 +2024,10 @@ impl PresetsPanel {
             return;
         }
 
-        let cells = self.library.tag_cells(&banks);
+        let cells = self.library.tag_cells_selected(&banks, self.mask);
         let caption = match self.mask {
             0 => String::from("no filter"),
-            mask => tag_names(mask, &self.library.slug).join(" · "),
+            mask => format!("{} selected", mask.count_ones()),
         };
         super::section_header(ui, "TAGS", Some(&caption));
 
@@ -1750,8 +2049,7 @@ impl PresetsPanel {
                     .on_hover_text(format!("{count} preset(s) in view tagged {name}"))
                     .changed()
                 {
-                    // Any of the ticked tags, not all of them — `BankIndex::matching`
-                    // is an OR, and the box's own browser reads the same way.
+                    // The mask is shared by the Any and All matching modes.
                     self.mask ^= bit_mask;
                 }
             }
@@ -1760,7 +2058,12 @@ impl PresetsPanel {
             }
         });
 
-        if let Tagging::Partial { have, want, unread_banks } = tagging {
+        if let Tagging::Partial {
+            have,
+            want,
+            unread_banks,
+        } = tagging
+        {
             let unread = match unread_banks {
                 0 => String::new(),
                 n => format!(", and {n} bank(s) have not been read at all"),
@@ -1782,20 +2085,22 @@ impl PresetsPanel {
         device: &Device,
         selection: Selection,
         blocked: bool,
+        allowed: bool,
     ) {
         let banks = self.in_view();
-        let filtered = self.library.filtered(&banks, self.mask, &self.search);
+        let filtered =
+            self.library
+                .filtered_matching(&banks, self.mask, &self.search, self.tag_match);
+        if self.picked.as_ref().is_some_and(|(bank, slot)| {
+            !filtered
+                .rows
+                .iter()
+                .any(|r| &r.bank == bank && r.slot == *slot)
+        }) {
+            self.picked = None;
+        }
         let caption = format!("{} of {}", filtered.rows.len(), filtered.total);
         super::section_header(ui, "PRESETS", Some(&caption));
-
-        ui.horizontal(|ui| {
-            ui.weak("find");
-            ui.add(
-                egui::TextEdit::singleline(&mut self.search)
-                    .hint_text("name, across every bank in view")
-                    .desired_width(ui.available_width()),
-            );
-        });
 
         if filtered.hidden_untagged > 0 {
             super::consequence_line(
@@ -1813,7 +2118,9 @@ impl PresetsPanel {
                 View::All => "Nothing read yet — LIST asks this box for its banks.",
                 View::One(_) => "Nothing read yet — LIST asks the box for this bank.",
             });
-            return;
+        }
+        if filtered.total > 0 && filtered.rows.is_empty() {
+            ui.weak("No matching presets. Clear filters or read more tags.");
         }
 
         // The bank column earns its place only when more than one is in view.
@@ -1829,98 +2136,71 @@ impl PresetsPanel {
         let mut clicked: Option<(String, u32)> = None;
         let mut double_clicked: Option<(String, u32)> = None;
 
-        egui::ScrollArea::vertical().max_height(360.0).show(ui, |ui| {
-            for row in &filtered.rows {
-                let address = (row.bank.clone(), row.slot);
-                let is_picked = picked.as_ref() == Some(&address);
-                // **The whole row senses the click, and the labels inside it do
-                // not.** `super::install_style` makes labels non-selectable for
-                // exactly this reason — `ui::generate`'s destination chip lost
-                // half its clicks to a selectable label eating them — so the
-                // sense goes on the scope and the parts stay decoration.
-                let response = ui
-                    .scope_builder(
-                        egui::UiBuilder::new()
-                            .id_salt(("preset-row", &row.bank, row.slot))
-                            .sense(egui::Sense::click()),
-                        |ui| {
-                            ui.horizontal(|ui| {
-                                if show_bank {
-                                    ui.label(
-                                        egui::RichText::new(bank_label(&row.bank))
-                                            .monospace()
-                                            .size(10.0)
-                                            .color(super::TEXT_DIMMEST),
-                                    );
-                                }
-                                ui.label(
-                                    egui::RichText::new(format!("{:>3}", row.slot))
-                                        .monospace()
-                                        .size(10.0)
-                                        .color(super::TEXT_DIMMER),
-                                );
-                                let foreign = foreign_format(row.format, native);
-                                let name = egui::RichText::new(&row.name).size(11.0).color(
-                                    match (is_picked, foreign.is_some()) {
-                                        (true, _) => super::CYAN,
-                                        // Dimmed rather than struck through or
-                                        // hidden: it is a real preset, it can be
-                                        // searched for and it can be loaded from
-                                        // the box's own browser. What it cannot
-                                        // do is come from here.
-                                        (false, true) => super::TEXT_DIMMER,
-                                        (false, false) => super::TEXT_PRIMARY,
-                                    },
-                                );
-                                ui.label(name);
-                                if let Some(mark) = foreign {
-                                    ui.label(
-                                        egui::RichText::new(mark)
-                                            .monospace()
-                                            .size(9.0)
-                                            .color(super::TEXT_DIMMEST),
-                                    );
-                                }
-                            });
-                        },
-                    )
-                    .response;
+        egui::ScrollArea::vertical()
+            .id_salt("kit-results")
+            .max_height((ui.available_height() - 210.0).clamp(80.0, 360.0))
+            .show(ui, |ui| {
+                for row in &filtered.rows {
+                    let address = (row.bank.clone(), row.slot);
+                    let is_picked = picked.as_ref() == Some(&address);
+                    // **The whole row senses the click, and the labels inside it do
+                    // not.** `super::install_style` makes labels non-selectable for
+                    // exactly this reason — `ui::generate`'s destination chip lost
+                    // half its clicks to a selectable label eating them — so the
+                    // sense goes on the scope and the parts stay decoration.
+                    let tags_label = row
+                        .tags
+                        .map(|mask| tag_names(mask, &slug).join(", "))
+                        .unwrap_or_else(|| "Tags unread".into());
+                    let mark = foreign_format(row.format, native).unwrap_or("");
+                    let address_label = if show_bank {
+                        format!("{} / {}", bank_label(&row.bank), row.slot)
+                    } else {
+                        row.slot.to_string()
+                    };
+                    let response = ui.add(
+                        egui::Button::new(format!(
+                            "{} · {} {}\n{}",
+                            row.name, address_label, mark, tags_label
+                        ))
+                        .selected(is_picked),
+                    );
 
-                let where_it_is = format!("{}/{}", bank_label(&row.bank), row.slot);
-                let tags = match row.tags {
-                    Some(0) => String::from("no tags"),
-                    Some(mask) => tag_names(mask, &slug).join(", "),
-                    None => String::from("not scanned, so its tags are unknown"),
-                };
-                // The gesture is spelled out on every row rather than once
-                // above the list: a double-click that writes to hardware is not
-                // a thing to leave anybody guessing at, and the tooltip is
-                // where a person checks before trying it.
-                // **The gesture line tells the truth per row.** Saying
-                // "double-click to load" over a preset that will refuse is the
-                // tooltip actively misleading, and on a DN2 that is a third of
-                // them.
-                let gesture = match (foreign_format(row.format, native), target) {
-                    _ if !route.loads() => {
-                        String::from("this build cannot put a preset on this box's tracks")
+                    let where_it_is = format!("{}/{}", bank_label(&row.bank), row.slot);
+                    let tags = match row.tags {
+                        Some(0) => String::from("no tags"),
+                        Some(mask) => tag_names(mask, &slug).join(", "),
+                        None => String::from("not scanned, so its tags are unknown"),
+                    };
+                    // The gesture is spelled out on every row rather than once
+                    // above the list: a double-click that writes to hardware is not
+                    // a thing to leave anybody guessing at, and the tooltip is
+                    // where a person checks before trying it.
+                    // **The gesture line tells the truth per row.** Saying
+                    // "double-click to load" over a preset that will refuse is the
+                    // tooltip actively misleading, and on a DN2 that is a third of
+                    // them.
+                    let gesture = match (foreign_format(row.format, native), target) {
+                        _ if !route.loads() => {
+                            String::from("this build cannot put a preset on this box's tracks")
+                        }
+                        (Some(mark), _) => format!("{mark} format — cannot be loaded onto a track"),
+                        (None, Some(track)) => format!("double-click to load onto T{}", track + 1),
+                        (None, None) => String::from("no track selected to load onto"),
+                    };
+                    let response = response.on_hover_text(format!(
+                        "{where_it_is} · {} bytes · {tags}\n{gesture}",
+                        row.size
+                    ));
+
+                    if response.clicked() {
+                        clicked = Some(address.clone());
                     }
-                    (Some(mark), _) => format!("{mark} format — cannot be loaded onto a track"),
-                    (None, Some(track)) => format!("double-click to load onto T{}", track + 1),
-                    (None, None) => String::from("no track selected to load onto"),
-                };
-                let response = response.on_hover_text(format!(
-                    "{where_it_is} · {} bytes · {tags}\n{gesture}",
-                    row.size
-                ));
-
-                if response.clicked() {
-                    clicked = Some(address.clone());
+                    if response.double_clicked() {
+                        double_clicked = Some(address);
+                    }
                 }
-                if response.double_clicked() {
-                    double_clicked = Some(address);
-                }
-            }
-        });
+            });
 
         if let Some(address) = clicked {
             // A single click picks, so LOAD has something to name — and so a
@@ -1934,10 +2214,12 @@ impl PresetsPanel {
             self.picked = Some(address);
         }
 
-        self.load_section(ui, device, selection, blocked, &filtered.rows);
+        self.load_section(ui, device, selection, blocked, allowed, &filtered.rows);
 
-        if let Some((bank, slot)) = double_clicked {
-            self.start_load(device, selection, &bank, slot);
+        if !blocked && allowed {
+            if let Some((bank, slot)) = double_clicked {
+                self.start_load(device, selection, &bank, slot);
+            }
         }
     }
 
@@ -1952,6 +2234,7 @@ impl PresetsPanel {
         device: &Device,
         selection: Selection,
         blocked: bool,
+        allowed: bool,
         rows: &[Row],
     ) {
         ui.add_space(6.0);
@@ -1973,9 +2256,7 @@ impl PresetsPanel {
         let picked_row = self
             .picked
             .as_ref()
-            .and_then(|(bank, slot)| {
-                rows.iter().find(|r| r.bank == *bank && r.slot == *slot)
-            })
+            .and_then(|(bank, slot)| rows.iter().find(|r| r.bank == *bank && r.slot == *slot))
             .cloned();
 
         // Known before a port is opened, because the index read it — so a
@@ -1983,10 +2264,13 @@ impl PresetsPanel {
         // trips later. That round trip is what made the refusal feel like a
         // fault the first time anyone met it.
         let native = device.model.slug.and_then(native_container_magic);
-        let foreign = picked_row.as_ref().and_then(|r| foreign_format_reason(r.format, native));
+        let foreign = picked_row
+            .as_ref()
+            .and_then(|r| foreign_format_reason(r.format, native));
 
         let in_flight = self.job.is_some();
-        let ready = !blocked
+        let ready = allowed
+            && !blocked
             && blocker(device).is_none()
             && !in_flight
             && target.is_ok()
@@ -1997,7 +2281,7 @@ impl PresetsPanel {
             ui.add_enabled_ui(ready, |ui| {
                 if super::colored_button(
                     ui,
-                    "LOAD",
+                    format!("Load onto Track {:02}", selection.track + 1),
                     super::CYAN_FILL,
                     super::CYAN_TEXT,
                     super::CYAN,
@@ -2022,8 +2306,13 @@ impl PresetsPanel {
             let touched = self.touched(device.id);
             if !touched.is_empty() {
                 ui.add_enabled_ui(!blocked && !in_flight && blocker(device).is_none(), |ui| {
+                    if touched.contains(&(selection.track as u8))
+                        && ui.small_button("Revert track").clicked()
+                    {
+                        self.start_revert(device, Some(selection.track as u8));
+                    }
                     if ui
-                        .small_button(format!("REVERT {}", touched.len()))
+                        .small_button(format!("Revert auditioned tracks ({})", touched.len()))
                         .on_hover_text(
                             "Writes: puts every track this panel has loaded onto back to \
                              the sound it held when the first load happened — not one step \
@@ -2031,7 +2320,7 @@ impl PresetsPanel {
                         )
                         .clicked()
                     {
-                        self.start_revert(device);
+                        self.start_revert(device, None);
                     }
                 });
             }
@@ -2066,15 +2355,14 @@ impl PresetsPanel {
                     ),
                 );
             }
-            (Ok(_), None) => {
-                super::consequence_line(ui, "Click a preset to pick it, or double-click to load it.")
-            }
+            (Ok(_), None) => super::consequence_line(
+                ui,
+                "Click a preset to pick it, or double-click to load it.",
+            ),
         }
 
-        // **Said every time, not once in the `?` reveal.** This is the only
-        // control in the app that changes a box without a backup this app can
-        // restore from, and PLAN.md §10.4's whole argument is that a quiet
-        // backup policy is worse than a slow one.
+        // Say the working-buffer consequences every time. Recovery is session-only;
+        // it does not replace saving the wanted kit on the hardware.
         super::consequence_line(
             ui,
             "A load changes the kit the box is playing, not a stored one. The box's own \
@@ -2085,7 +2373,11 @@ impl PresetsPanel {
 
     /// The tracks on `device` this panel has a backup for, in track order.
     fn touched(&self, device: DeviceId) -> Vec<u8> {
-        self.backups.keys().filter(|(id, _)| *id == device).map(|(_, t)| *t).collect()
+        self.backups
+            .keys()
+            .filter(|(id, _)| *id == device)
+            .map(|(_, t)| *t)
+            .collect()
     }
 
     /// Put the listing job out.
@@ -2129,8 +2421,7 @@ impl PresetsPanel {
         };
         let Some(store) = self.store() else {
             self.note = Some(Note::Bad(
-                "there is nowhere to keep the tag index, so a scan would read for nothing"
-                    .into(),
+                "there is nowhere to keep the tag index, so a scan would read for nothing".into(),
             ));
             return;
         };
@@ -2139,7 +2430,11 @@ impl PresetsPanel {
         let existing: BTreeMap<String, BankIndex> = banks
             .iter()
             .filter_map(|b| {
-                self.library.data.get(b).and_then(|d| d.index.clone()).map(|i| (b.clone(), i))
+                self.library
+                    .data
+                    .get(b)
+                    .and_then(|d| d.index.clone())
+                    .map(|i| (b.clone(), i))
             })
             .collect();
         let cancel = Arc::new(AtomicBool::new(false));
@@ -2147,7 +2442,9 @@ impl PresetsPanel {
         let (tx, rx) = channel();
         let (expected, display) = (device.model.slug, device.model.display.to_string());
         std::thread::spawn(move || {
-            scan_worker(input, output, expected, display, banks, existing, store, flag, tx);
+            scan_worker(
+                input, output, expected, display, banks, existing, store, flag, tx,
+            );
         });
         self.job = Some(Job {
             device: device.id,
@@ -2213,6 +2510,10 @@ impl PresetsPanel {
         };
         self.picked = Some((bank.to_string(), slot));
         self.load_note = None;
+        self.observations
+            .entry((device.id, track))
+            .or_insert(("Sound unknown".into(), false))
+            .1 = false;
         let path = format!("{}/{slot}", bank.trim_end_matches('/'));
         let what = format!("{}/{slot}", bank_label(bank));
         let (tx, rx) = channel();
@@ -2233,17 +2534,20 @@ impl PresetsPanel {
         });
     }
 
+    fn recovery_backups(&self, device: DeviceId, only: Option<u8>) -> Vec<(u8, Vec<u8>)> {
+        self.backups
+            .iter()
+            .filter(|((id, track), _)| *id == device && only.is_none_or(|wanted| wanted == *track))
+            .map(|((_, track), bytes)| (*track, bytes.clone()))
+            .collect()
+    }
+
     /// Put every track this panel has touched on this box back.
-    fn start_revert(&mut self, device: &Device) {
+    fn start_revert(&mut self, device: &Device, only: Option<u8>) {
         if self.job.is_some() {
             return;
         }
-        let backups: Vec<(u8, Vec<u8>)> = self
-            .backups
-            .iter()
-            .filter(|((id, _), _)| *id == device.id)
-            .map(|((_, track), bytes)| (*track, bytes.clone()))
-            .collect();
+        let backups = self.recovery_backups(device.id, only);
         if backups.is_empty() {
             return;
         }
@@ -2252,6 +2556,12 @@ impl PresetsPanel {
             return;
         };
         self.note = None;
+        for (track, _) in &backups {
+            self.observations
+                .entry((device.id, *track))
+                .or_insert(("Sound unknown".into(), false))
+                .1 = false;
+        }
         let tracks = backups.len();
         let (tx, rx) = channel();
         let (expected, display) = (device.model.slug, device.model.display.to_string());
@@ -2287,7 +2597,13 @@ impl PresetsPanel {
     fn poll(&mut self) {
         loop {
             let Some(job) = &mut self.job else { return };
-            let Ok(event) = job.rx.try_recv() else { return };
+            let event = match job.rx.try_recv() {
+                Ok(event) => event,
+                Err(std::sync::mpsc::TryRecvError::Empty) => return,
+                Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                    Event::Failed("Worker ended without a result".into())
+                }
+            };
             let mine = Some(job.device) == self.showing;
             let job_device = job.device;
             // Which surface this job's answer belongs to — see `load_note`.
@@ -2297,13 +2613,29 @@ impl PresetsPanel {
             // Prefixed when it belongs to a box that is no longer on screen: a
             // nine-minute scan that ends in silence is worse than one that ends
             // in a line naming whose it was.
-            let attribute =
-                |text: String| if mine { text } else { format!("{whose}: {text}") };
+            let attribute = |text: String| {
+                if mine {
+                    text
+                } else {
+                    format!("{whose}: {text}")
+                }
+            };
 
             match event {
+                Event::Backup { track, name, bytes } => {
+                    self.backups.entry((job_device, track)).or_insert(bytes);
+                    self.backup_names.entry((job_device, track)).or_insert(name);
+                }
                 // The one event that arrives many times, so the job stays open
                 // and nothing is cloned beyond the line itself.
-                Event::Progress { done, total, bank, bank_n, banks, name } => {
+                Event::Progress {
+                    done,
+                    total,
+                    bank,
+                    bank_n,
+                    banks,
+                    name,
+                } => {
                     job.progress = Some((done, total, bank, bank_n, banks, name));
                 }
                 Event::BankDone { bank, index, saved } => {
@@ -2317,7 +2649,12 @@ impl PresetsPanel {
                         ))));
                     }
                 }
-                Event::Listed { model_key, build, banks, listings } => {
+                Event::Listed {
+                    model_key,
+                    build,
+                    banks,
+                    listings,
+                } => {
                     self.job = None;
                     if !mine {
                         self.note = Some(Note::Good(attribute("listed".into())));
@@ -2342,7 +2679,13 @@ impl PresetsPanel {
                     )));
                     return;
                 }
-                Event::Finished { indexed, skipped, cancelled, save_error, first_skip } => {
+                Event::Finished {
+                    indexed,
+                    skipped,
+                    cancelled,
+                    save_error,
+                    first_skip,
+                } => {
                     self.job = None;
                     let line = report_line(indexed, skipped, cancelled, elapsed);
                     // **The reason rides with the count.** A bare "388 skipped"
@@ -2387,9 +2730,19 @@ impl PresetsPanel {
                 // decision 6's "drop what is not mine". A dropped view can be
                 // read back off disk; these bytes exist nowhere else, and the
                 // box they belong to has already been written to.
-                Event::Loaded { track, loaded, replaced, backup } => {
+                Event::Loaded {
+                    track,
+                    loaded,
+                    replaced,
+                    backup,
+                } => {
                     self.job = None;
                     self.backups.entry((job_device, track)).or_insert(backup);
+                    self.backup_names
+                        .entry((job_device, track))
+                        .or_insert_with(|| replaced.clone());
+                    self.observations
+                        .insert((job_device, track), (loaded.clone(), true));
                     self.load_note = Some(Note::Good(attribute(format!(
                         "T{} is {loaded} — it was {replaced}",
                         track + 1
@@ -2400,6 +2753,9 @@ impl PresetsPanel {
                     self.job = None;
                     for track in &restored {
                         self.backups.remove(&(job_device, *track));
+                        if let Some(name) = self.backup_names.remove(&(job_device, *track)) {
+                            self.observations.insert((job_device, *track), (name, true));
+                        }
                     }
                     let put_back = restored.len();
                     self.load_note = Some(if failed.is_empty() {
@@ -2418,6 +2774,20 @@ impl PresetsPanel {
                     return;
                 }
                 Event::Failed(e) => {
+                    if let JobKind::Loading { track, .. } = job.kind {
+                        self.observations
+                            .entry((job_device, track))
+                            .or_insert(("Sound unknown".into(), false))
+                            .1 = false;
+                    }
+                    let e = if writes {
+                        format!(
+                            "{}: {e}. Hardware state is uncertain; available backups are retained.",
+                            job.kind.waiting_line()
+                        )
+                    } else {
+                        e
+                    };
                     self.job = None;
                     let note = Note::Bad(attribute(e));
                     if writes {
@@ -2460,7 +2830,7 @@ fn reference_prose(ui: &mut Ui) {
     super::consequence_line(
         ui,
         "That kit is a working buffer, so the box's own undo is reloading the pattern, \
-         which throws an unsaved kit away. REVERT puts every track this panel has loaded \
+         which throws an unsaved kit away. Revert auditioned tracks puts every track this panel has loaded \
          onto back to what it held before the first load — while the app is open. Quitting \
          loses that, and the box's undo is what is left.",
     );
@@ -2470,4 +2840,181 @@ fn reference_prose(ui: &mut Ui) {
          Read and Close and nothing else — a load writes to the active kit, which is a \
          different place, and no button in this panel can write to or delete a preset.",
     );
+}
+
+#[cfg(test)]
+mod kit_builder_tests {
+    use super::*;
+    use digi_core::device::{A4, DN2};
+
+    fn fake_job(panel: &mut PresetsPanel, device: DeviceId, kind: JobKind) -> Sender<Event> {
+        let (tx, rx) = channel();
+        panel.job = Some(Job {
+            device,
+            name: "test box".into(),
+            kind,
+            rx,
+            cancel: Arc::new(AtomicBool::new(false)),
+            started: Instant::now(),
+            progress: None,
+        });
+        tx
+    }
+
+    #[test]
+    fn failures_preserve_first_backup_and_completion_names_original_device() {
+        let first = Device::new("one", &DN2, 16).id;
+        let second = Device::new("two", &DN2, 16).id;
+        let mut panel = PresetsPanel {
+            showing: Some(second),
+            ..PresetsPanel::default()
+        };
+        let tx = fake_job(
+            &mut panel,
+            first,
+            JobKind::Loading {
+                track: 3,
+                what: "A/1".into(),
+            },
+        );
+        tx.send(Event::Backup {
+            track: 3,
+            name: "original".into(),
+            bytes: vec![1],
+        })
+        .unwrap();
+        tx.send(Event::Failed("read-back failed".into())).unwrap();
+        panel.poll();
+        assert_eq!(panel.backups[&(first, 3)], vec![1]);
+        assert!(!panel.observations[&(first, 3)].1);
+        assert!(!panel.backups.contains_key(&(second, 3)));
+        let tx = fake_job(
+            &mut panel,
+            first,
+            JobKind::Loading {
+                track: 3,
+                what: "A/2".into(),
+            },
+        );
+        tx.send(Event::Loaded {
+            track: 3,
+            loaded: "new".into(),
+            replaced: "intermediate".into(),
+            backup: vec![2],
+        })
+        .unwrap();
+        panel.poll();
+        assert_eq!(panel.backups[&(first, 3)], vec![1]);
+        assert_eq!(panel.observations[&(first, 3)], ("new".into(), true));
+    }
+
+    #[test]
+    fn scoped_and_partial_recovery_preserve_other_tracks_and_devices() {
+        let first = Device::new("one", &DN2, 16).id;
+        let second = Device::new("two", &DN2, 16).id;
+        let mut panel = PresetsPanel::default();
+        panel.backups.extend([
+            ((first, 0), vec![1]),
+            ((first, 2), vec![2]),
+            ((second, 0), vec![3]),
+        ]);
+        panel.backup_names.insert((first, 0), "original".into());
+        assert_eq!(panel.recovery_backups(first, Some(2)), vec![(2, vec![2])]);
+        assert_eq!(panel.recovery_backups(first, None).len(), 2);
+        let tx = fake_job(&mut panel, first, JobKind::Reverting { tracks: 2 });
+        tx.send(Event::Reverted {
+            restored: vec![0],
+            failed: vec!["T3 failed".into()],
+        })
+        .unwrap();
+        panel.poll();
+        assert!(!panel.backups.contains_key(&(first, 0)));
+        assert!(panel.backups.contains_key(&(first, 2)));
+        assert!(panel.backups.contains_key(&(second, 0)));
+        assert_eq!(panel.observations[&(first, 0)], ("original".into(), true));
+    }
+
+    #[test]
+    fn clear_filters_preserves_recovery_and_destination() {
+        let id = Device::new("DN2", &DN2, 16).id;
+        let mut panel = PresetsPanel {
+            showing: Some(id),
+            view: View::One("/soundbanks/B".into()),
+            mask: 3,
+            search: "bass".into(),
+            tag_match: TagMatch::All,
+            ..PresetsPanel::default()
+        };
+        panel.backups.insert((id, 4), vec![1]);
+        panel.clear_filters();
+        assert_eq!(panel.showing, Some(id));
+        assert_eq!(panel.view, View::All);
+        assert_eq!(panel.mask, 0);
+        assert_eq!(panel.tag_match, TagMatch::Any);
+        assert!(panel.search.is_empty());
+        assert_eq!(panel.backups[&(id, 4)], vec![1]);
+    }
+
+    #[test]
+    fn destinations_follow_track_kind_and_capability() {
+        let mut session = Session::default();
+        session.add_device(Device::new("DN2", &DN2, 16));
+        session.add_device(Device::new("A4", &A4, 16));
+        assert!(destination_allowed(
+            &session,
+            Selection {
+                device: 0,
+                track: 15
+            }
+        ));
+        assert!(destination_allowed(
+            &session,
+            Selection {
+                device: 1,
+                track: 3
+            }
+        ));
+        assert!(!destination_allowed(
+            &session,
+            Selection {
+                device: 1,
+                track: 4
+            }
+        ));
+        crate::ui::tracks::track_mut(&mut session, Selection::default())
+            .unwrap()
+            .kind = TrackKind::Midi;
+        assert!(!destination_allowed(&session, Selection::default()));
+    }
+
+    #[test]
+    fn offline_frames_clear_hidden_selection_without_starting_jobs() {
+        let mut session = Session::default();
+        let id = session.add_device(Device::new("DN2", &DN2, 16));
+        let mut panel = PresetsPanel {
+            showing: Some(id),
+            picked: Some(("/soundbanks/A".into(), 1)),
+            ..PresetsPanel::default()
+        };
+        panel.library.slug = "digitone2".into();
+        let ctx = egui::Context::default();
+        for width in [330.0, 700.0, 1100.0] {
+            let mut output = ctx.run_ui(
+                egui::RawInput {
+                    screen_rect: Some(egui::Rect::from_min_size(
+                        egui::Pos2::ZERO,
+                        egui::vec2(width, 700.0),
+                    )),
+                    ..Default::default()
+                },
+                |ui| {
+                    panel.ui(ui, &session, Selection::default(), false);
+                },
+            );
+            assert!(!output.shapes.is_empty());
+            output.textures_delta.clear();
+            assert!(!panel.busy());
+            assert!(panel.picked.is_none());
+        }
+    }
 }

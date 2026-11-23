@@ -30,8 +30,14 @@ impl Tool {
     // has been the last row since banks were cut. A browser you pick sounds
     // from belongs with the things you compose with, not below the thing you
     // close the session with.
-    pub const ALL: [Self; 6] =
-        [Self::Edit, Self::Harmony, Self::Generate, Self::Song, Self::Presets, Self::Session];
+    pub const ALL: [Self; 6] = [
+        Self::Edit,
+        Self::Harmony,
+        Self::Generate,
+        Self::Song,
+        Self::Presets,
+        Self::Session,
+    ];
 
     pub fn title(self) -> &'static str {
         match self {
@@ -39,7 +45,7 @@ impl Tool {
             Self::Harmony => "Harmony",
             Self::Generate => "Generate",
             Self::Song => "Song",
-            Self::Presets => "Presets",
+            Self::Presets => "Kit builder",
             Self::Session => "Session",
         }
     }
@@ -51,7 +57,7 @@ impl Tool {
             Self::Harmony => "Key and scale, scale-tinted rows, chord draw, and a chord under everything selected",
             Self::Generate => "Bass, chords, lead and a kick/snare/hat kit, generated to agree with each other",
             Self::Song => "The arrangement: rows of scenes, played in order",
-            Self::Presets => "The selected box's +Drive soundbanks, by bank, filtered by tag",
+            Self::Presets => "Build a kit by loading presets onto selected tracks",
             Self::Session => "Save and open the session file — Cmd+S saves it from anywhere",
         }
     }
@@ -77,7 +83,7 @@ impl Tool {
             Self::Harmony => Some(egui::Key::H),
             Self::Generate => Some(egui::Key::G),
             Self::Song => Some(egui::Key::S),
-            Self::Presets => Some(egui::Key::P),
+            Self::Presets => Some(egui::Key::K),
             Self::Session => None,
         }
     }
@@ -119,7 +125,11 @@ impl Default for Sidebars {
     fn default() -> Self {
         // Setup open, tools closed: nothing can be heard until a box has a port,
         // so that is the panel the app should open on.
-        Self { tool: Tool::Edit, tool_open: false, setup_open: true }
+        Self {
+            tool: Tool::Edit,
+            tool_open: false,
+            setup_open: true,
+        }
     }
 }
 
@@ -128,7 +138,11 @@ impl Default for Sidebars {
 /// so it can be checked without a `Ui` — text colour depends on `active` alone,
 /// never on hover, unlike the fill.
 fn rail_row_text_colour(active: bool) -> Color32 {
-    if active { super::TEXT_BRIGHT } else { super::TEXT_MUTED }
+    if active {
+        super::TEXT_BRIGHT
+    } else {
+        super::TEXT_MUTED
+    }
 }
 
 /// The active tool's fill and left-border colour. `(background, border)`.
@@ -149,7 +163,11 @@ fn rail_row_fill(active: bool, hovered: bool) -> (Color32, Color32) {
     } else {
         Color32::TRANSPARENT
     };
-    let border = if active { super::CYAN } else { Color32::TRANSPARENT };
+    let border = if active {
+        super::CYAN
+    } else {
+        Color32::TRANSPARENT
+    };
     (background, border)
 }
 
@@ -174,10 +192,16 @@ fn rail_row(ui: &mut Ui, active: bool, label: &str, hint: &str) -> bool {
         .scope_builder(egui::UiBuilder::new().sense(egui::Sense::click()), |ui| {
             ui.set_width(ui.available_width());
             egui::Frame::new()
-                .inner_margin(egui::Margin { left: 8, right: 0, top: 7, bottom: 7 })
+                .inner_margin(egui::Margin {
+                    left: 8,
+                    right: 0,
+                    top: 7,
+                    bottom: 7,
+                })
                 .show(ui, |ui| {
-                    let mut text =
-                        egui::RichText::new(label).size(12.0).color(rail_row_text_colour(active));
+                    let mut text = egui::RichText::new(label)
+                        .size(12.0)
+                        .color(rail_row_text_colour(active));
                     if active {
                         text = text.strong();
                     }
@@ -188,10 +212,16 @@ fn rail_row(ui: &mut Ui, active: bool, label: &str, hint: &str) -> bool {
         .on_hover_text(hint);
 
     let (background, border) = rail_row_fill(active, response.hovered());
-    ui.painter().set(placeholder, egui::Shape::rect_filled(response.rect, 0.0, background));
+    ui.painter().set(
+        placeholder,
+        egui::Shape::rect_filled(response.rect, 0.0, background),
+    );
     if border != Color32::TRANSPARENT {
         ui.painter().rect_filled(
-            egui::Rect::from_min_size(response.rect.left_top(), egui::vec2(2.0, response.rect.height())),
+            egui::Rect::from_min_size(
+                response.rect.left_top(),
+                egui::vec2(2.0, response.rect.height()),
+            ),
             0.0,
             border,
         );
@@ -230,19 +260,22 @@ fn kofi_row(ui: &mut Ui) -> bool {
         .scope_builder(egui::UiBuilder::new().sense(egui::Sense::click()), |ui| {
             ui.set_width(ui.available_width());
             egui::Frame::new()
-                .inner_margin(egui::Margin { left: 8, right: 6, top: 7, bottom: 7 })
+                .inner_margin(egui::Margin {
+                    left: 8,
+                    right: 6,
+                    top: 7,
+                    bottom: 7,
+                })
                 .show(ui, |ui| {
                     // 10px and wrapping: the rail is 86px wide, so this sits as
                     // two short lines rather than being clipped at "Buy me a".
-                    ui.label(
-                        egui::RichText::new(KOFI_LABEL)
-                            .size(10.0)
-                            .color(if ui.ui_contains_pointer() {
-                                super::TEXT_SECONDARY
-                            } else {
-                                super::TEXT_DIM
-                            }),
-                    );
+                    ui.label(egui::RichText::new(KOFI_LABEL).size(10.0).color(
+                        if ui.ui_contains_pointer() {
+                            super::TEXT_SECONDARY
+                        } else {
+                            super::TEXT_DIM
+                        },
+                    ));
                 });
         })
         .response
@@ -333,9 +366,13 @@ fn tool_tapped(ctx: &egui::Context, session: &Session) -> Option<Tool> {
         // otherwise cannot leave half a keypress behind.
         let mut took: Option<&'static str> = None;
         i.events.retain(|event| match event {
-            egui::Event::Key { key, pressed: true, repeat, modifiers, .. }
-                if modifiers.matches_exact(egui::Modifiers::NONE) =>
-            {
+            egui::Event::Key {
+                key,
+                pressed: true,
+                repeat,
+                modifiers,
+                ..
+            } if modifiers.matches_exact(egui::Modifiers::NONE) => {
                 let Some(tool) = Tool::from_key(*key) else {
                     return true;
                 };
@@ -348,7 +385,9 @@ fn tool_tapped(ctx: &egui::Context, session: &Session) -> Option<Tool> {
                 }
                 false
             }
-            egui::Event::Text(text) => !took.is_some_and(|letter| text.eq_ignore_ascii_case(letter)),
+            egui::Event::Text(text) => {
+                !took.is_some_and(|letter| text.eq_ignore_ascii_case(letter))
+            }
             _ => true,
         });
         tapped
@@ -435,8 +474,14 @@ mod tests {
     fn the_kofi_link_is_neils_page_over_https() {
         assert_eq!(KOFI_URL, "https://ko-fi.com/zooloo303");
         // Plain http would be a donation link a network could rewrite.
-        assert!(KOFI_URL.starts_with("https://"), "a payment link must be https");
-        assert!(KOFI_URL.is_ascii(), "no confusable characters in a payment host");
+        assert!(
+            KOFI_URL.starts_with("https://"),
+            "a payment link must be https"
+        );
+        assert!(
+            KOFI_URL.is_ascii(),
+            "no confusable characters in a payment host"
+        );
     }
 
     #[test]
@@ -517,10 +562,16 @@ mod tests {
     ) -> (bool, Vec<egui::Event>) {
         let mut took = false;
         let mut left = Vec::new();
-        let mut output = ctx.run_ui(egui::RawInput { events, ..Default::default() }, |ui| {
-            took = shortcuts(ui, bars, session);
-            left = ui.input(|i| i.events.clone());
-        });
+        let mut output = ctx.run_ui(
+            egui::RawInput {
+                events,
+                ..Default::default()
+            },
+            |ui| {
+                took = shortcuts(ui, bars, session);
+                left = ui.input(|i| i.events.clone());
+            },
+        );
         output.textures_delta.clear();
         (took, left)
     }
@@ -553,9 +604,17 @@ mod tests {
             );
             assert!(!seen.contains(&key), "{key:?} is bound twice");
             seen.push(key);
-            assert_eq!(Tool::from_key(key), Some(tool), "the lookup must agree with the key");
+            assert_eq!(
+                Tool::from_key(key),
+                Some(tool),
+                "the lookup must agree with the key"
+            );
         }
-        assert_eq!(seen.len(), PANEL_TOOLS - 1, "every tool but one carries a letter");
+        assert_eq!(
+            seen.len(),
+            PANEL_TOOLS - 1,
+            "every tool but one carries a letter"
+        );
     }
 
     #[test]
@@ -572,14 +631,20 @@ mod tests {
         // hover is where this app has already decided to say so.
         for tool in Tool::ALL {
             let hint = row_hint(tool);
-            assert!(hint.starts_with(tool.hint()), "the hint must still say what the panel is for");
+            assert!(
+                hint.starts_with(tool.hint()),
+                "the hint must still say what the panel is for"
+            );
             match tool.key() {
                 Some(key) => assert!(
                     hint.ends_with(&format!("press {}", key.name())),
                     "{} must announce its key: {hint}",
                     tool.title()
                 ),
-                None => assert!(hint.contains("Cmd+S"), "Session must point at the key it does have"),
+                None => assert!(
+                    hint.contains("Cmd+S"),
+                    "Session must point at the key it does have"
+                ),
             }
         }
     }
@@ -594,14 +659,20 @@ mod tests {
             let Some(key) = tool.key() else { continue };
             let (took, left) = tap(&ctx, key, &mut bars, &session);
             assert!(took, "{key:?} is a rail key");
-            assert!(left.is_empty(), "{key:?} and the character beside it both go: {left:?}");
+            assert!(
+                left.is_empty(),
+                "{key:?} and the character beside it both go: {left:?}"
+            );
             assert!(bars.tool_open, "{key:?} opens the panel");
             assert_eq!(bars.tool, tool, "{key:?} opens {}", tool.title());
 
             // Pressing it again closes it, exactly as clicking the open row does.
             tap(&ctx, key, &mut bars, &session);
             assert!(!bars.tool_open, "{key:?} on the open panel closes it");
-            assert_eq!(bars.tool, tool, "and it is still the tool that would reopen");
+            assert_eq!(
+                bars.tool, tool,
+                "and it is still the tool that would reopen"
+            );
 
             // And back open, so the next tool in the loop is a *switch* rather
             // than an open — which is the other half of `open_or_close`.
@@ -619,7 +690,11 @@ mod tests {
         tap(&ctx, egui::Key::G, &mut bars, &session);
         assert_eq!((bars.tool, bars.tool_open), (Tool::Generate, true));
         tap(&ctx, egui::Key::H, &mut bars, &session);
-        assert_eq!((bars.tool, bars.tool_open), (Tool::Harmony, true), "a switch, not a toggle");
+        assert_eq!(
+            (bars.tool, bars.tool_open),
+            (Tool::Harmony, true),
+            "a switch, not a toggle"
+        );
     }
 
     #[test]
@@ -632,9 +707,18 @@ mod tests {
         frame(&ctx, letter(egui::Key::E), &mut bars, &session);
         assert!(bars.tool_open);
         let (took, left) = frame(&ctx, letter(egui::Key::E), &mut bars, &session);
-        assert!(bars.tool_open, "a leant-on E must not close what the first press opened");
-        assert!(!took, "a repeat is not a tap, so nothing downstream is told the key moved a panel");
-        assert!(left.is_empty(), "but it is still swallowed rather than typed into the window");
+        assert!(
+            bars.tool_open,
+            "a leant-on E must not close what the first press opened"
+        );
+        assert!(
+            !took,
+            "a repeat is not a tap, so nothing downstream is told the key moved a panel"
+        );
+        assert!(
+            left.is_empty(),
+            "but it is still swallowed rather than typed into the window"
+        );
     }
 
     #[test]
@@ -645,7 +729,11 @@ mod tests {
 
         let (took, left) = frame(&ctx, letter(egui::Key::Q), &mut bars, &session);
         assert!(!took);
-        assert_eq!(left.len(), 2, "the key and its character both pass through: {left:?}");
+        assert_eq!(
+            left.len(),
+            2,
+            "the key and its character both pass through: {left:?}"
+        );
         assert!(!bars.tool_open);
     }
 
@@ -664,7 +752,7 @@ mod tests {
             egui::Modifiers::COMMAND | egui::Modifiers::SHIFT,
         ] {
             let mut bars = Sidebars::default();
-            for key in [egui::Key::E, egui::Key::S, egui::Key::P] {
+            for key in [egui::Key::E, egui::Key::S, egui::Key::K] {
                 let event = egui::Event::Key {
                     key,
                     physical_key: Some(key),
@@ -691,7 +779,11 @@ mod tests {
 
         let (took, left) = frame(&ctx, letter(egui::Key::E), &mut bars, &session);
         assert!(!took);
-        assert_eq!(left.len(), 2, "the character has to reach the field: {left:?}");
+        assert_eq!(
+            left.len(),
+            2,
+            "the character has to reach the field: {left:?}"
+        );
         assert!(!bars.tool_open);
     }
 
@@ -711,7 +803,11 @@ mod tests {
 
         let (took, left) = frame(&ctx, letter(egui::Key::E), &mut bars, &session);
         assert!(!took);
-        assert_eq!(left.len(), 2, "the modal has the keyboard until it is answered");
+        assert_eq!(
+            left.len(),
+            2,
+            "the modal has the keyboard until it is answered"
+        );
         assert!(!bars.tool_open);
     }
 
@@ -726,7 +822,7 @@ mod tests {
         let cell = crate::ui::tracks::cell_id(session.devices[0].id, 0);
         ctx.memory_mut(|m| m.request_focus(cell));
 
-        let (took, _) = frame(&ctx, letter(egui::Key::P), &mut bars, &session);
+        let (took, _) = frame(&ctx, letter(egui::Key::K), &mut bars, &session);
         assert!(took);
         assert_eq!((bars.tool, bars.tool_open), (Tool::Presets, true));
     }
@@ -734,8 +830,14 @@ mod tests {
     #[test]
     fn the_app_opens_on_setup_with_the_tools_closed() {
         let bars = Sidebars::default();
-        assert!(bars.setup_open, "a box needs a port before anything can be heard");
-        assert!(!bars.tool_open, "the roll gets the width until a tool is asked for");
+        assert!(
+            bars.setup_open,
+            "a box needs a port before anything can be heard"
+        );
+        assert!(
+            !bars.tool_open,
+            "the roll gets the width until a tool is asked for"
+        );
     }
 
     #[test]
@@ -746,7 +848,11 @@ mod tests {
         let (background, border) = rail_row_fill(true, false);
         assert_eq!(background, super::super::PANEL_BG_RAISED);
         assert_eq!(border, super::super::CYAN);
-        assert_ne!(background, super::super::CYAN, "the active row's fill must not be cyan");
+        assert_ne!(
+            background,
+            super::super::CYAN,
+            "the active row's fill must not be cyan"
+        );
     }
 
     #[test]
@@ -757,7 +863,11 @@ mod tests {
         assert_eq!(rail_row_fill(false, false).0, Color32::TRANSPARENT);
         assert_eq!(rail_row_fill(false, true).0, super::super::INSET_BG_HOVER);
         assert_eq!(rail_row_fill(true, true).0, super::super::PANEL_BG_RAISED);
-        assert_eq!(rail_row_fill(false, false).1, Color32::TRANSPARENT, "no border when inactive");
+        assert_eq!(
+            rail_row_fill(false, false).1,
+            Color32::TRANSPARENT,
+            "no border when inactive"
+        );
     }
 
     #[test]

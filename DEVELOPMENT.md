@@ -1455,3 +1455,50 @@ Full list in `PLAN.md` §7. The five that govern anything touching a box:
    says `Overwrite A01 T9` rather than OK.
 5. **Hardware testing is never in the dev loop.** `cargo test --workspace` needs
    no system dependencies and no box.
+
+
+### Kit builder — 2026-11-12
+
+Reused `PresetsPanel` and both verified load routes. Added a pre-write backup
+callback to each route: callers can retain recovery bytes even when the store
+or its read-back fails. Tests use fake devices and assert the backup survives
+failed verification; no protocol opcodes or device support were added.
+
+The grid displays session/saved-pattern provenance or a historical last verified
+operation. It does not monitor hardware pattern changes or reconnects, and says
+so; these observations must never be relabelled as current working-kit reads.
+Recovery remains keyed by device/track and lasts only for this app session.
+
+Offline native visual review used the `kit_builder_preview` example at 1100×760
+and 640×700, full model-specific tag sets, destination/filter changes and A4
+FX/CV refusal. This example has no MIDI engine or port bindings. A 330px
+headless frame is also covered. No minimum window size is declared by the app;
+these are measured review sizes, not a new supported-minimum claim.
+
+Hardware acceptance is pending: no model OS/build or real-device load/revert
+was tested in this implementation session. Complete-kit +Drive saving remains
+outside this release.
+
+Validation completed: `cargo test --workspace -q` passed all 2,252 tests;
+`cargo clippy --workspace --all-targets -- -D warnings` passed; `rustfmt --check`
+passed for all changed Rust files, and `git diff --check` passed.
+
+## v0.6.0 release validation — 2026-11-23
+
+The combined release includes Kit Builder, Drum Steps, the existing A4
+kit-assignment and piano-roll focus fixes, and merged Syntakt map work.
+`cargo test --workspace` passed 2,274 tests; clippy with `-D warnings` passed.
+The macOS test run needs CoreMIDI access; the sandbox-only run failed the
+port-enumeration test, then the complete unrestricted run passed.
+
+Read-only firmware captures and authorized A16 track-1 write/readback/restore
+checks passed on DT2 1.17/0082, DN2 1.12/0062 and A4 MKI 1.56/0204. The first
+A4 run exposed FF-to-0 kit-reference normalization; restoration succeeded,
+and track writes now refuse an unset kit before sending. A repeated run after
+the user saved a kit assignment passed. PLAN.md records the complete scope.
+
+Native offline UI checks covered Drum Steps laptop/narrow layouts and add/undo,
+and Kit Builder destination selection, tag/Match-all filtering and narrow A4
+layout. Real-device Kit Builder audition/revert and listening acceptance are
+still not claimed. The macOS package's ad-hoc signature verified on the bundle
+and again inside the disk image.

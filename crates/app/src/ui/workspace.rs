@@ -27,85 +27,125 @@ use crate::engine::EngineLink;
 use crate::ui::pianoroll::PianoRoll;
 use crate::ui::tracks::{self, Selection};
 
-/// Draw the workspace. Returns whether the session changed.
-pub fn ui(
-    ui: &mut Ui,
-    session: &mut Session,
-    engine: &mut EngineLink,
-    selection: &mut Selection,
-    roll: &mut PianoRoll,
-    // Whether a take is open, so the roll can draw its playhead in the REC
-    // colour — PLAN.md §12.5.1. Passed down rather than read off the
-    // engine here, because it is the `Recorder` that knows whether a take is
-    // actually running, not whether REC merely happens to be lit.
-    recording: bool,
-) -> bool {
-    let mut edited = false;
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub enum EditorView {
+    #[default]
+    PianoRoll,
+    DrumSteps,
+}
 
-    // **The row's height is capped here, not left to its contents.** It has to
-    // be: the lanes pane scrolls its grid, and a `ScrollArea` grows to whatever
-    // it is given, so an uncapped row would take the whole central panel and
-    // leave the roll a rect of no height. That is not hypothetical — it happened
-    // once already, when a `Separator` in the horizontal layout this row used to
-    // have grew floor to ceiling and the window showed no piano roll at all,
-    // with every test passing.
-    //
-    // **The cap asks the pane how tall it wants to be**, rather than naming a
-    // number here. It used to be a flat 206px, sized for two boxes; the third
-    // one pushed the pane's parameter row below the fold. `tracks::pane_height`
-    // fits the boxes actually in the session and caps itself, so the roll is
-    // still safe — see its own doc comment, and the pinning in `tracks::ui`
-    // that makes the row's visibility independent of this number anyway.
-    let width = ui.available_width();
-    let head_h = tracks::pane_height(session.devices.len());
-    ui.allocate_ui_with_layout(
-        Vec2::new(width, head_h),
-        Layout::top_down(Align::Min),
-        |ui| {
-            ui.set_min_height(head_h);
-            ui.set_max_height(head_h);
-            edited |= tracks::ui(ui, session, selection, &*engine);
-        },
-    );
-    ui.separator();
+/// Editor preferences are UI state; both editors mutate the same session.
+#[derive(Default)]
+pub struct Workspace {
+    pub view: EditorView,
+    drums: crate::ui::drums::DrumSequencer,
+}
 
-    // The playhead is the engine's, in pattern steps; a track wraps it by its own
-    // length and runs it at its own scale, which is exactly what makes two tracks
-    // of different lengths draw right against one clock.
-    let playhead = engine.is_playing().then(|| {
-        let position = engine.position_steps();
-        match tracks::track(session, *selection) {
-            Some(track) if track.length_steps > 0 => {
-                let steps = position * track.scale.multiplier();
-                steps % track.length_steps as f64
+impl Workspace {
+    pub fn cancel_gesture(&mut self) {
+        self.drums.cancel_gesture();
+    }
+    /// Draw the workspace. Returns whether the session changed.
+    pub fn ui(
+        &mut self,
+        ui: &mut Ui,
+        session: &mut Session,
+        engine: &mut EngineLink,
+        selection: &mut Selection,
+        roll: &mut PianoRoll,
+        // Whether a take is open, so the roll can draw its playhead in the REC
+        // colour — PLAN.md §12.5.1. Passed down rather than read off the
+        // engine here, because it is the `Recorder` that knows whether a take is
+        // actually running, not whether REC merely happens to be lit.
+        recording: bool,
+    ) -> bool {
+        let mut edited = false;
+
+        // **The row's height is capped here, not left to its contents.** It has to
+        // be: the lanes pane scrolls its grid, and a `ScrollArea` grows to whatever
+        // it is given, so an uncapped row would take the whole central panel and
+        // leave the roll a rect of no height. That is not hypothetical — it happened
+        // once already, when a `Separator` in the horizontal layout this row used to
+        // have grew floor to ceiling and the window showed no piano roll at all,
+        // with every test passing.
+        //
+        // **The cap asks the pane how tall it wants to be**, rather than naming a
+        // number here. It used to be a flat 206px, sized for two boxes; the third
+        // one pushed the pane's parameter row below the fold. `tracks::pane_height`
+        // fits the boxes actually in the session and caps itself, so the roll is
+        // still safe — see its own doc comment, and the pinning in `tracks::ui`
+        // that makes the row's visibility independent of this number anyway.
+        let width = ui.available_width();
+        let head_h = tracks::pane_height(session.devices.len());
+        ui.allocate_ui_with_layout(
+            Vec2::new(width, head_h),
+            Layout::top_down(Align::Min),
+            |ui| {
+                ui.set_min_height(head_h);
+                ui.set_max_height(head_h);
+                edited |= tracks::ui(ui, session, selection, &*engine);
+            },
+        );
+        ui.separator();
+
+        let old_view = self.view;
+        ui.horizontal(|ui| {
+            ui.selectable_value(&mut self.view, EditorView::PianoRoll, "PIANO ROLL");
+            ui.selectable_value(&mut self.view, EditorView::DrumSteps, "DRUM STEPS");
+        });
+        if self.view != old_view {
+            self.cancel_gesture();
+        }
+        if self.view == EditorView::DrumSteps {
+            edited |= self.drums.ui(
+                ui,
+                session,
+                selection,
+                roll,
+                engine.is_playing().then(|| engine.position_steps()),
+                recording,
+            );
+            return edited;
+        }
+
+        // The playhead is the engine's, in pattern steps; a track wraps it by its own
+        // length and runs it at its own scale, which is exactly what makes two tracks
+        // of different lengths draw right against one clock.
+        let playhead = engine.is_playing().then(|| {
+            let position = engine.position_steps();
+            match tracks::track(session, *selection) {
+                Some(track) if track.length_steps > 0 => {
+                    let steps = position * track.scale.multiplier();
+                    steps % track.length_steps as f64
+                }
+                _ => position,
             }
-            _ => position,
-        }
-    });
+        });
 
-    // **The key comes out of the session and goes back in.** The roll needs it
-    // `&mut` for one gesture — alt+wheel cycles the chord inversion while aiming —
-    // and it cannot borrow the session twice, since the track it edits is inside
-    // it. `Harmony` is `Copy` and eight small fields, so a copy out and a compare
-    // back costs nothing and keeps the roll ignorant of sessions.
-    let mut harmony = session.harmony;
-    // **The ghosts come out before the active track is borrowed `&mut`**, for
-    // the same reason the key does: they are the same pattern's other slots.
-    // `Pattern::tracks()` is `Arc<Track>` per slot, so this is a pointer bump
-    // per ghost per frame, not a copy of anyone's notes.
-    let ghosts = tracks::ghosts(session, *selection);
-    match tracks::track_mut(session, *selection) {
-        Some(track) => edited |= roll.ui(ui, track, &ghosts, playhead, &mut harmony, recording),
-        None => {
-            ui.weak("no track selected");
+        // **The key comes out of the session and goes back in.** The roll needs it
+        // `&mut` for one gesture — alt+wheel cycles the chord inversion while aiming —
+        // and it cannot borrow the session twice, since the track it edits is inside
+        // it. `Harmony` is `Copy` and eight small fields, so a copy out and a compare
+        // back costs nothing and keeps the roll ignorant of sessions.
+        let mut harmony = session.harmony;
+        // **The ghosts come out before the active track is borrowed `&mut`**, for
+        // the same reason the key does: they are the same pattern's other slots.
+        // `Pattern::tracks()` is `Arc<Track>` per slot, so this is a pointer bump
+        // per ghost per frame, not a copy of anyone's notes.
+        let ghosts = tracks::ghosts(session, *selection);
+        match tracks::track_mut(session, *selection) {
+            Some(track) => edited |= roll.ui(ui, track, &ghosts, playhead, &mut harmony, recording),
+            None => {
+                ui.weak("no track selected");
+            }
         }
-    }
-    if session.harmony != harmony {
-        session.harmony = harmony;
-        edited = true;
-    }
+        if session.harmony != harmony {
+            session.harmony = harmony;
+            edited = true;
+        }
 
-    edited
+        edited
+    }
 }
 
 // **No tests here any more, and that is the change rather than an omission.**

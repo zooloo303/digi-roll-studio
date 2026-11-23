@@ -57,6 +57,7 @@ use crate::ui::tracks::Selection;
 #[derive(Debug, Clone, Copy, Default)]
 pub struct Outcome {
     pub close: bool,
+    pub selection: Option<Selection>,
     /// The session was replaced by one off disk.
     pub reloaded: bool,
     /// An ordinary edit — the shell opens a history step around it.
@@ -99,6 +100,7 @@ pub fn ui(
             let out = session_panel.ui(ui, session, available_in, available_out);
             Outcome {
                 close: out.close,
+                selection: None,
                 reloaded: out.reloaded,
                 edited: false,
                 stepped: false,
@@ -109,6 +111,7 @@ pub fn ui(
             let out = edit_panel.ui(ui, session, selection, roll, history);
             Outcome {
                 close: out.close,
+                selection: None,
                 reloaded: false,
                 edited: out.edited,
                 stepped: out.stepped,
@@ -119,6 +122,7 @@ pub fn ui(
             let out = harmony_panel.ui(ui, session, selection, roll);
             Outcome {
                 close: out.close,
+                selection: None,
                 reloaded: false,
                 edited: out.edited,
                 stepped: false,
@@ -129,6 +133,7 @@ pub fn ui(
             let out = generate_panel.ui(ui, session);
             Outcome {
                 close: out.close,
+                selection: None,
                 reloaded: false,
                 edited: out.edited,
                 stepped: false,
@@ -139,6 +144,7 @@ pub fn ui(
             let out = song_panel.ui(ui, session, engine, history);
             Outcome {
                 close: out.close,
+                selection: None,
                 reloaded: false,
                 edited: out.edited,
                 stepped: false,
@@ -161,9 +167,15 @@ pub fn ui(
         // would be the sign step 6 had landed. It was written before the
         // distinction between the two was worth this much.
         Tool::Presets => {
-            let out = presets_panel.ui(ui, session, selection, transfers_busy);
+            let out = egui::ScrollArea::vertical()
+                .id_salt("kit-workspace")
+                .show(ui, |ui| {
+                    presets_panel.ui(ui, session, selection, transfers_busy)
+                })
+                .inner;
             Outcome {
                 close: out.close,
+                selection: out.selection,
                 reloaded: false,
                 edited: false,
                 stepped: false,

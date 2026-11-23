@@ -48,6 +48,7 @@ struct App {
     /// The engine thread, and the ports it is sending to.
     engine: EngineLink,
     roll: PianoRoll,
+    workspace: workspace::Workspace,
     ports: PortsPanel,
     /// The fetch group of the Setup panel: which slot each box is pulling, and
     /// the last answer it got.
@@ -206,7 +207,7 @@ impl eframe::App for App {
             before.as_ref(),
         );
 
-        // The rail's letters — E, H, G, S, P — and Cmd+S, read here for exactly
+        // The rail's letters — E, H, G, S, K — and Cmd+S, read here for exactly
         // the same reason and in the same place: a key that only works while the
         // panel it belongs to is open is a key nobody finds. Neither is an edit.
         // The rail's letters move which panel is showing, which is desk state;
@@ -343,8 +344,14 @@ impl eframe::App for App {
         // so the prose ran off the edge and was clipped rather than wrapped.
         // 330px is §2c's own figure for this column, so the spec width and the
         // width that makes the text behave are the same number.
+        // Kit builder uses a wider bounded workspace while retaining room for Setup.
         let panel = egui::Panel::left("tools")
-            .exact_size(330.0)
+            .exact_size(if tool == digi_roll_studio::ui::rail::Tool::Presets {
+                (ui.available_width() - 100.0 - if self.bars.setup_open { 320.0 } else { 0.0 })
+                    .clamp(330.0, 1100.0)
+            } else {
+                330.0
+            })
             .show_collapsible(ui, &mut tool_open, |ui| {
                 tools::ui(
                     ui,
@@ -371,6 +378,9 @@ impl eframe::App for App {
                 )
             });
         let tool_outcome = panel.map(|r| r.inner).unwrap_or_default();
+        if let Some(selection) = tool_outcome.selection {
+            self.selection = selection;
+        }
         self.bars.tool_open = tool_open && !tool_outcome.close;
         edited |= tool_outcome.edited;
         stepped |= tool_outcome.stepped;
@@ -406,8 +416,11 @@ impl eframe::App for App {
         }
         self.bars.setup_open = setup_open;
 
+        if reloaded || stepped {
+            self.workspace.cancel_gesture();
+        }
         egui::CentralPanel::default().show(ui, |ui| {
-            edited |= workspace::ui(
+            edited |= self.workspace.ui(
                 ui,
                 &mut self.session,
                 &mut self.engine,

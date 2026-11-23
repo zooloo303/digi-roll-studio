@@ -82,16 +82,20 @@ use crate::trig_cond::{apply_track_prob, apply_track_trig_settings, trig_setting
 /// length, micro-timing, condition and filter p-lock; the digis also track PROB.
 /// Full write/readback and subsequent restore were byte-identical on all three.
 /// DN2 requires pattern and kit v4 support. See PLAN.md's September OS entry.
+/// 0082 (DT2 1.17), 0062 (DN2 1.12), and 0204 (A4 1.56) passed the same
+/// write/readback and byte-identical restore on 2026-11-23. The A4 test used
+/// a saved kit assignment; unset kit references are refused before writing.
+/// See PLAN.md and fixtures/firmware-2026-11-23.
 pub const WRITE_ALLOWED_BUILDS: &[(&str, &[&str])] = &[
-    ("digitakt2", &["0070", "0071", "0079"]), // 1.15B, 1.15C, 1.16
-    ("digitone2", &["0049", "0050", "0059"]), // 1.10D, 1.10E, 1.11
+    ("digitakt2", &["0070", "0071", "0079", "0082"]), // 1.15B, 1.15C, 1.16, 1.17
+    ("digitone2", &["0049", "0050", "0059", "0062"]), // 1.10D, 1.10E, 1.11, 1.12
     // 1.55B. The gen-1 write cycle on this build: a pattern sent and displayed
     // 2026-08-30, four authored trig states shown as predicted 2026-08-31, and
     // the same day a `0x64` fetch of A16 carried exactly the trigs the probe
     // wrote — send, re-read and compare, at trig rather than byte granularity.
     // The full byte-for-byte verify is what `a4_safe_write_tracks` runs on
     // every write, so the first send through it completes this row's evidence.
-    ("analogfour", &["0195", "0201"]), // 1.55B, 1.55D
+    ("analogfour", &["0195", "0201", "0204"]), // 1.55B, 1.55D, 1.56
     // 1.40. Verified 2026-09-11 on hardware, with a control: six sends into six
     // empty slots, each carrying a different edit, each read back and compared.
     // A02 was read before the first write and after the last and is
@@ -1037,6 +1041,17 @@ pub fn a4_safe_write_tracks(
         )));
     }
 
+    // OS 1.56 changes an unset FF kit reference to 0 when notes are stored
+    // (November hardware capture). Refuse before sending rather than silently
+    // choose a kit or ignore the resulting verification mismatch. Raw restore
+    // remains separate and can put the original blank pattern back exactly.
+    if original[crate::a4_pattern::KIT_INDEX] == 0xff {
+        return Err(WriteError::Encode(format!(
+            "{label} has no saved kit assignment. On the Analog Four, assign a saved kit \
+             to {label} and save the pattern, then retry the write"
+        )));
+    }
+
     let mut tracks = Vec::with_capacity(writes.len());
     for write in writes {
         tracks.push(TrackConfirm {
@@ -1182,7 +1197,7 @@ pub fn a4_safe_write_tracks(
     // the 2026-09-22 kit-only captures prove it is the kit reference: A05 with
     // Kit 2 / Kit 5 / Kit 2 changes only that byte, 1 / 4 / 1. Forcing it to 4
     // selected Kit 5. The SysEx header already addresses the destination;
-    // track edits must not replace this byte (including an FF sentinel).
+    // track edits must not replace this byte. An unset FF reference is refused above.
 
     hooks.on_status(&match writes {
         [only] => format!("Writing {label} T{}…", only.track_index + 1),
@@ -1986,9 +2001,9 @@ mod tests {
         assert_eq!(
             WRITE_ALLOWED_BUILDS,
             &[
-                ("digitakt2", &["0070", "0071", "0079"][..]),
-                ("digitone2", &["0049", "0050", "0059"][..]),
-                ("analogfour", &["0195", "0201"][..]),
+                ("digitakt2", &["0070", "0071", "0079", "0082"][..]),
+                ("digitone2", &["0049", "0050", "0059", "0062"][..]),
+                ("analogfour", &["0195", "0201", "0204"][..]),
                 // Added 2026-09-11. This assertion is the interlock: a row
                 // reaches the allowlist only by someone editing the list *and*
                 // this literal, which is a second chance to ask what verified

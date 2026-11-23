@@ -40,11 +40,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
     let slug = &args[0];
     let expected = match slug.as_str() {
-        "digitakt2" => ("0079", "1.16"),
-        "digitone2" => ("0059", "1.11"),
-        "analogfour" => ("0201", "1.55D"),
+        "digitakt2" => ("0082", "1.17"),
+        "digitone2" => ("0062", "1.12"),
+        "analogfour" => ("0204", "1.56"),
         "syntakt" => ("0082", "1.40"),
-        _ => return Err("not a September 2026 firmware target".into()),
+        _ => return Err("not a configured firmware target".into()),
     };
     let index = PatternRef::from_label(&args[1]).and_then(|p| p.wire_index()).ok_or("invalid pattern slot")?;
     let out = PathBuf::from(&args[2]);

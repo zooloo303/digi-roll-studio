@@ -20,10 +20,12 @@ The protocol work this stands on is ported from
 is the de-facto public documentation of Elektron's SysEx protocol. Without it
 there is nothing here. See [`CREDITS.md`](CREDITS.md) for what came from where.
 
-Hardware-verified OS support includes **Digitakt II 1.16 (0079)**,
-**Digitone II 1.11 (0059)**, and **Analog Four 1.55D (0201)**. Pattern writes
-and restores passed full readback comparison on all three on 2026-09-09.
-Previously supported builds remain supported.
+Hardware-verified OS support includes **Digitakt II 1.17 (0082)**,
+**Digitone II 1.12 (0062)**, and **Analog Four 1.56 (0204)**. Pattern writes
+and restores passed full readback comparison on all three on 2026-11-23.
+Previously supported builds remain supported. Analog Four destinations must have
+a saved kit assignment; DRS asks you to assign/save one before writing to an
+unassigned blank pattern.
 
 ---
 
@@ -62,9 +64,11 @@ notes, never SysEx, and recording a take changes only the session.
 
 ## Status
 
-**MVP1** — reached 2026-09-04, and **v0.5.4** as of 2026-09-09, which adds
-support for Digitakt II OS 1.16, Digitone II OS 1.11, and Analog Four OS 1.55D.
-Pattern imports, writes, and preset sends were tested on the updated devices.
+**v0.6.0** — 2026-11-23: Drum Steps, the track-led Kit Builder, and verified
+pattern writes for Digitakt II OS 1.17, Digitone II OS 1.12, and Analog Four
+OS 1.56. All three passed hardware write/readback and restore checks. The new
+editor interfaces passed offline interaction and visual checks; full Kit Builder
+audition/revert acceptance on these OS versions remains unverified.
 Still beta
 software that writes to hardware; the five write rules above are the reason that
 is a sentence and not a warning label.
@@ -80,11 +84,12 @@ is a sentence and not a warning label.
 | Engine, transport, clock | **verified on hardware** — a DT2, a DN2 and an A4 playing one clock in sync |
 | Analog Four | **a full transfer peer of the digis since 2026-08-31**, and every claim here was made by the box. Plays: clock and transport receive, notes on channels 1-6 (four synth voices, FX, CV), 64-step patterns, all fourteen published CC/NRPN parameters swept. Transfers: `0x64` fetches any of 128 slots, the write goes back DIN-paced through the same safe-write ceremony, and a round trip — off the box, edited in the roll, back on — ran first time. Carries: velocity, note length, micro-timing and trig condition as named lanes, thirteen p-lock parameters that read, draw and edit, and — since 2026-09-02 — chords, as the trig's note plus the ARP menu's NO2–NO4 offsets, which is how the factory A01 plays them; they sound on a polyphonic kit with the arp off. Names its tracks' sounds off the box's **edit buffer**, which no digi can answer. The FX and CV tracks are read-only and byte-exact by decision — their p-lock id space has never been swept |
 | Session file | a whole session round-trips through JSON, wired to Save/Open with a close guard, **hardware-confirmed through a save/quit/reopen cycle**. Saving is manual, but a crash is not the end of the work: unsaved edits are copied aside to the per-user data directory two seconds after the last edit (every twenty seconds if the edits never stop), and the next launch offers the copy back. The chosen file itself is still only written by a deliberate Save, so "quit without saving" still means what it says — see `crates/app/src/ui/recovery.rs` for why |
+| Drum Steps | Native track-by-step editor beside Piano Roll: sixteen-step pages, toggle/paint/erase, shared selection and undo, velocity and existing trig/p-lock lanes, per-track playheads and optional page follow. Uses the same pattern data and write workflow. Offline preview and design: [`DRUM-SEQUENCER.md`](DRUM-SEQUENCER.md) |
 | Velocity, micro-timing | in the model, written to hardware, settable in the Edit panel and the roll |
 | Ghost tracks | the pattern's other tracks drawn translucent behind the one you are editing, each in its own colour — GHOSTS in the TRACKS header, right-click a cell to leave a track out. A ghost of another length is drawn once, to its own loop point, rather than tiled or drifted |
 | Harmony | key, scales, chord draw with a ghost, harmonise. A four-note chord written to a box and fetched back intact |
 | Generator | seeded, nine modules, per-genre; a six-row arrangement has played and been synced to both boxes byte-identical. A **Chord lead** role (2026-09-02) transcribes the Analog Four's factory A01 — pedal tones held over a root that leaps octaves — and has played from an A4, as chords, through its ARP offsets |
-| Preset browser | the selected box's whole +Drive soundbank library, searched and filtered by tag across every bank at once. Tags live inside each preset file, so the panel scans — cancellable, resumable, and cached per bank so a second open is instant and works with the box switched off. **Three libraries indexed whole on hardware**: a DN2's 1,189 presets (of which 388 are Digitone mk1 files, a second container format), an A4's 869, a DT2's 148. All three tag tables are calibrated **exactly** — 24 of 24 captures, checked against Overbridge's filter grid rather than the boxes' own screens, because an A4 truncates its tag row at four and shows only some of what a preset carries. The digis share one 32-cell table; the A4's overlaps it in **two** positions |
+| Kit builder (`K`) | Track grid with explicit load destination, name/bank/tag filters with Match any/all, and selected-track or all-auditioned-track revert. Working-kit observations are labelled as historical; recovery backups are session-only and survive failed verification. Save wanted kits on the hardware. Full-kit saving is separate. Browsing uses the selected box's whole +Drive soundbank library, searched and filtered by tag across every bank at once. Tags live inside each preset file, so the panel scans — cancellable, resumable, and cached per bank so a second open is instant and works with the box switched off. **Three libraries indexed whole on hardware**: a DN2's 1,189 presets (of which 388 are Digitone mk1 files, a second container format), an A4's 869, a DT2's 148. All three tag tables are calibrated **exactly** — 24 of 24 captures, checked against Overbridge's filter grid rather than the boxes' own screens, because an A4 truncates its tag row at four and shows only some of what a preset carries. The digis share one 32-cell table; the A4's overlaps it in **two** positions |
 | Preset load | double-click puts a preset on a track, **run on all three boxes**. Two routes, one gesture: a digi addresses one kit track's sound, and the A4 — which looked for three days like a box that could not do this at all — has its whole working kit fetched, one 350-byte sound spliced in, and the kit sent back. That box replaces a track with an **init sound** rather than refusing a preset saved by an older OS, so the load converts the struct version first; the conversion is two bytes and was measured off the box's own sound pool, not derived. Foreign container formats are refused by magic and say so by name, per destination. What has not been run is REVERT, the mk1 refusal message, and the OS-build gate through this path |
 | +Drive writes | the file-write trio (`0x57`/`0x58`/`0x59`) is implemented in `digi_midi` and hardware-verified for a **single chunk**, behind a second allowlist disjoint from the read one. **The app itself never calls it** — the only caller is one example, so nothing you can press writes a file to a +Drive. Above 16 KiB is refused rather than guessed, so no whole project has been written back. `0x5A` Move, `0x5B` Copy and `0x5C` **Delete** are implemented nowhere in this workspace and nothing can reach them |
 | Copy-track | the in-app whole-track copy works — Shift+C/Shift+V in the TRACKS grid, re-reading the source at paste time so it survives a scene change. Clicking a cell and pressing Delete clears that track — trigs and p-lock lanes, undoable, with the track's own name, channel, port, length and scale left alone. Shift+Up/Shift+Down transposes the selected track an octave and Alt+Up/Alt+Down a semitone — the whole track, moved whole or refused, never clamped or dropped — with the same four moves on buttons in the Edit panel. The **box-to-box** copy, which translates p-lock lanes between two boxes' payloads by parameter name, is ported and still has **no caller** |

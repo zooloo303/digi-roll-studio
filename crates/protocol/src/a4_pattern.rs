@@ -494,7 +494,8 @@ pub fn describe_offset(off: usize) -> String {
 /// Zero-based kit reference. Hardware-confirmed 2026-09-22: switching A05
 /// from Kit 2 to Kit 5 and back changed only this byte, 1 → 4 → 1, in both
 /// stored and working pattern dumps. Preserve it on track writes, including
-/// `FF`, whose meaning has not been established by that experiment.
+/// `FF` on an unassigned blank pattern. OS 1.56 substitutes kit 0 when notes
+/// are stored with FF, so safe track writes require a saved kit assignment.
 pub const KIT_INDEX: usize = 12_962;
 
 /// Legacy name from captures whose pattern and kit numbers coincided.
