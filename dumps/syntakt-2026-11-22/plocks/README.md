@@ -25,7 +25,7 @@ Every lock is on **TRIG 1** of its track. `captures.tsv` lists the order.
 | 45 | AMP REVERB send | raw / 256 | 9 |
 | 46 | AMP PAN | raw / 256 − 64 (L64 = 0x0000, R47 = 0x6F00) | 9 |
 | 47 | AMP VOL | raw / 256 | 1, 9 |
-| 49 | AMP envelope mode (AMP page 2) | high byte: ADSR = 1; AHD = 0 inferred, not captured | 1 |
+| 49 | AMP envelope mode (AMP page 2) | high byte: ADSR = 1. AHD = 0 is presumed, not captured, so the table leaves 0 unnamed | 1 |
 
 FREQ, RESO, ATK and VOL carry **the same ID on a digital and an analog
 machine**. The others were measured on one track each; do not assume more.

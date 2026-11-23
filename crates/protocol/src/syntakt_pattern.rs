@@ -374,7 +374,9 @@ pub enum PlockScale {
     Unsigned,
     /// display = raw / 256 − 64: PAN, `L64` = 0, centre = 64, `R47` = 111.
     Centred,
-    /// The high byte picks an entry: envelope mode, AHD = 0 (inferred), ADSR = 1.
+    /// The high byte picks an entry. An empty name is an entry not captured
+    /// yet, shown by its number: envelope mode 1 = ADSR was captured, and 0 is
+    /// presumably AHD but was not, so it stays unnamed.
     Choice(&'static [&'static str]),
 }
 
@@ -398,7 +400,7 @@ pub const MEASURED_PLOCKS: &[(u8, &str, PlockScale)] = &[
     (45, "AMP REVERB SEND", PlockScale::Unsigned),
     (46, "AMP PAN", PlockScale::Centred),
     (47, "AMP VOL", PlockScale::Unsigned),
-    (49, "AMP ENV MODE", PlockScale::Choice(&["AHD", "ADSR"])),
+    (49, "AMP ENV MODE", PlockScale::Choice(&["", "ADSR"])),
 ];
 
 /// The measured name and scale of a p-lock parameter ID, if it has one.
@@ -419,7 +421,10 @@ pub fn plock_display(scale: PlockScale, raw: u16) -> String {
                 v => format!("R{v}"),
             }
         }
-        PlockScale::Choice(names) => names.get(usize::from(raw >> 8)).map_or_else(|| format!("#{}", raw >> 8), |n| n.to_string()),
+        PlockScale::Choice(names) => match names.get(usize::from(raw >> 8)) {
+            Some(n) if !n.is_empty() => n.to_string(),
+            _ => format!("#{}", raw >> 8),
+        },
     }
 }
 
@@ -540,9 +545,13 @@ mod measured_plock_tests {
     }
 
     #[test]
-    fn unmeasured_ids_have_no_name() {
+    fn unmeasured_ids_and_entries_have_no_name() {
         assert!(measured_plock(30).is_none());
         assert!(measured_plock(48).is_none());
+        // Envelope mode 0 (presumably AHD) was not captured: shown by number.
+        let (_, mode) = measured_plock(49).unwrap();
+        assert_eq!(plock_display(mode, 0x0000), "#0");
+        assert_eq!(plock_display(mode, 0x0100), "ADSR");
     }
 }
 
