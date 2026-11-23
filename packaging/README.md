@@ -152,7 +152,10 @@ Publishing is the step that changes the site: the page reads
 `/releases/latest`, which ignores drafts.
 
 To rehearse without spending a tag, run the workflow manually — it builds and
-uploads all four artefacts and stops before the release.
+uploads all four artefacts and stops before the release. The optional `source_ref`
+input builds an exact tag or commit using the current workflow, useful when a
+hosted runner retires after a tag was pushed. macOS uses the Apple Silicon
+`macos-15` runner; GitHub retired `macos-14` on November 2, 2026.
 
 ## Building either one by hand
 

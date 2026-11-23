@@ -24,6 +24,11 @@ on:
     tags: ["v*"]
   # So the whole thing can be rehearsed on a branch without spending a tag.
   workflow_dispatch:
+    inputs:
+      source_ref:
+        description: "Source ref or SHA to build (empty uses the workflow commit)"
+        required: false
+        type: string
 
 permissions:
   contents: write
@@ -33,9 +38,11 @@ jobs:
     # Must be an arm64 image: this is the Apple Silicon download, and
     # build-dmg.sh refuses to run anywhere else rather than quietly shipping an
     # x86_64 binary under that name.
-    runs-on: macos-14
+    runs-on: macos-15
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.source_ref || github.sha }}
 
       - name: Rust
         run: |
@@ -74,6 +81,8 @@ jobs:
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.source_ref || github.sha }}
 
       - name: Rust
         run: |
@@ -112,6 +121,8 @@ jobs:
     runs-on: ubuntu-22.04
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.source_ref || github.sha }}
 
       - name: Rust
         run: |
@@ -166,6 +177,8 @@ jobs:
         run: pacman -Syu --noconfirm --needed git rust alsa-lib
 
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.source_ref || github.sha }}
 
       # makepkg refuses to run as root, and a container step is root. So the
       # build gets a user, and the checkout gets handed to it — which also
@@ -208,6 +221,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.source_ref || github.sha }}
 
       - uses: actions/download-artifact@v4
         with:
